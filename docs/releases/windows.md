@@ -9,7 +9,7 @@
 ```powershell
 $airSigningKey = Join-Path $env:LOCALAPPDATA 'AirRelease/air-update-signing.pem'
 $env:AIR_UPDATE_PUBLIC_KEY = (Get-Content ([IO.Path]::ChangeExtension($airSigningKey, '.pub')) -Raw).Trim()
-$env:AIR_UPDATE_FEED = 'https://github.com/GuoWWWX/Air/releases/latest/download/air-windows-x64.json'
+$env:AIR_UPDATE_FEED = 'https://github.com/GuoWWWX/Air-Proxy/releases/latest/download/air-windows-x64.json'
 $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-gnu'
 ./scripts/prepare-windows-kernel.ps1
 ./scripts/prepare-mihomo-data.ps1
@@ -24,7 +24,7 @@ pnpm tauri build --target x86_64-pc-windows-gnu --config src-tauri/tauri.windows
 python scripts/prepare-update.py package --key $airSigningKey --version 1.0.0 `
   --notes docs/releases/1.0.0.md --source (Join-Path $env:LOCALAPPDATA 'Air Proxy') `
   --output artifacts/windows/1.0.0 `
-  --asset-base 'https://github.com/GuoWWWX/Air/releases/download/v1.0.0'
+  --asset-base 'https://github.com/GuoWWWX/Air-Proxy/releases/download/v1.0.0'
 ```
 
 默认的 NSIS 产物位于 `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/`。使用 `CARGO_TARGET_DIR` 时，从该目录下的目标三元组查找安装包。清理前把留存的安装包复制到 `artifacts/windows/<版本>/`，与签名清单和更新包一起归档。

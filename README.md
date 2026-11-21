@@ -1,8 +1,8 @@
-# Air
+# Air Proxy
 
 Air 在本机管理代理订阅、节点、分组和链路，通过 Mihomo 提供代理、连接记录与测速。当前仓库可以构建 Windows 桌面版和 Android 手机版。iOS、macOS、HarmonyOS 与 Linux 的工程位置、权限模型和首轮验收见 [跨平台架构](docs/architecture.md#后续平台)。
 
-**[下载最新版 Windows 安装包](https://github.com/GuoWWWX/Air/releases/latest)**
+**[下载最新版 Windows 安装包](https://github.com/GuoWWWX/Air-Proxy/releases/latest)**
 
 支持 Windows 10 / 11 x64，随附的 Mihomo 内核要求处理器支持 `x86-64-v2`。安装后导入订阅或添加节点，选中节点并点击「启动」。首次打开虚拟网卡时，在 Air 内确认安装服务并完成 Windows 授权。
 

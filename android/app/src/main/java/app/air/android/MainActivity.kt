@@ -146,7 +146,7 @@ class MainActivity : ComponentActivity() {
                 "checkUpdate" -> work(message, requests) { checkForAndroidUpdate(appVersion()) }
                 "openLink" -> {
                     val url = data.getString("url")
-                    require(url == "https://github.com/GuoWWWX" || url.startsWith("https://github.com/GuoWWWX/Air/releases/")) {
+                    require(url == "https://github.com/GuoWWWX" || url.startsWith(RELEASE_PAGE_PREFIX)) {
                         "无效的 Air 链接"
                     }
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -400,9 +400,11 @@ class MainActivity : ComponentActivity() {
 }
 
 private const val MAX_SUBSCRIPTION = 8 * 1024 * 1024
+private const val GITHUB_REPOSITORY = "GuoWWWX/Air-Proxy"
+private const val RELEASE_PAGE_PREFIX = "https://github.com/$GITHUB_REPOSITORY/releases/"
 
 private fun checkForAndroidUpdate(current: String): JSONObject {
-    val api = URI("https://api.github.com/repos/GuoWWWX/Air/releases?per_page=20")
+    val api = URI("https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=20")
     val connection = api.toURL().openConnection() as HttpsURLConnection
     connection.connectTimeout = 8500
     connection.readTimeout = 8500
@@ -431,7 +433,7 @@ private fun checkForAndroidUpdate(current: String): JSONObject {
         val assets = release.optJSONArray("assets") ?: continue
         if ((0 until assets.length()).none { assets.getJSONObject(it).optString("name").endsWith(".apk", true) }) continue
         val page = release.optString("html_url")
-        if (!page.startsWith("https://github.com/GuoWWWX/Air/releases/")) continue
+        if (!page.startsWith(RELEASE_PAGE_PREFIX)) continue
         latest = candidate
         result.put("version", tag.removePrefix("v")).put("url", page)
     }
