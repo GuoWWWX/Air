@@ -1,0 +1,12 @@
+[data-proxy-power] {
+  --proxy-power-color: #343b44;
+  --proxy-power-highlight: color-mix(in srgb, var(--proxy-power-color), white 14%);
+  --proxy-power-depth: color-mix(in srgb, var(--proxy-power-color), black 28%);
+  --proxy-power-surface: color-mix(in srgb, var(--proxy-power-color) 18%, var(--card, var(--surface)));
+  --proxy-power-ink: color-mix(in srgb, var(--proxy-power-color) 58%, var(--foreground, var(--ink)));
+  --proxy-power-border: color-mix(in srgb, var(--proxy-power-color) 46%, var(--border, var(--outline)));
+}
+
+[data-proxy-power="running"] { --proxy-power-color: #77879a; }
+[data-proxy-power="system-proxy"] { --proxy-power-color: #2f63e8; }
+[data-proxy-power="tun"] { --proxy-power-color: #008b78; }

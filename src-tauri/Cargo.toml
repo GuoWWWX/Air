@@ -1,0 +1,48 @@
+[package]
+name = "air"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.89"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-single-instance", "dep:ed25519-dalek", "dep:flate2", "dep:semver", "dep:ico", "dep:image", "dep:quick-xml"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "air"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true , features = [] }
+
+[dependencies]
+rquickjs = "0.11"
+base64 = "0.22"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast"], optional = true }
+flate2 = { version = "1", optional = true }
+futures-util = "0.3"
+ico = { version = "0.5", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["gzip", "json", "native-tls", "stream", "system-proxy"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+semver = { version = "1", features = ["serde"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+tauri = { version = "2", optional = true, features = ["image-png", "tray-icon"] }
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+quick-xml = { version = "0.42", features = ["serialize"], optional = true }
+tauri-plugin-single-instance = { version = "2.4.2", optional = true }
+windows-service = "0.8.0"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util", "io-util"] }

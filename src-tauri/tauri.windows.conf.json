@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../.cache/air/windows-x64/mihomo.exe": "mihomo.exe"
+    }
+  }
+}

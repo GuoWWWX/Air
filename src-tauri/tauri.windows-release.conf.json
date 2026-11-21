@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Air Proxy",
+  "mainBinaryName": "air-proxy",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "windows/Mihomo-LICENSE.txt": "Mihomo-LICENSE.txt",
+      "windows/Mihomo-build-info.txt": "Mihomo-build-info.txt",
+      "../src/assets/air.ico": "Air-Proxy.ico"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "../src/assets/air.ico",
+        "installerHooks": "windows/shortcut-icons.nsh",
+        "uninstallerIcon": "../src/assets/air.ico"
+      }
+    }
+  }
+}

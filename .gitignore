@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.pnpm-store/
+.cargo-cache/
+src-tauri/target/
+src-tauri/gen/schemas/
+.npm-cache/
+*.local
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.kotlin/
+/.cache/
+/artifacts/
+__pycache__/
