@@ -530,8 +530,9 @@ export function App() {
       })
   }
 
-  function saveConfiguration(next: Library, apply: boolean) {
-    void task(async () => {
+  async function saveConfiguration(next: Library, apply: boolean) {
+    let saved = false
+    await task(async () => {
       validateNetwork(next.network)
       validateRouting(next.routing)
       if (kernelInfo.sdk < 33 && next.network.routeExcludeAddress.length) throw new Error(tr('绕过网段需要 Android 13 或更新版本'))
@@ -543,8 +544,10 @@ export function App() {
       if (targets.some(target => 'id' in target && !effective.byId.has(target.id))) throw new Error(tr('有规则指向不可用的分组或链路'))
       if (onAndroid) await native('validatePlan', { plan: effective.plan })
       await commit(latest => ({ ...latest, network: next.network, routing: next.routing, monitoring: next.monitoring }), running && apply)
+      saved = true
       notice(running && !apply ? tr('已保存，下次启动代理生效') : tr('配置已保存'))
     })
+    return saved
   }
 
   const change = (next: Library, apply = true) => { void task(() => enqueueWrite(() => save(next, running && apply))) }
@@ -1257,6 +1260,7 @@ export function App() {
     page = <><Header icon={pageKind} animateKey={`settings:${pageKind}`} statusPhase={currentPhase} title={settingsTitles[pageKind]} back={back} />
       {pageKind === 'theme' && <ThemeSettings value={library.theme} onChange={theme => void task(() => commit(latest => ({ ...latest, theme }), false))} />}
       {pageKind === 'routing' && <RoutingSettings library={library} model={model} busy={busy} sdk={kernelInfo.sdk}
+        apps={history.map(conn => ({ executable: conn.metadata.process, path: conn.metadata.processPath, name: conn.appName, icon: conn.appIcon }))}
         save={routing => saveConfiguration({ ...current.current, routing }, true)} />}
       {pageKind === 'configFile' && <ConfigSettings library={library} busy={busy}
         save={patch => saveConfiguration({ ...current.current, ...patch }, true)} />}

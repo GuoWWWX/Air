@@ -1212,6 +1212,10 @@ export function App() {
                     groups={store.library.groups}
                     nodes={store.library.nodes}
                     target={routingSettingsTarget()}
+                    apps={(proxy.telemetry?.connectionLogs ?? proxy.telemetry?.connections ?? []).map(conn => ({
+                      executable: conn.processName ?? conn.appExecutable, path: conn.processPath, name: conn.app,
+                      icon: conn.appIconKey ? proxy.telemetry?.appIcons?.[conn.appIconKey] : undefined,
+                    }))}
                     bindApplication={routingReturn === 'nodes'}
                     onBack={() => navigate(routingReturn)}
                   />

@@ -1,3 +1,5 @@
+import { Sheet } from './ui'
+import { GlobalRuleList, type AppIdentity } from '@/shared/ui/GlobalRuleList'
 import { LanguagePicker } from '@/shared/i18n/LanguagePicker'
 import { savePreviewLanguage, tr } from '@/shared/i18n/messages'
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -97,8 +99,8 @@ export function ThemeSettings({ value, onChange }: { value: Theme; onChange: (th
 
 function targetKey(target: RouteTarget) { return 'id' in target ? target.kind + ':' + target.id : target.kind }
 
-export function RoutingSettings({ library, model, busy, sdk, save }: {
-  library: Library; model: Model; busy: boolean; sdk: number; save: (routing: MobileRouting) => void
+export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
+  library: Library; model: Model; busy: boolean; sdk: number; apps: AppIdentity[]; save: (routing: MobileRouting) => Promise<boolean>
 }) {
   const [draft, setDraft] = useState(library.routing)
   const [preview, setPreview] = useState<string[]>()
@@ -118,15 +120,6 @@ export function RoutingSettings({ library, model, busy, sdk, save }: {
     })),
   ]
   function change(next: MobileRouting) { setDraft(next); setPreview(undefined) }
-  function patch(index: number, fields: Partial<RouteRule>) {
-    change({ ...draft, rules: draft.rules.map((rule, i) => i === index ? { ...rule, ...fields } : rule) })
-  }
-  function reorder(from: number, to: number) {
-    const rules = [...draft.rules]
-    const [rule] = rules.splice(from, 1)
-    rules.splice(to, 0, rule)
-    change({ ...draft, rules })
-  }
   function check() {
     validateRouting(draft)
     const compiled = compile({ ...library, routing: draft }, model)
@@ -159,55 +152,17 @@ export function RoutingSettings({ library, model, busy, sdk, save }: {
           {selectTarget(tr('默认出口'), draft.fallback, fallback => change({ ...draft, fallback }))}
         </section>
         <section className="panel settings-form">
-          <div className="section-title"><h2 className="settings-form-title">{tr("自定义规则")}</h2>
-            <Button type="button" size="sm" variant="outline" onClick={() => change({ ...draft, rules: [
-              ...draft.rules, { enabled: true, matcher: 'domainSuffix', value: '', target: { kind: 'direct' } },
-            ] })}><Plus data-icon="inline-start" />{tr("添加规则")}</Button>
-          </div>
-          <p className="fine-print">{tr("从上到下匹配，先匹配的规则优先。")}</p>
-          {draft.rules.map((rule, index) => <div className={rule.enabled ? 'settings-rule' : 'settings-rule opacity-65'} key={index}>
-            <div className="flex min-w-0 items-center justify-between gap-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <SettingSwitch label={tr('规则 ') + (index + 1)} value={rule.enabled} onChange={enabled => patch(index, { enabled })} />
-                {rule.matcher === 'processName' && rule.hostMatcher && <Tag tone="blue">{tr('复合规则')}</Tag>}
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5">
-                <Button type="button" size="icon-sm" variant="ghost" aria-label={tr("上移")} disabled={!index} onClick={() => reorder(index, index - 1)}><ArrowUp /></Button>
-                <Button type="button" size="icon-sm" variant="ghost" aria-label={tr("下移")} disabled={index === draft.rules.length - 1} onClick={() => reorder(index, index + 1)}><ArrowDown /></Button>
-                <Button type="button" size="icon-sm" variant="ghost" className="text-destructive" aria-label={tr("删除规则")}
-                  onClick={() => change({ ...draft, rules: draft.rules.filter((_, i) => i !== index) })}><Trash2 /></Button>
-              </div>
-            </div>
-            <div className="field"><span>{tr("匹配方式")}</span><AirSelect label={tr("匹配方式")} value={rule.matcher}
-              options={ruleMatchers.map(option => ({ ...option, disabled: option.value === 'processName' && sdk < 29 }))}
-              onChange={matcher => patch(index, { matcher, value: '', ...(matcher !== 'processName' ? { hostMatcher: undefined, hostValue: undefined } : {}) })} /></div>
-            <Field label={tr("匹配值")}><Input value={rule.value} placeholder={ruleMatchers.find(option => option.value === rule.matcher)?.example}
-              onChange={event => patch(index, { value: event.target.value })} spellCheck={false} /></Field>
-            {rule.matcher === 'processName' && (
-              <>
-                <div className="field"><span>{tr("限定目标（可选，按域名分流）")}</span><AirSelect label={tr("限定目标方式")} value={rule.hostMatcher ?? 'none'}
-                  options={[
-                    { value: 'none', label: tr('不限（整个应用）') },
-                    { value: 'domainSuffix', label: tr('域名及子域名') },
-                    { value: 'domain', label: tr('完整域名') },
-                    { value: 'ip', label: tr('IP 或网段') },
-                  ]}
-                  onChange={next => patch(index, next === 'none' ? { hostMatcher: undefined, hostValue: undefined } : { hostMatcher: next as HostMatcher, hostValue: rule.hostValue ?? '' })} /></div>
-                {rule.hostMatcher && (
-                  <Field label={tr("限定域名或 IP")}>
-                    <Input
-                      value={rule.hostValue ?? ''}
-                      placeholder={rule.hostMatcher === 'ip' ? '10.0.0.0/8' : 'example.com'}
-                      onChange={event => patch(index, { hostValue: event.target.value })}
-                      spellCheck={false}
-                    />
-                  </Field>
-                )}
-              </>
-            )}
-            {selectTarget(tr('出站方式'), rule.target, target => patch(index, { target }))}
-            <small className="fine-print break-all">{compileRule(rule, '…')}</small>
-          </div>)}
+          <GlobalRuleList<RouteRule> android rules={draft.rules} apps={apps}
+            matchers={ruleMatchers.map(item => ({ ...item, disabled: item.value === 'processName' && sdk < 29 }))}
+            targets={targets} newRule={() => ({ enabled: true, matcher: 'domainSuffix', value: '', target: { kind: 'direct' } })}
+            overlay={(title, close, content) => <Sheet open title={title} close={close}>{content}</Sheet>}
+            save={async rules => {
+              const next = { ...draft, rules }
+              validateRouting(next)
+              if (!await save(next)) return false
+              change(next)
+              return true
+            }} />
         </section>
         <Button type="button" variant="outline" onClick={() => {
           try { setPreview(check()) }

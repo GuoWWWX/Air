@@ -110,3 +110,16 @@ test('node, group context, subscription and saved chain resolve the closest expl
   assert.deepEqual(restoreLibrary(base).routing.ruleLibrary, ruleLibrary)
   assert.deepEqual(parseSettings(stringify({routing:base.routing})).routing.ruleLibrary,ruleLibrary)
 })
+
+test('software rows collect path and process exceptions while preserving unrelated priorities', async () => {
+  const {ruleRows, replaceRuleRows, moveRuleRow} = await vite.ssrLoadModule('@/shared/proxy/rule-rows.ts')
+  const app = { ...custom, matcher:'processName', value:'Example.EXE' }
+  const exception = {...app,hostMatcher:'domain',hostValue:'own.test'}
+  const path = {...app,matcher:'processPath',value:'C:\\Apps\\Example.exe',hostMatcher:'domainSuffix',hostValue:'home.test'}
+  const rows = ruleRows([app,custom,exception,path])
+  assert.deepEqual(rows.map(r=>r.indices), [[0,2,3],[1]])
+  const result = replaceRuleRows([app,custom,exception,path],rows[0].indices,[app,exception,path])
+  assert.deepEqual(result,[exception,custom,path,app])
+  assert.deepEqual(moveRuleRow(result,rows[1],rows[0]),[custom,exception,path,app])
+  assert.equal(ruleRows([custom,custom]).length,2)
+})

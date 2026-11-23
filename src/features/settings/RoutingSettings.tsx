@@ -1,27 +1,22 @@
 import { resolveRules } from '@/shared/proxy/rule-library'
+import { GlobalRuleList, type AppIdentity } from '@/shared/ui/GlobalRuleList'
+import { ruleDialog } from '@/shared/ui/RuleDialog'
 import { tr } from '@/shared/i18n/messages'
 import { displayPath } from '@/shared/lib/displayPath'
 import {
-  ArrowDown,
   ArrowLeft,
-  ArrowUp,
   Copy,
-  GripVertical,
-  Plus,
   RefreshCw,
-  Trash2,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Card } from '@/shared/ui/card'
-import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { showMessage } from '@/shared/ui/message'
 import { Separator } from '@/shared/ui/separator'
 import {
   air,
-  type HostMatcher,
   type Library,
   type NodeRecord,
   type ProxyTarget,
@@ -30,7 +25,6 @@ import {
   type RoutingConfig,
   type RoutingDocument,
 } from '@/platform/desktop/air'
-import { AirCheckbox } from '../../shared/ui/AirCheckbox'
 import { AirSelect } from '../../shared/ui/AirSelect'
 import { PageHeaderIcon } from '@/shared/ui/PageHeaderIcon'
 
@@ -39,6 +33,7 @@ interface Props {
   groups: Library['groups']
   nodes: NodeRecord[]
   target: ProxyTarget
+  apps: AppIdentity[]
   bindApplication: boolean
   onBack: () => void
 }
@@ -66,6 +61,26 @@ function targetKey(target: RouteTarget) {
   return target.kind
 }
 
+function routeChoices(groups: Library['groups'], nodes: NodeRecord[]) {
+  const choices: { target: RouteTarget; label: string; disabled?: boolean }[] = [
+    { target: { kind: 'direct' }, label: tr('直连') },
+    { target: { kind: 'reject' }, label: tr('拒绝连接') },
+    { target: { kind: 'selected' }, label: tr('当前代理出口') },
+    { target: { kind: 'residential' }, label: tr('链式出口') },
+    ...groups.map(group => ({
+      target: { kind: 'group' as const, sourceId: group.sourceId, name: group.name },
+      label: `${group.name} (${nodes.find(n => n.sourceId === group.sourceId)?.source ?? group.sourceId})`,
+    })),
+    ...nodes
+      .filter(node => !node.subscriptionNotice)
+      .map(node => ({
+        target: { kind: 'node' as const, id: node.id },
+        label: `${node.name} (${node.source})`,
+      })),
+  ]
+  return choices
+}
+
 function TargetField({
   label,
   target,
@@ -83,22 +98,7 @@ function TargetField({
   allowSubscription?: boolean
   onChange: (target: RouteTarget) => void
 }) {
-  const choices: { target: RouteTarget; label: string; disabled?: boolean }[] = [
-    { target: { kind: 'direct' }, label: tr('直连') },
-    { target: { kind: 'reject' }, label: tr('拒绝连接') },
-    { target: { kind: 'selected' }, label: tr('当前代理出口') },
-    { target: { kind: 'residential' }, label: tr('链式出口') },
-    ...groups.map(group => ({
-      target: { kind: 'group' as const, sourceId: group.sourceId, name: group.name },
-      label: `${group.name} (${nodes.find(n => n.sourceId === group.sourceId)?.source ?? group.sourceId})`,
-    })),
-    ...nodes
-      .filter(node => !node.subscriptionNotice)
-      .map(node => ({
-        target: { kind: 'node' as const, id: node.id },
-        label: `${node.name} (${node.source})`,
-      })),
-  ]
+  const choices = routeChoices(groups, nodes)
   if (fallback && allowSubscription) {
     choices.splice(4, 0, { target: { kind: 'subscription' }, label: tr('沿用订阅默认出口') })
   }
@@ -133,7 +133,7 @@ function TargetField({
 
 let cachedRoutingDoc: RoutingDocument | undefined
 
-export function RoutingSettings({ sources, groups, nodes, target, bindApplication, onBack }: Props) {
+export function RoutingSettings({ sources, groups, nodes, target, apps, bindApplication, onBack }: Props) {
   const [draft, setDraft] = useState<RoutingConfig | undefined>(() =>
     cachedRoutingDoc
       ? (bindApplication
@@ -145,7 +145,6 @@ export function RoutingSettings({ sources, groups, nodes, target, bindApplicatio
   const [revision, setRevision] = useState(() => cachedRoutingDoc?.revision ?? '')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<string[]>()
-  const dragIndex = useRef<number | undefined>(undefined)
   const draftRef = useRef(draft)
   const revisionRef = useRef(revision)
   const pathRef = useRef(path)
@@ -231,31 +230,6 @@ export function RoutingSettings({ sources, groups, nodes, target, bindApplicatio
   function update(change: (current: RoutingConfig) => RoutingConfig) {
     setDraft(current => (current ? change(current) : current))
     setPreview(undefined)
-  }
-
-  function changeRule(index: number, change: Partial<RouteRule>) {
-    update(current => ({
-      ...current,
-      rules: current.rules.map((rule, at) => (at === index ? { ...rule, ...change } : rule)),
-    }))
-  }
-
-  function reorder(from: number, to: number) {
-    update(current => {
-      if (
-        from === to ||
-        from < 0 ||
-        to < 0 ||
-        from >= current.rules.length ||
-        to >= current.rules.length
-      ) {
-        return current
-      }
-      const rules = [...current.rules]
-      const [rule] = rules.splice(from, 1)
-      if (rule) rules.splice(to, 0, rule)
-      return { ...current, rules }
-    })
   }
 
   const dirty = Boolean(
@@ -344,184 +318,14 @@ export function RoutingSettings({ sources, groups, nodes, target, bindApplicatio
                     fallback: !automatic && value.kind !== 'subscription' ? value : current.fallback }))} />
                 <Separator />
 
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex flex-col gap-0.5">
-                    <h2 className="text-sm font-semibold text-foreground">{tr("自定义规则")}</h2>
-                    <span className="text-[12px] text-muted-foreground">{tr("从上到下匹配，先匹配的规则优先")}</span>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      update(current => ({ ...current, rules: [...current.rules, newRule()] }))
-                    }
-                  >
-                    <Plus data-icon="inline-start" />{tr("添加规则")}</Button>
-                </div>
-
-                <div className="flex flex-col gap-2.5">
-                  {draft.rules.map((rule, index) => (
-                    <div
-                      key={index}
-                      onDragOver={event => event.preventDefault()}
-                      onDrop={event => {
-                        event.preventDefault()
-                        if (dragIndex.current !== undefined) reorder(dragIndex.current, index)
-                        dragIndex.current = undefined
-                      }}
-                      className={
-                        rule.enabled
-                          ? 'flex flex-col gap-2.5 rounded-[9px] border border-border bg-muted/55 p-3 transition-opacity dark:bg-background/60'
-                          : 'flex flex-col gap-2.5 rounded-[9px] border border-border-subtle bg-muted/30 p-3 opacity-70 transition-opacity'
-                      }
-                    >
-                      <div className="flex items-center gap-2">
-                        <span
-                          draggable
-                          onDragStart={event => {
-                            dragIndex.current = index
-                            event.dataTransfer.setData('text/plain', String(index))
-                          }}
-                          onDragEnd={() => {
-                            dragIndex.current = undefined
-                          }}
-                          className="cursor-grab text-muted-foreground hover:text-foreground"
-                        >
-                          <GripVertical className="size-4" aria-hidden="true" />
-                        </span>
-                        <AirCheckbox
-                          label={tr("规则 {0}", index + 1)}
-                          checked={rule.enabled}
-                          onChange={enabled => changeRule(index, { enabled })}
-                        >
-                          <Badge variant="default" className="mono">
-                            #{index + 1}
-                          </Badge>
-                        </AirCheckbox>
-                        {(rule.matcher === 'processName' || rule.matcher === 'processPath') && rule.hostMatcher && (
-                          <Badge variant="accent">{tr('复合规则')}</Badge>
-                        )}
-                        {!rule.enabled && (
-                          <Badge variant="default">{tr('已停用')}</Badge>
-                        )}
-
-                        <div className="ml-auto flex items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={tr("上移")}
-                            disabled={index === 0}
-                            onClick={() => reorder(index, index - 1)}
-                          >
-                            <ArrowUp />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={tr("下移")}
-                            disabled={index === draft.rules.length - 1}
-                            onClick={() => reorder(index, index + 1)}
-                          >
-                            <ArrowDown />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={tr("删除规则")}
-                            onClick={() =>
-                              update(current => ({
-                                ...current,
-                                rules: current.rules.filter((_, at) => at !== index),
-                              }))
-                            }
-                            className="text-destructive hover:bg-danger-soft hover:text-destructive"
-                          >
-                            <Trash2 />
-                          </Button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)_minmax(0,1fr)]">
-                        <div className="flex flex-col gap-1.5">
-                          <Label>{tr("匹配方式")}</Label>
-                          <AirSelect
-                            label={tr("匹配方式")}
-                            value={rule.matcher}
-                            options={matcherOptions}
-                            onChange={matcher =>
-                              changeRule(index, {
-                                matcher,
-                                ...(matcher !== 'processName' && matcher !== 'processPath'
-                                  ? { hostMatcher: undefined, hostValue: undefined }
-                                  : {}),
-                              })
-                            }
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <Label>{tr("匹配值")}</Label>
-                          <Input
-                            required={rule.enabled}
-                            spellCheck={false}
-                            value={rule.value}
-                            placeholder={
-                              matcherOptions.find(item => item.value === rule.matcher)?.example
-                            }
-                            onChange={e => changeRule(index, { value: e.target.value })}
-                          />
-                        </div>
-                        <TargetField
-                          label={tr("出站方式")}
-                          target={rule.target}
-                          groups={groups}
-                          nodes={nodes}
-                          onChange={target => changeRule(index, { target })}
-                        />
-                      </div>
-                      {(rule.matcher === 'processName' || rule.matcher === 'processPath') && (
-                        <div className="grid grid-cols-1 gap-2 border-t border-border-subtle pt-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
-                          <div className="flex flex-col gap-1.5">
-                            <Label>{tr("限定目标（可选，按域名分流）")}</Label>
-                            <AirSelect
-                              label={tr("限定目标方式")}
-                              value={rule.hostMatcher ?? 'none'}
-                              options={[
-                                { value: 'none', label: tr('不限（整个软件）') },
-                                { value: 'domainSuffix', label: tr('域名及子域名') },
-                                { value: 'domain', label: tr('完整域名') },
-                                { value: 'ip', label: tr('IP 或网段') },
-                              ]}
-                              onChange={next =>
-                                changeRule(
-                                  index,
-                                  next === 'none'
-                                    ? { hostMatcher: undefined, hostValue: undefined }
-                                    : { hostMatcher: next as HostMatcher, hostValue: rule.hostValue ?? '' },
-                                )
-                              }
-                            />
-                          </div>
-                          {rule.hostMatcher && (
-                            <div className="flex flex-col gap-1.5">
-                              <Label>{tr("限定域名或 IP")}</Label>
-                              <Input
-                                required={rule.enabled}
-                                spellCheck={false}
-                                value={rule.hostValue ?? ''}
-                                placeholder={rule.hostMatcher === 'ip' ? '10.0.0.0/8' : 'example.com'}
-                                onChange={e => changeRule(index, { hostValue: e.target.value })}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <GlobalRuleList<RouteRule> rules={draft.rules} matchers={matcherOptions} apps={apps}
+                  targets={routeChoices(groups, nodes)} newRule={() => newRule(bindApplication)} overlay={ruleDialog}
+                  save={async rules => {
+                    const document = await air.saveRouting({ ...draft, rules }, revision, target)
+                    accept(document)
+                    showMessage({ type: 'success', title: tr('分流规则已保存') })
+                    return true
+                  }} />
 
                 <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                   {dirty && <Badge variant="warning" className="mr-auto">{tr('有未保存修改')}</Badge>}
