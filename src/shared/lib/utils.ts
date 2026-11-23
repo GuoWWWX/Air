@@ -5,6 +5,20 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export function formatDateTime(
+  value: number | string | Date | null | undefined,
+  options?: { seconds?: boolean },
+): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const date = value instanceof Date ? value : new Date(value)
+  const time = date.getTime()
+  if (!Number.isFinite(time)) return '—'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const datePart = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  const timePart = `${pad(date.getHours())}:${pad(date.getMinutes())}${options?.seconds ? `:${pad(date.getSeconds())}` : ''}`
+  return `${datePart} ${timePart}`
+}
+
 const protocolLabels: Record<string, string> = {
   http: 'HTTP',
   https: 'HTTPS',

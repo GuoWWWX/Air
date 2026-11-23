@@ -1,5 +1,6 @@
+import { tr } from '@/shared/i18n/messages'
 import { Play, Square } from 'lucide-react'
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion, useMotionValue, useReducedMotion, useTransform, type MotionValue } from 'motion/react'
 import { useState } from 'react'
 import { cn, formatCompactRate } from '@/shared/lib/utils'
 import type { ProxyPowerState, ProxyTraffic } from '@/shared/proxy/state'
@@ -94,17 +95,30 @@ export function DashboardPowerButton({
   status,
   pending,
   telemetry,
+  morphProgress,
   onToggle,
   disabled = false,
 }: {
   status: ProxyPowerState
   pending: 'start' | 'stop' | undefined
   telemetry?: Pick<ProxyTraffic, 'uploadRate' | 'downloadRate'> & { stale?: boolean }
+  morphProgress?: MotionValue<number>
   onToggle: () => void
   disabled?: boolean
 }) {
   const [hovered, setHovered] = useState(false)
   const [focusVisible, setFocusVisible] = useState(false)
+  const fallbackProgress = useMotionValue(0)
+  const progress = morphProgress ?? fallbackProgress
+  const reducedMotion = useReducedMotion()
+
+  const haloOpacity = useTransform(progress, [0, 0.52], [1, 0])
+  const haloScale = useTransform(progress, [0, 0.52], [1, reducedMotion ? 1 : 0.74])
+  const coreOpacity = useTransform(progress, [0, 0.22, 0.5, 0.82, 1], [1, 0.88, 0.5, 0.14, 0])
+  const coreY = useTransform(progress, [0, 1], [0, reducedMotion ? 0 : -14])
+  const coreScale = useTransform(progress, [0, 0.5, 1], [1, reducedMotion ? 1 : 0.9, reducedMotion ? 1 : 0.78])
+  const blobScaleX = useTransform(progress, [0, 0.55, 1], [1, reducedMotion ? 1 : 1.08, reducedMotion ? 1 : 1.18])
+  const blobScaleY = useTransform(progress, [0, 0.55, 1], [1, reducedMotion ? 1 : 0.82, reducedMotion ? 1 : 0.62])
 
   const switching = pending === 'start' || pending === 'stop'
   const phase =
@@ -125,18 +139,22 @@ export function DashboardPowerButton({
 
   const ariaLabel =
     phase === 'starting'
-      ? '正在启动代理…'
+      ? tr('正在启动代理…')
       : phase === 'stopping'
-        ? '正在停止代理…'
+        ? tr('正在停止代理…')
         : phase === 'running'
           ? telemetry && !telemetry.stale
-            ? `代理运行中 · ↑${formatCompactRate(telemetry.uploadRate)} ↓${formatCompactRate(telemetry.downloadRate)}（点击停止）`
-            : '代理运行中（点击停止）'
-          : '启动代理'
+            ? tr("代理运行中 · ↑{0} ↓{1}（点击停止）", formatCompactRate(telemetry.uploadRate), formatCompactRate(telemetry.downloadRate))
+            : tr('代理运行中（点击停止）')
+          : tr('启动代理')
 
   return (
     <div data-proxy-power={proxyPowerTone(status)} className="relative flex w-[104px] shrink-0 items-center justify-center select-none">
       <div className="relative grid size-[76px] place-items-center">
+        <motion.div
+          className="pointer-events-none absolute inset-0"
+          style={morphProgress ? { opacity: haloOpacity, scale: haloScale } : undefined}
+        >
         {/* 第 3 层：最外层卡片融合大波浪氛围底板（被卡片 overflow-hidden 柔和裁剪） */}
         <motion.svg
           viewBox="0 0 100 100"
@@ -277,7 +295,10 @@ export function DashboardPowerButton({
           )}
         </AnimatePresence>
 
+        </motion.div>
+
         {/* 核心可点击波浪按钮本体 */}
+        <motion.div style={morphProgress ? { opacity: coreOpacity, y: coreY, scale: coreScale } : undefined}>
         <motion.button
           type="button"
           aria-label={ariaLabel}
@@ -287,8 +308,12 @@ export function DashboardPowerButton({
           whileHover={switching ? undefined : { scale: 1.06 }}
           whileTap={switching || disabled ? undefined : { scale: 0.92 }}
           transition={{ type: 'spring', stiffness: 460, damping: 24 }}
-          onMouseEnter={() => setHovered(true)}
-          onMouseLeave={() => setHovered(false)}
+          onPointerEnter={event => {
+            if (event.pointerType === 'mouse') setHovered(true)
+          }}
+          onPointerLeave={event => {
+            if (event.pointerType === 'mouse') setHovered(false)
+          }}
           onFocus={event => setFocusVisible(event.currentTarget.matches(':focus-visible'))}
           onBlur={() => setFocusVisible(false)}
           onClick={onToggle}
@@ -297,6 +322,11 @@ export function DashboardPowerButton({
             switching ? 'cursor-wait' : 'cursor-pointer',
           )}
         >
+          <motion.div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={morphProgress ? { scaleX: blobScaleX, scaleY: blobScaleY } : undefined}
+          >
           {/* 10 瓣有机柔波本体 SVG + 内部流光裁剪 */}
           <motion.svg
             viewBox="0 0 100 100"
@@ -326,8 +356,8 @@ export function DashboardPowerButton({
           >
             <defs>
               <linearGradient id="dashboard-power-grad" x1="18%" y1="8%" x2="82%" y2="95%">
-                <stop offset="0%" stopColor="var(--proxy-power-highlight)" />
-                <stop offset="100%" stopColor="var(--proxy-power-depth)" />
+                <stop offset="0%" stopColor="var(--proxy-power-highlight)" className="transition-[stop-color] duration-400 ease-out" />
+                <stop offset="100%" stopColor="var(--proxy-power-depth)" className="transition-[stop-color] duration-400 ease-out" />
               </linearGradient>
               <linearGradient id="dashboard-power-sheen" x1="0%" y1="0%" x2="100%" y2="0%">
                 <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
@@ -382,6 +412,7 @@ export function DashboardPowerButton({
               )}
             </g>
           </motion.svg>
+          </motion.div>
 
           {/* 居中状态图标层（不随外框旋转） */}
           <AnimatePresence mode="wait" initial={false}>
@@ -441,6 +472,7 @@ export function DashboardPowerButton({
             )}
           </AnimatePresence>
         </motion.button>
+        </motion.div>
       </div>
     </div>
   )

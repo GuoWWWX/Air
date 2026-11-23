@@ -10,3 +10,20 @@
 [data-proxy-power="running"] { --proxy-power-color: #77879a; }
 [data-proxy-power="system-proxy"] { --proxy-power-color: #2f63e8; }
 [data-proxy-power="tun"] { --proxy-power-color: #008b78; }
+
+.dark [data-proxy-power],
+[data-theme="dark"] [data-proxy-power] {
+  --proxy-power-color: #4f5868;
+  --proxy-power-highlight: color-mix(in srgb, var(--proxy-power-color), white 22%);
+  --proxy-power-depth: color-mix(in srgb, var(--proxy-power-color), black 22%);
+  --proxy-power-surface: color-mix(in srgb, var(--proxy-power-color) 24%, var(--card, var(--surface)));
+  --proxy-power-ink: color-mix(in srgb, var(--proxy-power-color) 42%, var(--foreground, var(--ink)));
+  --proxy-power-border: color-mix(in srgb, var(--proxy-power-color) 54%, var(--border, var(--outline)));
+}
+
+.dark [data-proxy-power="running"],
+[data-theme="dark"] [data-proxy-power="running"] { --proxy-power-color: #8b9bb0; }
+.dark [data-proxy-power="system-proxy"],
+[data-theme="dark"] [data-proxy-power="system-proxy"] { --proxy-power-color: #3f72f5; }
+.dark [data-proxy-power="tun"],
+[data-theme="dark"] [data-proxy-power="tun"] { --proxy-power-color: #0fa38b; }

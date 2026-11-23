@@ -1,20 +1,23 @@
+import { preferences } from '@/shared/lib/preferences'
+import { diagnostic, tr, useLanguage } from '@/shared/i18n/messages'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, CalendarClock, ChevronDown, Copy, Download, Eye, Puzzle, QrCode, Check, CloudDownload, Code2, FileCode2, Network, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { stringify } from 'yaml'
-import { AnimatePresence, MotionConfig, motion } from 'motion/react'
+import { AnimatePresence, MotionConfig, animate, motion, useMotionValue, useTransform } from 'motion/react'
 import airLogo from '@/assets/air-m1.svg'
 import type { Page as Tab } from '@/shared/ui/app-navigation'
 import { Button } from '@/shared/ui/button'
 import { MessageViewport, showMessage } from '@/shared/ui/message'
 import { subscriptionLabel } from '@/shared/proxy/subscription-name'
 import { useCopyFeedback } from '@/shared/ui/CopySubscriptionLink'
-import { SubscriptionTool, type SubscriptionToolData } from '@/shared/ui/SubscriptionTool'
+import { SubscriptionToolBody, subscriptionToolLabels, type SubscriptionToolData } from '@/shared/ui/SubscriptionTool'
 import { downloadSubscription, emptyExtension, extendSubscription } from '@/shared/proxy/subscription-extension'
 import { useSubscriptionOrder } from '@/shared/proxy/useSubscriptionOrder'
 import { copySubscriptionText, native, onAndroid } from './bridge'
 import { waitForProxyPowerAnimation } from '@/shared/ui/ProxyPowerButton'
-import { id as createId, remoteSubscriptionName, type SubscriptionDownload, canStart, compile, defaultLibrary, effectiveYaml, membersOf, readLibrary, restoreLibrary, selection, withoutSubscription, yamlProfile, type Chain, type Choice, type Connection, type ExitInfo, type Group, type Library, type Node, type Subscription, type ProbeSample, type VpnStatus } from './model'
-import { Connections, Home, Nodes, PowerButton, Subscriptions, type ChainMeasurement, type PendingImport } from './views'
+import { ConnectionPolicySheet } from './connection-policy'
+import { id as createId, remoteSubscriptionName, type SubscriptionDownload, canStart, compile, defaultLibrary, effectiveYaml, membersOf, readLibrary, restoreLibrary, selection, withoutSubscription, yamlProfile, type Chain, type Choice, type Connection, type ExitInfo, type Group, type Library, type Mode, type Node, type Subscription, type ProbeSample, type VpnStatus } from './model'
+import { Connections, Home, HomeHeaderPower, NodeDensitySheet, Nodes, NodeScopeSheet, Subscriptions, type ChainMeasurement, type MobileNodeDensity, type MobileNodeScope, type PendingImport } from './views'
 import { ChainEditor, GroupEditor, ImportView, NodeEditor, YamlEditor, type SubscriptionImportRequest } from './workflows'
 import { BottomNavigation, Empty, Header, Row, Sheet, Tag } from './ui'
 import { validateNetwork, validateRouting } from './configuration'
@@ -22,18 +25,60 @@ import { NetworkSettings } from './network-settings'
 import { AboutSettings, ConfigSettings, KernelSettings, RoutingSettings, SettingsIndex, ThemeSettings, settingsTitles, type KernelInfo, type SettingsPage } from './settings'
 type Screen =
   | { kind: 'import' | 'yaml'; id?: string }
-  | { kind: 'content' | SettingsPage }
+  | { kind: SettingsPage }
 type Dialog =
   | { kind: 'node'; node?: Node }
   | { kind: 'group'; group?: Group }
+  | { kind: 'scope' | 'nodeDensity' }
   | { kind: 'source' | 'deleteSource'; id: string }
   | { kind: 'chain' | 'join' }
+  | { kind: 'connection'; id: string; snapshot: Connection }
+  | { kind: 'tool'; name: string; data: SubscriptionToolData; key: string }
   | { kind: 'delete'; label: string; apply: () => void }
 
 const emptyStatus: VpnStatus = { phase: 'idle', startedAt: 0, traffic: {} }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 const defaultKernel: KernelInfo = { version: '1.19.34', appVersion: '1.0.2', sdk: 35, abi: 'Android' }
+const PROBE_REQUEST_SIZE = 72
+const MANUAL_PROBE_COALESCE_MS = 80
 type MonitorResult = { at: number; available: number; checked: number; error?: string; samples?: Record<string, ProbeSample[]> }
+
+function mergeProbeSamples(base: Library['probes'], samples: Record<string, ProbeSample>): Library['probes'] {
+  const next = { ...base }
+  const cutoff = Date.now() - 86_400_000
+  for (const [id, sample] of Object.entries(samples)) {
+    const existing = (next[id] ?? []).filter(old => old.at > cutoff)
+    if (existing.some(old => old.at === sample.at && old.delay === sample.delay)) {
+      next[id] = existing
+      continue
+    }
+    next[id] = [...existing, sample].sort((a, b) => a.at - b.at).slice(-96)
+  }
+  return next
+}
+
+function loadMobileNodeScope(): MobileNodeScope {
+  try {
+    const parsed: unknown = JSON.parse(preferences.getItem('air.mobile.nodeScope') ?? 'null')
+    if (parsed && typeof parsed === 'object') {
+      const item = parsed as Record<string, unknown>
+      if (item.kind === 'all') return { kind: 'all' }
+      if (item.kind === 'source' && typeof item.sourceId === 'string') return { kind: 'source', sourceId: item.sourceId }
+      if (item.kind === 'group' && typeof item.groupId === 'string') return { kind: 'group', groupId: item.groupId }
+    }
+  } catch { /* Ignore invalid saved scope. */ }
+  return { kind: 'all' }
+}
+
+function loadMobileConnectionsFilter(): 'all' | 'ok' | 'warn' {
+  const saved = preferences.getItem('air.mobile.connectionsFilter')
+  return saved === 'ok' || saved === 'warn' ? saved : 'all'
+}
+
+function loadMobileNodeDensity(): MobileNodeDensity {
+  const saved = preferences.getItem('air.mobile.nodeDensity')
+  return saved === 'compact' || saved === 'detailed' ? saved : 'normal'
+}
 
 function monitorPlan(library: Library, model = readLibrary(library), config = compile(library, model)) {
   return {
@@ -44,10 +89,10 @@ function monitorPlan(library: Library, model = readLibrary(library), config = co
 }
 
 export function App() {
+  useLanguage()
   const [tab, setTab] = useState<Tab>('home')
   const [screen, setScreen] = useState<Screen>()
   const { copied, copy } = useCopyFeedback(copySubscriptionText)
-  const [tool, setTool] = useState<{ name: string; data: SubscriptionToolData }>()
   const [dialog, setDialog] = useState<Dialog>()
   const [library, setLibrary] = useState<Library>(defaultLibrary)
   const { sorted: sortedSources, move: moveSource } = useSubscriptionOrder(library.sources)
@@ -59,7 +104,46 @@ export function App() {
   const [chainMeasurement, setChainMeasurement] = useState<ChainMeasurement>()
   const [busy, setBusy] = useState(false)
   const [powerPending, setPowerPending] = useState<'start' | 'stop'>()
+  const powerPendingRef = useRef<'start' | 'stop' | undefined>(undefined)
+  const targetHeaderPowerWidth = status.phase === 'running' && !powerPending ? 132 : 104
+  const homePowerProgress = useMotionValue(0)
+  const homePowerWidth = useMotionValue(targetHeaderPowerWidth)
+  const homeStatusShift = useTransform([homePowerProgress, homePowerWidth], ([p, w]: number[]) => {
+    if (p <= 0.001) return 0
+    const visibleWidth = 36 + (w - 36) * p
+    return -(visibleWidth + 6) * Math.min(1, p / 0.18)
+  })
+  useEffect(() => {
+    const controls = animate(homePowerWidth, targetHeaderPowerWidth, { type: 'spring', stiffness: 420, damping: 32 })
+    return () => controls.stop()
+  }, [homePowerWidth, targetHeaderPowerWidth])
+  useEffect(() => {
+    if (tab !== 'home' || Boolean(screen)) homePowerProgress.set(0)
+  }, [tab, screen, homePowerProgress])
   const [probing, setProbing] = useState<string[]>([])
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null)
+  const probeRunId = useRef(0)
+  const probeLoopRunning = useRef(false)
+  const probeCancel = useRef<Promise<unknown> | undefined>(undefined)
+  const manualQueueRef = useRef<string[]>([])
+  const manualCoalesceTimer = useRef<number | null>(null)
+  const activeManualIdsRef = useRef(new Set<string>())
+  const activeBatchIdsRef = useRef(new Set<string>())
+  const activeCustomIdsRef = useRef(new Set<string>())
+  const batchQueueRef = useRef<{ ids: string[]; total: number; done: number } | null>(null)
+  const customTasksRef = useRef<Array<{
+    ids: string[]
+    libraryForTest: Library
+    notify?: 'nodeTest' | 'chainTest'
+    resolve: (value: number | undefined) => void
+    reject: (error: unknown) => void
+  }>>([])
+  useEffect(() => () => {
+    if (manualCoalesceTimer.current !== null) {
+      window.clearTimeout(manualCoalesceTimer.current)
+      manualCoalesceTimer.current = null
+    }
+  }, [])
   const [refreshing, setRefreshing] = useState<string[]>([])
   const [pendingImports, setPendingImports] = useState<PendingImport[]>([])
   const lastStatusError = useRef<string | undefined>(undefined)
@@ -67,18 +151,61 @@ export function App() {
   const [backgroundResult, setBackgroundResult] = useState<MonitorResult>()
   const monitorAt = useRef(0)
   const [checked, setChecked] = useState<string[]>([])
+  const [nodesSelecting, setNodesSelecting] = useState(false)
   const [search, setSearch] = useState('')
-  const [sourceFilter, setSourceFilter] = useState('')
+  const [nodesFilterOpen, setNodesFilterOpen] = useState(false)
+  const [nodeScope, setNodeScope] = useState<MobileNodeScope>(loadMobileNodeScope)
+  const [nodeDensity, setNodeDensity] = useState<MobileNodeDensity>(loadMobileNodeDensity)
+  const [connectionsFilter, setConnectionsFilter] = useState<'all' | 'ok' | 'warn'>(loadMobileConnectionsFilter)
+  const [connectionsQuery, setConnectionsQuery] = useState('')
   const working = useRef(false)
+  const writeChain = useRef<Promise<unknown>>(Promise.resolve())
+  const refreshingSet = useRef(new Set<string>())
+  const prevConnSample = useRef<{ at: number; map: Map<string, { upload: number; download: number }> } | null>(null)
+  const current = useRef(library)
+  current.current = library
   const outboundRevision = useRef(0)
+  const modeSwitchToken = useRef(0)
+  const modeSwitchPending = useRef(0)
+  const modeRollbackRef = useRef<Mode>(library.mode)
   const [darkSystem, setDarkSystem] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
-  const model = useMemo(() => readLibrary(library), [library])
+  const model = useMemo(() => readLibrary(library), [library.sources, library.nodes, library.groups, library.hiddenNodes, library.edits])
   const choice = useMemo(() => selection(library, model), [library, model])
   const compiled = useMemo(() => compile(library, model), [library, model])
   const running = status.phase === 'running'
   const dark = library.theme === 'dark' || library.theme === 'system' && darkSystem
   const screenSource = screen && 'id' in screen && library.sources.find(source => source.id === screen.id) || undefined
-  const selectedNodes = model.nodes.filter(node => library.sourceFilter.includes(node.sourceId))
+  const visibleSourceSet = useMemo(() => new Set(library.sourceFilter), [library.sourceFilter])
+  const visibleSources = useMemo(
+    () => sortedSources.filter(source => visibleSourceSet.has(source.id)),
+    [sortedSources, visibleSourceSet],
+  )
+  const visibleLibraryNodes = useMemo(
+    () => model.nodes.filter(node => node.sourceId === 'custom' || visibleSourceSet.has(node.sourceId)),
+    [model.nodes, visibleSourceSet],
+  )
+  const hiddenSubscriptionCount = Math.max(0, sortedSources.length - visibleSources.length)
+
+  useEffect(() => {
+    preferences.setItem('air.mobile.nodeScope', JSON.stringify(nodeScope))
+  }, [nodeScope])
+
+  useEffect(() => {
+    preferences.setItem('air.mobile.connectionsFilter', connectionsFilter)
+  }, [connectionsFilter])
+
+  useEffect(() => {
+    if (!loaded) return
+    if (nodeScope.kind === 'source' && nodeScope.sourceId !== 'custom' &&
+        !visibleSourceSet.has(nodeScope.sourceId)) {
+      setNodeScope({ kind: 'all' })
+    } else if (nodeScope.kind === 'group') {
+      const group = model.groups.find(item => item.id === nodeScope.groupId)
+      if (!group || (group.sourceId && !visibleSourceSet.has(group.sourceId))) {
+        setNodeScope({ kind: 'all' })
+      }
+    }
+  }, [loaded, nodeScope, visibleSourceSet, model.groups])
 
   useEffect(() => {
     let active = true
@@ -86,23 +213,34 @@ export function App() {
       if (!active) return
       const data = restoreLibrary(saved)
       const renamed = data.sources.some((source, index) => source.name !== saved.sources?.[index]?.name)
-      if (renamed || (upgradeMonitorPlan && data.monitoring)) {
+      const migrated = saved.networkVersion !== data.networkVersion
+      if (renamed || migrated || (upgradeMonitorPlan && data.monitoring)) {
         await native('save', { ...data, monitorPlan: data.monitoring ? monitorPlan(data) : undefined })
         if (!active) return
       }
+      current.current = data
       setLibrary(data)
       setLoaded(true)
     }).catch(error => {
       if (!active) return
       const text = errorText(error)
       setLoadError(text)
-      showMessage({ type: 'error', title: '读取节点库失败', description: text })
+      showMessage({ type: 'error', title: tr('读取节点库失败'), description: text })
     })
     void native<KernelInfo>('kernelInfo').then(info => { if (active) setKernelInfo(info) }).catch(() => undefined)
     const media = matchMedia('(prefers-color-scheme: dark)')
     const update = () => setDarkSystem(media.matches)
+    const onNativeSystemTheme = (event: Event) => {
+      const detail = (event as CustomEvent<{ dark?: boolean }>).detail
+      if (typeof detail?.dark === 'boolean') setDarkSystem(detail.dark)
+    }
     media.addEventListener('change', update)
-    return () => { active = false; media.removeEventListener('change', update) }
+    window.addEventListener('air-system-theme', onNativeSystemTheme)
+    return () => {
+      active = false
+      media.removeEventListener('change', update)
+      window.removeEventListener('air-system-theme', onNativeSystemTheme)
+    }
   }, [])
 
   useEffect(() => {
@@ -131,9 +269,28 @@ export function App() {
   }, [loaded, library.monitoring])
 
   useLayoutEffect(() => {
+    if (!loaded) return
     document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-    void native('theme', { dark }).catch(() => undefined)
-  }, [dark])
+    try { localStorage.setItem('air.bootTheme', library.theme) } catch {}
+    void native('theme', { mode: library.theme, dark }).catch(() => undefined)
+  }, [dark, loaded, library.theme])
+
+  const readySent = useRef(false)
+  useEffect(() => {
+    if (readySent.current || (!loaded && !loadError)) return
+    readySent.current = true
+    void native('ready').catch(() => undefined)
+  }, [loaded, loadError])
+
+  useEffect(() => {
+    if (!onAndroid || !loaded || status.phase !== 'idle' || !canStart(library, choice)) return
+    const timer = window.setTimeout(() => {
+      if (!document.hidden && !working.current) {
+        void native('prepareProxy', compiled.plan).catch(() => undefined)
+      }
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [loaded, status.phase, library, choice, compiled.plan])
 
   useEffect(() => {
     let gone = false
@@ -143,7 +300,7 @@ export function App() {
       nowSampling = true
       try {
         const next = await native<VpnStatus>('status')
-        if (!gone) setStatus(next)
+        if (!gone && !powerPendingRef.current) setStatus(next)
       } catch { /* Retain the last status during a WebView pause. */ }
       finally { nowSampling = false }
     }
@@ -154,34 +311,103 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    if (!running || screen || (tab !== 'home' && tab !== 'connections')) {
+      prevConnSample.current = null
+      return
+    }
     let cancelled = false
     let sampling = false
-    if (!running) return
     async function connections() {
       if (document.hidden || sampling) return
       sampling = true
       try {
         const response = await native<{ connections?: Connection[]; applications?: Record<string, { name: string; icon?: string }> }>('connections')
         if (cancelled) return
-        const active = (response.connections ?? []).map((row): Connection => {
+        const nowAt = performance.now()
+        const wallNow = Date.now()
+        const prev = prevConnSample.current
+        const dt = prev ? Math.max(0.25, (nowAt - prev.at) / 1000) : 0
+        const nextMap = new Map<string, { upload: number; download: number }>()
+        const timeOf = (row: Connection) => {
+          const parsed = row.start ? Date.parse(row.start) : Number.NaN
+          return Number.isFinite(parsed) ? parsed : (row.firstSeenAt ?? 0)
+        }
+        const rows = (response.connections ?? []).map((row): Connection => {
           const app = response.applications?.[row.metadata.process ?? '']
           return app ? { ...row, appName: app.name, appIcon: app.icon } : row
         })
+        const sampledClosed = new Map(rows.filter(row => row.closed).map(row => [row.id, row]))
+        const active = rows.filter(row => !row.closed).map((row): Connection => {
+          nextMap.set(row.id, { upload: row.upload, download: row.download })
+          const old = prev?.map.get(row.id)
+          let upRate = 0
+          let downRate = 0
+          const startedMs = row.start ? Date.parse(row.start) : Number.NaN
+          if (old && dt > 0) {
+            upRate = Math.max(0, (row.upload - old.upload) / dt)
+            downRate = Math.max(0, (row.download - old.download) / dt)
+          } else if (Number.isFinite(startedMs)) {
+            const ageSec = (wallNow - startedMs) / 1000
+            if (ageSec >= 0 && ageSec <= 5) {
+              const span = Math.max(1, ageSec)
+              upRate = Math.max(0, row.upload / span)
+              downRate = Math.max(0, row.download / span)
+            }
+          }
+          return {
+            ...row,
+            firstSeenAt: Number.isFinite(startedMs) ? startedMs : wallNow,
+            upRate,
+            downRate,
+          }
+        })
+        prevConnSample.current = { at: nowAt, map: nextMap }
         const ids = new Set(active.map(row => row.id))
-        setHistory(previous => [...active, ...previous.filter(row => !ids.has(row.id)).map(row => ({ ...row, closed: true }))].slice(0, 80))
+        setHistory(previous => {
+          const previousMap = new Map(previous.map(row => [row.id, row]))
+          const nextActive = active.map(row => {
+            const existing = previousMap.get(row.id)
+            return existing?.firstSeenAt ? { ...row, firstSeenAt: existing.firstSeenAt } : row
+          })
+          const nextClosed = new Map<string, Connection>()
+          for (const row of [...previous, ...sampledClosed.values()]) {
+            if (ids.has(row.id)) continue
+            const latest = sampledClosed.get(row.id) ?? row
+            const old = previousMap.get(row.id)
+            nextClosed.set(row.id, {
+              ...latest,
+              closed: true,
+              closedAt: old?.closedAt ?? latest.closedAt ?? wallNow,
+              firstSeenAt: old?.firstSeenAt ?? latest.firstSeenAt,
+              upRate: 0,
+              downRate: 0,
+            })
+          }
+          const combined = [...nextActive, ...nextClosed.values()].sort((a, b) => timeOf(b) - timeOf(a))
+          if (combined.length <= 500) return combined
+          const trimmedActive = combined.filter(row => !row.closed)
+          const remainingSlots = Math.max(0, 500 - trimmedActive.length)
+          return [...trimmedActive, ...combined.filter(row => row.closed).slice(0, remainingSlots)]
+            .sort((a, b) => timeOf(b) - timeOf(a))
+        })
       } catch { /* A connection can end while an update is in progress. */ }
       finally { sampling = false }
     }
     void connections()
-    const tick = setInterval(() => void connections(), tab === 'connections' ? 1400 : 2500)
-    return () => { cancelled = true; clearInterval(tick) }
-  }, [running, tab, status.startedAt])
+    document.addEventListener('visibilitychange', connections)
+    const tick = setInterval(() => void connections(), 1500)
+    return () => { cancelled = true; clearInterval(tick); document.removeEventListener('visibilitychange', connections) }
+  }, [running, tab, screen, status.startedAt])
 
   useEffect(() => {
-    if (!running) { setExitInfo(undefined); return }
+    setHistory([])
+  }, [running, status.startedAt])
+
+  useEffect(() => {
+    if (!running) { setExitInfo(undefined); prevConnSample.current = null; return }
     const revision = ++outboundRevision.current
     setExitInfo(undefined)
-    setHistory([])
+    prevConnSample.current = null
     void native<ExitInfo>('exit', { mode: library.mode }).then(result => {
       if (revision === outboundRevision.current) setExitInfo(result)
     }).catch(() => undefined)
@@ -190,14 +416,19 @@ export function App() {
 
   useEffect(() => {
     const back = (event: Event) => {
-      if (tool) { event.preventDefault(); setTool(undefined) }
-      else if (dialog) { event.preventDefault(); setDialog(undefined) }
+      if (dialog) { event.preventDefault(); setDialog(undefined) }
       else if (screen) { event.preventDefault(); setScreen(undefined) }
       else if (tab !== 'home') { event.preventDefault(); setTab('home') }
     }
     window.addEventListener('air-back', back)
     return () => window.removeEventListener('air-back', back)
-  }, [dialog, screen, tab, tool])
+  }, [dialog, screen, tab])
+
+  function enqueueWrite<T>(work: () => Promise<T>): Promise<T> {
+    const run = writeChain.current.then(work, work)
+    writeChain.current = run.catch(() => undefined)
+    return run
+  }
 
   async function task(work: () => Promise<unknown>) {
     if (!loaded || working.current) return
@@ -221,53 +452,115 @@ export function App() {
     next = { ...next, sources }
     const nextModel = readLibrary(next)
     const nextConfig = compile(next, nextModel)
-    if (applyLive && !canStart(next, nextConfig.choice)) throw new Error('请先停止代理，再移除最后一个可用出站')
+    if (applyLive && !canStart(next, nextConfig.choice)) throw new Error(tr('请先停止代理，再移除最后一个可用出站'))
     if (applyLive) await native('apply', nextConfig.plan)
     try {
       await native('save', { ...next, monitorPlan: next.monitoring ? monitorPlan(next, nextModel, nextConfig) : undefined })
       current.current = next
       setLibrary(next)
     } catch (error) {
-      if (applyLive) await native('apply', compiled.plan).catch(() => undefined)
+      if (applyLive) await native('apply', compile(current.current).plan).catch(() => undefined)
       throw error
     }
+  }
+
+  function commit(build: (latest: Library) => Library, applyLive = running) {
+    return enqueueWrite(() => save(build(current.current), applyLive))
+  }
+
+  function changeOutbound(patch: Partial<Pick<Library, 'choice' | 'mode'>>) {
+    return enqueueWrite(async () => {
+      const previous = current.current
+      const next = { ...previous, ...patch }
+      const nextConfig = compile(next, readLibrary(next))
+      if (running) {
+        if (!canStart(next, nextConfig.choice)) throw new Error(tr('请先导入订阅或添加节点'))
+        await native('apply', nextConfig.plan)
+      }
+      try {
+        await native('saveOutbound', { choice: next.choice ?? null, mode: next.mode })
+      } catch (error) {
+        if (running) await native('apply', compile(previous).plan).catch(() => undefined)
+        throw error
+      }
+      current.current = next
+      setLibrary(next)
+    })
+  }
+
+  function switchMode(nextMode: Mode) {
+    if (!loaded || working.current || nextMode === current.current.mode) return
+    if (modeSwitchPending.current === 0) {
+      modeRollbackRef.current = current.current.mode
+    }
+    const token = ++modeSwitchToken.current
+    modeSwitchPending.current += 1
+    const optimistic = { ...current.current, mode: nextMode }
+    current.current = optimistic
+    setLibrary(optimistic)
+
+    void enqueueWrite(async () => {
+      if (token !== modeSwitchToken.current) return
+      const latest = current.current
+      const previous = { ...latest, mode: modeRollbackRef.current }
+      const next = { ...latest, mode: nextMode }
+      const nextConfig = compile(next, readLibrary(next))
+      if (running) {
+        if (!canStart(next, nextConfig.choice)) throw new Error(tr('请先导入订阅或添加节点'))
+        await native('apply', nextConfig.plan)
+      }
+      try {
+        await native('saveOutbound', { choice: next.choice ?? null, mode: next.mode })
+      } catch (error) {
+        if (running) await native('apply', compile(previous).plan).catch(() => undefined)
+        throw error
+      }
+      modeRollbackRef.current = next.mode
+    })
+      .catch(error => {
+        if (token === modeSwitchToken.current) {
+          const reverted = { ...current.current, mode: modeRollbackRef.current }
+          current.current = reverted
+          setLibrary(reverted)
+          showMessage({ type: 'error', title: errorText(error) })
+        }
+      })
+      .finally(() => {
+        modeSwitchPending.current = Math.max(0, modeSwitchPending.current - 1)
+      })
   }
 
   function saveConfiguration(next: Library, apply: boolean) {
     void task(async () => {
       validateNetwork(next.network)
       validateRouting(next.routing)
-      if (kernelInfo.sdk < 33 && next.network.routeExcludeAddress.length) throw new Error('绕过网段需要 Android 13 或更新版本')
+      if (kernelInfo.sdk < 33 && next.network.routeExcludeAddress.length) throw new Error(tr('绕过网段需要 Android 13 或更新版本'))
       if (kernelInfo.sdk < 29 && next.routing.rules.some(rule => rule.enabled && rule.matcher === 'processName')) {
-        throw new Error('按应用包名分流需要 Android 10 或更新版本')
+        throw new Error(tr('按应用包名分流需要 Android 10 或更新版本'))
       }
       const effective = compile(next)
       const targets = [next.routing.fallback, ...next.routing.rules.filter(rule => rule.enabled).map(rule => rule.target)]
-      if (targets.some(target => 'id' in target && !effective.byId.has(target.id))) throw new Error('有规则指向不可用的分组或链路')
-      if (targets.some(target => target.kind === 'subscription') && !next.sources.some(source => source.id === next.routing.subscriptionId)) {
-        throw new Error('请选择可用的订阅规则来源')
-      }
+      if (targets.some(target => 'id' in target && !effective.byId.has(target.id))) throw new Error(tr('有规则指向不可用的分组或链路'))
       if (onAndroid) await native('validatePlan', { plan: effective.plan })
-      await save(next, running && apply)
-      notice(running && !apply ? '已保存，下次启动代理生效' : '配置已保存')
+      await commit(latest => ({ ...latest, network: next.network, routing: next.routing, monitoring: next.monitoring }), running && apply)
+      notice(running && !apply ? tr('已保存，下次启动代理生效') : tr('配置已保存'))
     })
   }
 
-  const change = (next: Library, apply = true) => { void task(() => save(next, running && apply)) }
+  const change = (next: Library, apply = true) => { void task(() => enqueueWrite(() => save(next, running && apply))) }
   const notice = (title: string) => showMessage({ type: 'success', title })
-  const go = (next: Tab) => { setTab(next); setScreen(undefined); setDialog(undefined) }
+  const go = (next: Tab) => { setTab(next); setScreen(undefined); setDialog(undefined); setNodesSelecting(false); setChecked([]) }
   const importSub = () => { setDialog(undefined); setTab('subscriptions'); setScreen({ kind: 'import' }) }
   function choose(outbound: Choice) {
     void task(async () => {
-      await save({ ...library, choice: outbound })
+      await changeOutbound({ choice: outbound })
       setDialog(undefined)
-      notice('已设为当前出站')
     })
   }
 
   function togglePower() {
     if (!running && !canStart(library, choice)) {
-      showMessage({ type: 'info', title: '请先导入订阅或添加节点' })
+      showMessage({ type: 'info', title: tr('请先导入订阅或添加节点') })
       if (model.nodes.length) go('nodes')
       else importSub()
       return
@@ -275,13 +568,22 @@ export function App() {
     void task(async () => {
       const action = running ? 'stop' : 'start'
       const startedAt = performance.now()
+      powerPendingRef.current = action
       setPowerPending(action)
       try {
-        if (action === 'stop') await native('stop')
-        else await native('start', compiled.plan)
-        if (!document.hidden) await waitForProxyPowerAnimation(action, startedAt)
-        setStatus(await native<VpnStatus>('status'))
+        if (action === 'start') {
+          const next = await native<VpnStatus>('start', compiled.plan)
+          if (!document.hidden && next.phase === 'running') {
+            await waitForProxyPowerAnimation(action, startedAt)
+          }
+          setStatus(next)
+        } else {
+          await native('stop')
+          if (!document.hidden) await waitForProxyPowerAnimation(action, startedAt)
+          setStatus(await native<VpnStatus>('status'))
+        }
       } finally {
+        powerPendingRef.current = undefined
         setPowerPending(undefined)
       }
     })
@@ -291,14 +593,13 @@ export function App() {
     void task(async () => {
       const value = await native<ExitInfo>('exit', { mode: library.mode })
       setExitInfo(value)
-      notice('已验证出口 IP')
     })
   }
 
   useEffect(() => {
     if (status.error && status.error !== lastStatusError.current) {
       lastStatusError.current = status.error
-      showMessage({ type: 'error', title: '代理异常', description: status.error })
+      showMessage({ type: 'error', title: tr('代理异常'), description: diagnostic(status.error) })
     } else if (!status.error) {
       lastStatusError.current = undefined
     }
@@ -311,7 +612,7 @@ export function App() {
   function startImport(request: SubscriptionImportRequest) {
     const taskId = createId()
     const url = request.url
-    const host = url ? (() => { try { return new URL(url).hostname || url } catch { return url } })() : (request.file?.name || request.source?.name || '本地订阅')
+    const host = url ? (() => { try { return new URL(url).hostname || url } catch { return url } })() : (request.file?.name || request.source?.name || tr('本地订阅'))
     const label = request.name.trim() || request.source?.name || host
     setPendingImports(previous => [{ id: taskId, label, detail: host }, ...previous])
     setScreen(undefined)
@@ -323,14 +624,14 @@ export function App() {
         const source = request.source ? snapshot.sources.find(item => item.id === request.source!.id) ?? request.source : undefined
         const picked = request.kind === 'file' ? request.file : undefined
         const existing = url ? snapshot.sources.find(item => item.url === url && item.id !== source?.id) : undefined
-        if (source && existing && url !== source.url) throw new Error('这个链接已用于另一条订阅')
+        if (source && existing && url !== source.url) throw new Error(tr('这个链接已用于另一条订阅'))
         const previous = source ?? existing
         const requested = source && source.name === request.name.trim() ? '' : request.name.trim()
 
         let built: Subscription
         let nodeCount: number | undefined
         if (source && !picked && url === source.url) {
-          const localBase = requested || source.baseName || source.name || '本地订阅'
+          const localBase = requested || source.baseName || source.name || tr('本地订阅')
           const localName = { ...subscriptionLabel(localBase, snapshot.sources, source), autoName: false }
           built = { ...source, ...(url ? remoteSubscriptionName(url, requested, snapshot.sources, undefined, source) : localName) }
         } else {
@@ -342,7 +643,7 @@ export function App() {
           const keepEdit = Boolean(previous?.edited && !picked)
           const latestSources = current.current.sources
           const latestPrevious = previous ? latestSources.find(item => item.id === previous.id) ?? previous : undefined
-          const localBase = requested || latestPrevious?.baseName || latestPrevious?.name || picked?.name || '本地订阅'
+          const localBase = requested || latestPrevious?.baseName || latestPrevious?.name || picked?.name || tr('本地订阅')
           const localName = { ...subscriptionLabel(localBase, latestSources, latestPrevious), autoName: false }
           built = {
             ...latestPrevious,
@@ -360,35 +661,27 @@ export function App() {
           }
         }
 
-        // 等待正在进行的其他写操作释放后再安全合并最新状态
-        while (working.current) {
-          await new Promise(resolve => window.setTimeout(resolve, 60))
-        }
-        working.current = true
-        setBusy(true)
-        try {
+        const saved = await enqueueWrite(async () => {
           const latest = current.current
           const exists = latest.sources.some(old => old.id === built.id)
-          const saved = { ...built, ...subscriptionLabel(built.baseName ?? built.name, latest.sources, built) }
+          const entry = { ...built, ...subscriptionLabel(built.baseName ?? built.name, latest.sources, built) }
           const next: Library = {
             ...latest,
-            sources: exists ? latest.sources.map(old => old.id === built.id ? saved : old) : [...latest.sources, saved],
-            sourceFilter: exists ? latest.sourceFilter : [...latest.sourceFilter, saved.id],
+            sources: exists ? latest.sources.map(old => old.id === built.id ? entry : old) : [...latest.sources, entry],
+            sourceFilter: exists ? latest.sourceFilter : [...latest.sourceFilter, entry.id],
           }
           await save(next)
-          showMessage({
-            type: 'success',
-            title: exists ? `已保存订阅 · ${saved.name}` : `订阅已导入 · ${saved.name}`,
-            description: nodeCount !== undefined ? `${nodeCount} 个节点` : undefined,
-          })
-        } finally {
-          working.current = false
-          setBusy(false)
-        }
+          return { entry, exists }
+        })
+        showMessage({
+          type: 'success',
+          title: saved.exists ? tr("已保存订阅 · {0}", saved.entry.name) : tr("订阅已导入 · {0}", saved.entry.name),
+          description: nodeCount !== undefined ? tr("{0} 个节点", nodeCount) : undefined,
+        })
       } catch (error) {
         showMessage({
           type: 'error',
-          title: `导入订阅失败 · ${label}`,
+          title: tr("导入订阅失败 · {0}", label),
           description: errorText(error),
         })
       } finally {
@@ -398,50 +691,87 @@ export function App() {
   }
 
   const nextAutoCheck = useRef(0)
-  const current = useRef(library)
-  current.current = library
 
   function refresh(sources: Subscription[], automatic = false) {
-    void task(async () => {
-      setRefreshing(sources.filter(source => source.url).map(source => source.id))
+    const targets = sources.filter(source => source.url && !refreshingSet.current.has(source.id))
+    if (!targets.length) return
+
+    for (const source of targets) refreshingSet.current.add(source.id)
+    setRefreshing([...refreshingSet.current])
+
+    const singleManual = !automatic && sources.length === 1 && targets.length === 1
+    const errors: string[] = []
+    let count = 0
+
+    const jobs = targets.map(async source => {
+      const matches = (item: Subscription) => item.id === source.id && item.updated === source.updated &&
+        item.url === source.url && (!automatic || item.autoUpdate !== false)
       try {
-        let count = 0
-        const errors: string[] = []
-        for (const source of sources.filter(source => source.url)) {
-          const matches = (item: Subscription) => item.id === source.id && item.updated === source.updated &&
-            item.url === source.url && (!automatic || item.autoUpdate !== false)
-          if (!current.current.sources.some(matches)) continue
-          try {
-            const staged = automatic ? await native<SubscriptionDownload | null>('stagedSubscription', {
-              id: source.id, url: source.url, updated: source.updated,
-            }) : null
-            const response = staged ?? await native<SubscriptionDownload>('fetch', { url: source.url })
-            yamlProfile(response.text)
-            const latest = current.current
-            const original = latest.sources.find(matches)
-            if (!original) continue
-            const next = { ...original, ...remoteSubscriptionName(source.url!, '', latest.sources, response.profileTitle, original),
-              yaml: original.edited ? original.yaml : response.text,
-              original: response.text, usage: response.usage, intervalHours: response.intervalHours,
-              updated: Date.now(), attempted: Date.now(), refreshError: undefined }
-            await save({ ...latest, sources: latest.sources.map(item => item.id === next.id ? next : item) })
-            count++
-          } catch (error) {
-            const reason = errorText(error)
-            errors.push(source.name + '：' + reason)
-            const latest = current.current
-            if (latest.sources.some(matches)) await save({ ...latest, sources: latest.sources.map(item => matches(item) ?
-              { ...item, attempted: Date.now(), refreshError: reason } : item) }, false)
+        const staged = automatic ? await native<SubscriptionDownload | null>('stagedSubscription', {
+          id: source.id, url: source.url, updated: source.updated,
+        }) : null
+        const response = staged ?? await native<SubscriptionDownload>('fetch', { url: source.url })
+        yamlProfile(response.text)
+        let syncedName: string | undefined
+        await enqueueWrite(async () => {
+          const latest = current.current
+          const original = latest.sources.find(matches)
+          if (!original) return
+          const next: Subscription = {
+            ...original,
+            ...remoteSubscriptionName(source.url!, '', latest.sources, response.profileTitle, original),
+            yaml: original.edited ? original.yaml : response.text,
+            original: response.text,
+            usage: response.usage,
+            intervalHours: response.intervalHours,
+            updated: Date.now(),
+            attempted: Date.now(),
+            refreshError: undefined,
           }
+          await save({ ...latest, sources: latest.sources.map(item => item.id === next.id ? next : item) })
+          syncedName = next.name
+        })
+        if (syncedName) {
+          count++
+          if (singleManual) showMessage({ type: 'success', title: tr("已同步「{0}」", syncedName) })
         }
-        if (!automatic && errors.length) throw new Error(errors.join('；'))
-        if (!automatic && count) notice('订阅已同步')
-      } finally { setRefreshing([]) }
+      } catch (error) {
+        const reason = errorText(error)
+        errors.push(source.name + '：' + reason)
+        await enqueueWrite(async () => {
+          const latest = current.current
+          if (!latest.sources.some(matches)) return
+          await save({
+            ...latest,
+            sources: latest.sources.map(item => matches(item) ? { ...item, attempted: Date.now(), refreshError: reason } : item),
+          }, false)
+        }).catch(() => undefined)
+        if (singleManual) {
+          showMessage({ type: 'error', title: tr("刷新失败 · {0}", source.name), description: reason })
+        }
+      } finally {
+        refreshingSet.current.delete(source.id)
+        setRefreshing([...refreshingSet.current])
+      }
     })
+
+    if (!automatic && !singleManual) {
+      void Promise.allSettled(jobs).then(() => {
+        if (errors.length) {
+          showMessage({
+            type: 'error',
+            title: count ? tr("已同步 {0} 个，{1} 个失败", count, errors.length) : tr('刷新订阅失败'),
+            description: errors.join('；'),
+          })
+        } else if (count) {
+          notice(tr('全部订阅已同步'))
+        }
+      })
+    }
   }
 
   useEffect(() => {
-    if (!loaded || !onAndroid || screen || dialog || tool) return
+    if (!loaded || !onAndroid || screen || dialog) return
     function check() {
       if (working.current || document.hidden || Date.now() < nextAutoCheck.current) return
       const now = Date.now()
@@ -454,185 +784,550 @@ export function App() {
     const timer = window.setInterval(check, 60_000)
     document.addEventListener('visibilitychange', check)
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', check) }
-  }, [loaded, library, screen, dialog, tool, running])
+  }, [loaded, library, screen, dialog, running])
 
   function replaceYaml(source: Subscription, text: string, edited: boolean) {
     void task(async () => {
       yamlProfile(text)
-      await save({ ...library, sources: library.sources.map(old => old.id === source.id ? { ...old, yaml: text, edited, autoUpdate: edited ? false : old.autoUpdate } : old) })
+      await commit(latest => ({
+        ...latest,
+        sources: latest.sources.map(old => old.id === source.id ? { ...old, yaml: text, edited, autoUpdate: edited ? false : old.autoUpdate } : old),
+      }))
       setScreen(undefined)
       setDialog(undefined)
-      notice(edited ? 'YAML 已保存' : '已恢复订阅原文')
+      notice(edited ? tr('YAML 已保存并应用') : tr('已恢复订阅原文'))
     })
   }
 
-  function nextNode(node: Node): Library {
-    if (node.sourceId !== 'custom') return { ...library, sources: pauseSource(node.sourceId), edits: { ...library.edits, [node.id]: node.config } }
-    const exists = library.nodes.some(old => old.id === node.id)
-    return { ...library, nodes: exists ? library.nodes.map(old => old.id === node.id ? node : old) : [...library.nodes, node] }
+  function pauseSource(id: string, base: Library) {
+    return base.sources.map(source => source.id === id ? { ...source, autoUpdate: false } : source)
   }
 
-  function pauseSource(id: string) {
-    return library.sources.map(source => source.id === id ? { ...source, autoUpdate: false } : source)
+  function nextNode(node: Node, base = current.current): Library {
+    if (node.sourceId !== 'custom') return { ...base, sources: pauseSource(node.sourceId, base), edits: { ...base.edits, [node.id]: node.config } }
+    const exists = base.nodes.some(old => old.id === node.id)
+    return { ...base, nodes: exists ? base.nodes.map(old => old.id === node.id ? node : old) : [...base.nodes, node] }
   }
 
-  async function updateSource(id: string, patch: Partial<Subscription>, live: boolean) {
-    if (working.current) throw new Error('正在处理其他操作，请稍后重试')
-    working.current = true
-    setBusy(true)
-    try {
+  function updateSource(id: string, patch: Partial<Subscription>, live: boolean) {
+    return enqueueWrite(async () => {
       const latest = current.current
-      if (!latest.sources.some(src => src.id === id)) throw new Error('订阅已不存在')
+      if (!latest.sources.some(src => src.id === id)) throw new Error(tr('订阅已不存在'))
       await save({ ...latest, sources: latest.sources.map(src => src.id === id ? { ...src, ...patch } : src) }, live)
-    } finally { working.current = false; setBusy(false) }
+    })
   }
 
   function saveNode(node: Node) {
-    void task(async () => { await save(nextNode(node)); setDialog(undefined); notice('节点已保存') })
+    void task(async () => { await commit(latest => nextNode(node, latest)); setDialog(undefined); notice(tr('节点已保存')) })
   }
 
   function removeNode(node: Node) {
-    const edits = { ...library.edits }
-    delete edits[node.id]
-    return save({
-      ...library,
-      nodes: library.nodes.filter(n => n.id !== node.id),
-      sources: pauseSource(node.sourceId),
-      hiddenNodes: node.sourceId === 'custom' ? library.hiddenNodes : [...library.hiddenNodes, node.id],
-      edits,
-      groups: library.groups.map(group => ({ ...group, members: group.members.filter(id => id !== node.id) })),
+    return enqueueWrite(() => {
+      const latest = current.current
+      const edits = { ...latest.edits }
+      delete edits[node.id]
+      return save({
+        ...latest,
+        nodes: latest.nodes.filter(n => n.id !== node.id),
+        sources: pauseSource(node.sourceId, latest),
+        hiddenNodes: node.sourceId === 'custom' ? latest.hiddenNodes : [...latest.hiddenNodes, node.id],
+        edits,
+        groups: latest.groups.map(group => ({ ...group, members: group.members.filter(id => id !== node.id) })),
+      })
     })
   }
 
-  async function measure(ids: string[], libraryForTest = library, record = true) {
+  function clearManualCoalesce() {
+    if (manualCoalesceTimer.current !== null) {
+      window.clearTimeout(manualCoalesceTimer.current)
+      manualCoalesceTimer.current = null
+    }
+  }
+
+  function syncProbing() {
+    const next = new Set<string>(activeBatchIdsRef.current)
+    for (const id of activeManualIdsRef.current) next.add(id)
+    for (const id of activeCustomIdsRef.current) next.add(id)
+    for (const id of manualQueueRef.current) next.add(id)
+    setProbing([...next])
+  }
+
+  type ProbeNode = { id: string; alias: string }
+
+  function groupProbeChunks(ids: string[], libraryForTest: Library) {
     const plan = compile(libraryForTest)
-    const probes = { ...library.probes }
-    // Each hosts scope needs its own native profile and eight-second probe window.
-    const batches: { id: string; alias: string }[][] = []
-    const byScope = new Map<number, (typeof batches)[number]>()
+    // A request stays within one hosts scope while the core fills its probe slots.
+    const byScope = new Map<number, ProbeNode[]>()
     for (const id of new Set(ids)) {
       const alias = plan.byId.get(id)
       if (!alias) continue
       const scope = plan.plan.hostScopes?.byProxy[alias] ?? 0
-      let batch = byScope.get(scope)
-      if (!batch || batch.length === 6) {
-        batch = []
-        batches.push(batch)
-        byScope.set(scope, batch)
+      let nodes = byScope.get(scope)
+      if (!nodes) {
+        nodes = []
+        byScope.set(scope, nodes)
       }
-      batch.push({ id, alias })
+      nodes.push({ id, alias })
     }
-    const targets = batches.flat()
-    if (!targets.length) return
-    setProbing(targets.map(target => target.id))
-    try {
-      let last = -1
-      let successes = 0
-      for (const chunk of batches) {
-        const results = await native<Record<string, number>>('probe', {
-          plan: plan.plan, url: library.network.probeUrl, expected: library.network.probeStatus, aliases: chunk.map(item => item.alias),
-        })
-        for (const { id, alias } of chunk) {
-          last = results[alias] ?? -1
-          if (last > 0) successes++
-          probes[id] = [...(probes[id] ?? []).filter(sample => Date.now() - sample.at < 86_400_000).slice(-95), { at: Date.now(), delay: last }]
-        }
+    const chunks: ProbeNode[][] = []
+    for (const nodes of byScope.values()) {
+      for (let offset = 0; offset < nodes.length; offset += PROBE_REQUEST_SIZE) {
+        chunks.push(nodes.slice(offset, offset + PROBE_REQUEST_SIZE))
       }
-      if (record) await save({ ...library, probes }, running && library.groups.some(group => Boolean(group.automatic)))
-      if (targets.length === 1) {
-        showMessage({ type: last > 0 ? 'success' : 'warning', title: last > 0 ? '连接成功 · ' + last + ' ms' : '连接超时' })
-      } else showMessage({ type: successes ? 'success' : 'warning', title: '测速完成 · ' + successes + ' / ' + targets.length + ' 可用' })
-      return last
-    } finally { setProbing([]) }
+    }
+    return { plan, chunks }
   }
 
-  const chainLibrary = (chain: Chain) => ({ ...library, chains: [...library.chains.filter(old => old.id !== chain.id), chain] })
-  async function measureChain(chain: Chain) {
-    const result = await measure([chain.id], chainLibrary(chain), false)
-    if (result === undefined) throw new Error('请选择至少两个可用节点组成链路')
+  async function runProbeChunk(
+    chunk: ProbeNode[],
+    plan: ReturnType<typeof compile>,
+    libraryForTest: Library,
+    runId: number,
+    options: { record: boolean; isBatch: boolean; onNodeDone?: (id: string, delay: number) => void },
+  ) {
+    await probeCancel.current
+    if (probeRunId.current !== runId) return { aborted: true, last: -1 }
+    const aliasToId = new Map(chunk.map(item => [item.alias, item.id]))
+    const collected: Record<string, ProbeSample> = {}
+    const finishedIds = new Set<string>()
+    let last = -1
+
+    function handleSample(id: string, measured: number) {
+      last = measured
+      if (!finishedIds.has(id)) {
+        finishedIds.add(id)
+        options.onNodeDone?.(id, measured)
+      }
+      if (!Object.hasOwn(collected, id)) {
+        const sample: ProbeSample = { at: Date.now(), delay: measured }
+        collected[id] = sample
+        if (options.record) {
+          setLibrary(previous => ({
+            ...previous,
+            probes: mergeProbeSamples(previous.probes, { [id]: sample }),
+          }))
+        }
+      }
+    }
+
+    try {
+      const results = await native<Record<string, number>>(
+        'probe',
+        {
+          plan: plan.plan,
+          url: libraryForTest.network.probeUrl,
+          expected: libraryForTest.network.probeStatus,
+          aliases: chunk.map(item => item.alias),
+          reportProgress: options.record || options.isBatch,
+        },
+        (_completed, alias, delay) => {
+          if (probeRunId.current !== runId || !alias || typeof delay !== 'number') return
+          const id = aliasToId.get(alias)
+          if (id) handleSample(id, delay)
+        },
+      )
+      if (probeRunId.current === runId) {
+        for (const { id, alias } of chunk) {
+          if (!Object.hasOwn(results, alias)) continue
+          const measured = results[alias]
+          if (typeof measured === 'number') handleSample(id, measured)
+        }
+      }
+    } finally {
+      if (options.record && Object.keys(collected).length > 0) {
+        await enqueueWrite(async () => {
+          const latest = current.current
+          await save({ ...latest, probes: mergeProbeSamples(latest.probes, collected) }, false)
+        })
+      }
+    }
+
+    const aborted = probeRunId.current !== runId
+    if (!aborted && options.record && Object.keys(collected).length > 0 && running && current.current.groups.some(group => Boolean(group.automatic))) {
+      await enqueueWrite(() => save(current.current, true))
+    }
+    return { aborted, last }
+  }
+
+  async function drainProbeQueue() {
+    if (probeLoopRunning.current) return
+    probeLoopRunning.current = true
+    clearManualCoalesce()
+    try {
+      while (customTasksRef.current.length || manualQueueRef.current.length || batchQueueRef.current) {
+        const customTask = customTasksRef.current.shift()
+        if (customTask) {
+          const { plan, chunks } = groupProbeChunks(customTask.ids, customTask.libraryForTest)
+          if (!chunks.length) {
+            customTask.resolve(undefined)
+            continue
+          }
+          const taskIds = chunks.flat().map(item => item.id)
+          for (const id of taskIds) activeCustomIdsRef.current.add(id)
+          syncProbing()
+          const runId = ++probeRunId.current
+          try {
+            let last = -1
+            let aborted = false
+            for (const chunk of chunks) {
+              const outcome = await runProbeChunk(chunk, plan, customTask.libraryForTest, runId, {
+                record: false,
+                isBatch: false,
+              })
+              if (outcome.aborted) {
+                aborted = true
+                break
+              }
+              last = outcome.last
+            }
+            if (!aborted && customTask.notify === 'nodeTest') {
+              showMessage({
+                type: last > 0 ? 'success' : 'error',
+                title: last > 0 ? tr('连接测试通过 · {0} ms', last) : tr('连接测试失败'),
+              })
+            } else if (!aborted && customTask.notify === 'chainTest') {
+              showMessage({
+                type: last > 0 ? 'success' : 'error',
+                title: last > 0 ? tr('整链可达 · {0} ms', last) : tr('整链不可达'),
+              })
+            }
+            customTask.resolve(aborted ? undefined : last)
+          } catch (error) {
+            if (probeRunId.current !== runId) {
+              customTask.resolve(undefined)
+            } else {
+              customTask.reject(error)
+            }
+          } finally {
+            if (probeRunId.current === runId) {
+              for (const id of taskIds) activeCustomIdsRef.current.delete(id)
+              syncProbing()
+            }
+          }
+          continue
+        }
+
+        if (manualQueueRef.current.length) {
+          const queuedIds = manualQueueRef.current.splice(0, PROBE_REQUEST_SIZE)
+          const libraryForTest = current.current
+          const { plan, chunks } = groupProbeChunks(queuedIds, libraryForTest)
+          if (!chunks.length) {
+            syncProbing()
+            continue
+          }
+          const [firstChunk, ...remainingChunks] = chunks
+          if (remainingChunks.length) {
+            manualQueueRef.current.unshift(...remainingChunks.flatMap(chunk => chunk.map(item => item.id)))
+          }
+          const chunkIds = firstChunk.map(item => item.id)
+          for (const id of chunkIds) activeManualIdsRef.current.add(id)
+          syncProbing()
+
+          const runId = ++probeRunId.current
+          try {
+            await runProbeChunk(firstChunk, plan, libraryForTest, runId, {
+              record: true,
+              isBatch: false,
+              onNodeDone: id => {
+                if (probeRunId.current !== runId) return
+                activeManualIdsRef.current.delete(id)
+                syncProbing()
+              },
+            })
+          } catch (error) {
+            if (probeRunId.current === runId) {
+              showMessage({ type: 'error', title: errorText(error) })
+            }
+          } finally {
+            if (probeRunId.current === runId) {
+              for (const id of chunkIds) activeManualIdsRef.current.delete(id)
+              syncProbing()
+            }
+          }
+          continue
+        }
+
+        const batch = batchQueueRef.current
+        if (batch) {
+          const libraryForTest = current.current
+          const { plan, chunks } = groupProbeChunks(batch.ids, libraryForTest)
+          if (!chunks.length) {
+            batchQueueRef.current = null
+            activeBatchIdsRef.current.clear()
+            setBatchProgress(null)
+            syncProbing()
+            continue
+          }
+          const nextChunk = chunks[0]
+          const chunkSet = new Set(nextChunk.map(item => item.id))
+          batch.ids = batch.ids.filter(id => !chunkSet.has(id))
+          const isLastChunk = batch.ids.length === 0
+
+          const runId = ++probeRunId.current
+          try {
+            await runProbeChunk(nextChunk, plan, libraryForTest, runId, {
+              record: true,
+              isBatch: true,
+              onNodeDone: id => {
+                if (probeRunId.current !== runId) return
+                activeBatchIdsRef.current.delete(id)
+                if (batchQueueRef.current) {
+                  batchQueueRef.current.done = Math.min(batchQueueRef.current.total, batchQueueRef.current.done + 1)
+                  setBatchProgress({ done: batchQueueRef.current.done, total: batchQueueRef.current.total })
+                }
+                syncProbing()
+              },
+            })
+          } catch (error) {
+            if (probeRunId.current === runId) {
+              showMessage({ type: 'error', title: errorText(error) })
+            }
+          } finally {
+            if (probeRunId.current === runId) {
+              for (const id of chunkSet) activeBatchIdsRef.current.delete(id)
+              if (isLastChunk || !batchQueueRef.current?.ids.length) {
+                batchQueueRef.current = null
+                activeBatchIdsRef.current.clear()
+                setBatchProgress(null)
+              }
+              syncProbing()
+            }
+          }
+        }
+      }
+    } finally {
+      probeLoopRunning.current = false
+      if (customTasksRef.current.length || manualQueueRef.current.length || batchQueueRef.current) {
+        void drainProbeQueue()
+      }
+    }
+  }
+
+  function enqueueManualProbe(ids: string[]) {
+    const plan = compile(current.current)
+    let added = false
+    for (const id of new Set(ids)) {
+      if (!plan.byId.has(id)) continue
+      if (activeManualIdsRef.current.has(id) || activeBatchIdsRef.current.has(id)) continue
+      if (manualQueueRef.current.includes(id)) continue
+      manualQueueRef.current.push(id)
+      added = true
+    }
+    if (!added) return
+    syncProbing()
+    if (probeLoopRunning.current) return
+    clearManualCoalesce()
+    manualCoalesceTimer.current = window.setTimeout(() => {
+      manualCoalesceTimer.current = null
+      void drainProbeQueue()
+    }, MANUAL_PROBE_COALESCE_MS)
+  }
+
+  function cancelProbe() {
+    const hasPending =
+      probeLoopRunning.current ||
+      manualCoalesceTimer.current !== null ||
+      manualQueueRef.current.length > 0 ||
+      activeManualIdsRef.current.size > 0 ||
+      activeBatchIdsRef.current.size > 0 ||
+      activeCustomIdsRef.current.size > 0 ||
+      batchQueueRef.current !== null ||
+      customTasksRef.current.length > 0
+    if (!hasPending) return
+    clearManualCoalesce()
+    probeRunId.current += 1
+    manualQueueRef.current = []
+    activeManualIdsRef.current.clear()
+    activeBatchIdsRef.current.clear()
+    activeCustomIdsRef.current.clear()
+    batchQueueRef.current = null
+    for (const pending of customTasksRef.current.splice(0)) {
+      pending.resolve(undefined)
+    }
+    setBatchProgress(null)
+    setProbing([])
+    if (onAndroid) probeCancel.current = native('cancelProbe').catch(() => undefined)
+  }
+
+  async function measure(
+    ids: string[],
+    libraryForTest = current.current,
+    record = true,
+    options?: { batch?: boolean; notify?: 'nodeTest' | 'chainTest' },
+  ): Promise<number | undefined> {
+    if (!record) {
+      clearManualCoalesce()
+      return new Promise<number | undefined>((resolve, reject) => {
+        customTasksRef.current.push({ ids, libraryForTest, notify: options?.notify, resolve, reject })
+        void drainProbeQueue()
+      })
+    }
+    if (options?.batch) {
+      if (batchQueueRef.current) return undefined
+      const { chunks } = groupProbeChunks(ids, libraryForTest)
+      const validIds = chunks.flat().map(item => item.id)
+      if (!validIds.length) return undefined
+      batchQueueRef.current = { ids: validIds, total: validIds.length, done: 0 }
+      for (const id of validIds) activeBatchIdsRef.current.add(id)
+      setBatchProgress({ done: 0, total: validIds.length })
+      syncProbing()
+      clearManualCoalesce()
+      void drainProbeQueue()
+      return undefined
+    }
+    enqueueManualProbe(ids)
+    return undefined
+  }
+
+  const chainLibrary = (chain: Chain, base = current.current) => ({
+    ...base,
+    chains: [...base.chains.filter(old => old.id !== chain.id), chain],
+  })
+  async function measureChain(chain: Chain, notify = false) {
+    const result = await measure([chain.id], chainLibrary(chain), false, notify ? { notify: 'chainTest' } : undefined)
+    if (result === undefined) throw new Error(tr('请选择至少两个可用节点组成链路'))
     setChainMeasurement({ name: chain.name, delay: result,
-      hops: chain.hops.map(id => model.nodes.find(node => node.id === id)?.config.name ?? '未知节点') })
+      hops: chain.hops.map(id => model.nodes.find(node => node.id === id)?.config.name ?? tr('未知节点')) })
   }
 
   async function removeSource(sourceId: string) {
-    const next = withoutSubscription(library, sourceId)
-    const current = await native<VpnStatus>('status')
-    if (current.phase === 'starting') throw new Error('代理正在启动，请稍后再删除订阅')
-    const connected = current.phase === 'running'
-    const stop = connected && (!canStart(next, next.choice) ||
-      (next.mode !== 'direct' && Boolean(choice) && !next.choice))
+    const statusNow = await native<VpnStatus>('status')
+    if (statusNow.phase === 'starting') throw new Error(tr('代理正在启动，请稍后再删除订阅'))
+    const connected = statusNow.phase === 'running'
+    const draft = withoutSubscription(current.current, sourceId)
+    const draftChoice = selection(draft, readLibrary(draft))
+    const stop = connected && (!canStart(draft, draftChoice) ||
+      (draft.mode !== 'direct' && Boolean(choice) && !draftChoice))
     if (stop) await native('stop')
-    await save(next, connected && !stop)
+    await enqueueWrite(async () => {
+      const latest = current.current
+      const next = withoutSubscription(latest, sourceId)
+      await save(next, connected && !stop)
+    })
     setDialog(undefined)
-    notice('订阅已删除')
+    notice(tr('订阅已删除'))
   }
 
-  const nodePage = (nodes: Node[]) => <Nodes
-    nodes={nodes} model={model} library={library} selected={choice} busy={busy} probing={probing}
+  const showAllSubscriptions = () =>
+    void task(() =>
+      commit(latest => ({ ...latest, sourceFilter: latest.sources.map(source => source.id) }), false),
+    )
+
+  const nodePage = (
+    nodes: Node[],
+    scopeSources = sortedSources,
+    includeCustom = true,
+    activeScope = nodeScope,
+    setActiveScope = setNodeScope,
+    hiddenCount = 0,
+  ) => <Nodes
+    nodes={nodes} sources={scopeSources} includeCustom={includeCustom} model={model} library={library} selected={choice} busy={busy} probing={probing}
+    batchProgress={batchProgress} onCancelProbe={cancelProbe}
+    selecting={nodesSelecting} setSelecting={setNodesSelecting}
+    hiddenSubscriptionCount={hiddenCount}
+    onShowAllSubscriptions={showAllSubscriptions}
+    onManageSubscriptions={() => go('subscriptions')}
     checked={checked} setChecked={setChecked} choose={choose}
     openNode={node => setDialog({ kind: 'node', node })} openGroup={group => setDialog({ kind: 'group', group })}
-    openChain={() => setDialog({ kind: 'chain' })} view={view => change({ ...library, view }, false)}
-    probe={ids => void task(() => measure(ids))} join={() => setDialog({ kind: 'join' })}
-    filters={{ search, setSearch, source: sourceFilter, setSource: setSourceFilter }} />
+    openChain={() => setDialog({ kind: 'chain' })} openScope={() => setDialog({ kind: 'scope' })}
+    density={nodeDensity} onOpenDensity={() => setDialog({ kind: 'nodeDensity' })}
+    view={view => void task(() => commit(latest => ({ ...latest, view }), false))}
+    probe={ids => void measure(ids, current.current, true, { batch: ids.length > 1 })} join={() => setDialog({ kind: 'join' })}
+    scope={activeScope} setScope={setActiveScope}
+    filters={{ search, setSearch, showFilter: nodesFilterOpen, setShowFilter: setNodesFilterOpen }} />
+
+  const currentPhase: VpnStatus['phase'] =
+    powerPending === 'start'
+      ? 'starting'
+      : powerPending === 'stop'
+        ? 'stopping'
+        : status.phase
 
   let page: ReactNode
-  const back = () => { setDialog(undefined); setScreen(undefined) }
+  const back = () => { setDialog(undefined); setScreen(undefined); setNodesSelecting(false); setChecked([]) }
   if (!loaded) {
     page = null
   } else if (screen?.kind === 'import') {
-    page = <><Header title={screenSource ? '编辑订阅' : '导入订阅'} back={back} /><ImportView key={screenSource?.id ?? 'new'} source={screenSource} sources={library.sources} onStartImport={startImport} /></>
+    page = <><Header icon="import" animateKey={`import:${screenSource?.id ?? 'new'}`} statusPhase={currentPhase} title={screenSource ? tr('编辑订阅') : tr('导入订阅')} back={back} /><ImportView key={screenSource?.id ?? 'new'} source={screenSource} sources={library.sources} onStartImport={startImport} /></>
   } else if (screen?.kind === 'yaml' && screenSource) {
-    page = <><Header title="编辑 YAML" back={back} /><YamlEditor key={screenSource.id} source={screenSource} compiled={effectiveYaml(library, screenSource.id)}
-      busy={busy} save={text => replaceYaml(screenSource, text, true)} reset={() => confirm('恢复订阅原文并清除本地副本', () => replaceYaml(screenSource, screenSource.original, false))} /></>
-  } else if (screen?.kind === 'content') {
-    page = <><Header title="所选订阅内容" back={back} />{nodePage(selectedNodes)}</>
+    page = <><Header icon="yaml" animateKey={`yaml:${screenSource.id}`} statusPhase={currentPhase} title={tr("编辑 YAML")} back={back} /><YamlEditor key={screenSource.id} source={screenSource} compiled={effectiveYaml(library, screenSource.id)}
+      busy={busy} save={text => replaceYaml(screenSource, text, true)} reset={() => confirm(tr('恢复订阅原文并清除本地副本'), () => replaceYaml(screenSource, screenSource.original, false))} /></>
   } else if (screen && screen.kind !== 'yaml') {
-    const current = screen.kind
-    page = <><Header title={settingsTitles[current]} back={back} />
-      {current === 'theme' && <ThemeSettings value={library.theme} onChange={theme => change({ ...library, theme }, false)} />}
-      {current === 'routing' && <RoutingSettings library={library} model={model} busy={busy} sdk={kernelInfo.sdk}
-        save={routing => saveConfiguration({ ...library, routing }, true)} />}
-      {current === 'configFile' && <ConfigSettings library={library} busy={busy}
-        save={patch => saveConfiguration({ ...library, ...patch }, true)} />}
-      {current === 'kernel' && <KernelSettings info={kernelInfo} active={running}
+    const pageKind = screen.kind
+    page = <><Header icon={pageKind} animateKey={`settings:${pageKind}`} statusPhase={currentPhase} title={settingsTitles[pageKind]} back={back} />
+      {pageKind === 'theme' && <ThemeSettings value={library.theme} onChange={theme => void task(() => commit(latest => ({ ...latest, theme }), false))} />}
+      {pageKind === 'routing' && <RoutingSettings library={library} model={model} busy={busy} sdk={kernelInfo.sdk}
+        save={routing => saveConfiguration({ ...current.current, routing }, true)} />}
+      {pageKind === 'configFile' && <ConfigSettings library={library} busy={busy}
+        save={patch => saveConfiguration({ ...current.current, ...patch }, true)} />}
+      {pageKind === 'kernel' && <KernelSettings info={kernelInfo} active={running}
         check={() => native<void>('validatePlan', { plan: compiled.plan })} />}
-      {current === 'about' && <AboutSettings info={kernelInfo} />}
-      {(current === 'dns' || current === 'tun' || current === 'inbound' || current === 'monitoring') &&
-        <NetworkSettings key={current} page={current} library={library} busy={busy} sdk={kernelInfo.sdk}
-          backgroundResult={backgroundResult} save={(network, monitoring) => saveConfiguration({ ...library, network, monitoring }, false)} />}
+      {pageKind === 'about' && <AboutSettings info={kernelInfo} />}
+      {(pageKind === 'dns' || pageKind === 'tun' || pageKind === 'inbound' || pageKind === 'monitoring') &&
+        <NetworkSettings key={pageKind} page={pageKind} library={library} busy={busy} sdk={kernelInfo.sdk}
+          backgroundResult={backgroundResult} save={(network, monitoring) => saveConfiguration({ ...current.current, network, monitoring }, false)} />}
     </>
   } else {
     switch (tab) {
-      case 'home':
-        page = <><Header title="仪表盘" action={<PowerButton status={status} pending={powerPending} busy={busy} toggle={togglePower} />} />
-          <Home status={status} pending={powerPending} library={library} model={model} choice={choice} exit={exitInfo} rows={history} busy={busy}
-            detect={detect} mode={mode => change({ ...library, mode })} select={() => choice?.type === 'chain' ? setDialog({ kind: 'chain' }) : go('nodes')}
+      case 'home': {
+        page = <><Header
+          icon="home"
+          animateKey="tab:home"
+          statusPhase={currentPhase}
+          statusShift={homeStatusShift}
+          title={tr("仪表盘")}
+          action={
+            <HomeHeaderPower
+              progress={homePowerProgress}
+              widthMv={homePowerWidth}
+              status={status}
+              pending={powerPending}
+              busy={busy}
+              toggle={togglePower}
+            />
+          }
+        />
+          <Home status={status} pending={powerPending} library={library} model={model} choice={choice} exit={exitInfo} rows={history} labels={compiled.labels} busy={busy}
+            detect={detect} mode={switchMode}
+            select={() => choice?.type === 'chain' ? setDialog({ kind: 'chain' }) : go('nodes')}
+            openGroups={() => { setTab('nodes'); setScreen(undefined); setNodesSelecting(false); setChecked([]); setDialog({ kind: 'scope' }) }}
             connections={() => go('connections')}
-            importSub={importSub} toggle={togglePower} /></>
+            importSub={importSub} toggle={togglePower}
+            openGroup={group => setDialog({ kind: 'group', group })}
+            openConnection={conn => setDialog({ kind: 'connection', id: conn.id, snapshot: conn })}
+            copyIp={ip => void copySubscriptionText(ip).then(() => notice(tr('出口 IP 已复制'))).catch(() => showMessage({ type: 'error', title: tr('复制失败') }))}
+            headerPowerProgress={homePowerProgress} /></>
         break
+      }
       case 'subscriptions':
-        page = <><Header title="订阅" action={(library.sources.length > 0 || pendingImports.length > 0) && <Button variant="default" onClick={importSub}><CloudDownload data-icon="inline-start" />导入订阅</Button>} />
-          <Subscriptions sources={sortedSources} pendingImports={pendingImports} model={model} library={library} busy={busy} refreshing={refreshing}
-            toggle={id => change({ ...library, sourceFilter: id === '*' ?
-              (library.sourceFilter.length === library.sources.length ? [] : library.sources.map(source => source.id)) :
-              (library.sourceFilter.includes(id) ? library.sourceFilter.filter(source => source !== id) : [...library.sourceFilter, id]) }, false)}
+        page = <><Header icon="subscriptions" animateKey="tab:subscriptions" statusPhase={currentPhase} title={tr("订阅")} action={(library.sources.length > 0 || pendingImports.length > 0) && <Button variant="default" onClick={importSub}><CloudDownload data-icon="inline-start" />{tr("导入订阅")}</Button>} />
+          <Subscriptions sources={sortedSources} pendingImports={pendingImports} model={model} library={library} refreshing={refreshing}
+            toggle={id => void task(() => commit(latest => ({
+              ...latest,
+              sourceFilter: id === '*'
+                ? (latest.sourceFilter.length === latest.sources.length ? [] : latest.sources.map(source => source.id))
+                : (latest.sourceFilter.includes(id) ? latest.sourceFilter.filter(source => source !== id) : [...latest.sourceFilter, id]),
+            }), false))}
             refresh={source => refresh([source])} all={() => refresh(library.sources)} edit={source => setDialog({ kind: 'source', id: source.id })}
-            detail={() => { setSearch(''); setSourceFilter(''); setScreen({ kind: 'content' }) }} importSub={importSub} /></>
+            detail={() => go('nodes')} importSub={importSub} /></>
         break
       case 'nodes':
-        page = <><Header title="节点库" action={<Button variant="default" onClick={() => setDialog({ kind: 'node' })}><Plus />添加节点</Button>} />{nodePage(model.nodes)}</>
+        page = <><Header icon="nodes" animateKey="tab:nodes" statusPhase={currentPhase} title={tr("节点库")} action={<Button variant="default" onClick={() => setDialog({ kind: 'node' })}><Plus />{tr("添加节点")}</Button>} />{nodePage(visibleLibraryNodes, visibleSources, true, nodeScope, setNodeScope, hiddenSubscriptionCount)}</>
         break
       case 'connections':
-        page = <><Header title="连接日志" action={<Button variant="default" disabled={busy} onClick={() => {
+        page = <><Header icon="connections" animateKey="tab:connections" statusPhase={currentPhase} title={tr("连接日志")} action={<Button variant="default" disabled={busy} onClick={() => {
           const chain = library.chains.find(chain => choice?.type === 'chain' && choice.id === chain.id) ?? library.chains.find(chain => compiled.byId.has(chain.id))
           if (chain) void task(() => measureChain(chain))
           else setDialog({ kind: 'chain' })
-        }}><RefreshCw data-icon="inline-start" className={probing.length ? 'motion-safe:animate-spin' : undefined} />测整链</Button>} />
+        }}><RefreshCw data-icon="inline-start" className={probing.length ? 'motion-safe:animate-spin' : undefined} />{tr("测整链")}</Button>} />
           <Connections running={running} rows={history} exit={exitInfo} labels={compiled.labels} busy={busy} measurement={chainMeasurement}
-            diagnose={detect} close={id => void task(async () => { await native('closeConnection', { id }) })} /></>
+            filter={connectionsFilter} setFilter={setConnectionsFilter} query={connectionsQuery} setQuery={setConnectionsQuery}
+            diagnose={detect}
+            onClearLogs={() => setHistory(previous => previous.filter(row => !row.closed))}
+            onSelect={conn => setDialog({ kind: 'connection', id: conn.id, snapshot: conn })} /></>
         break
       case 'settings':
-        page = <><Header title="设置" /><SettingsIndex library={library} open={kind => setScreen({ kind })} /></>
+        page = <><Header icon="settings" animateKey="tab:settings" statusPhase={currentPhase} title={tr("设置")} /><SettingsIndex library={library} open={kind => setScreen({ kind })} /></>
         break
     }
   }
@@ -641,113 +1336,214 @@ export function App() {
   let sheetTitle = ''
   if (dialog?.kind === 'node') {
     const node = dialog.node
-    sheetTitle = node ? '编辑节点' : '添加自定义节点'
-    sheet = <NodeEditor node={node} busy={busy} save={saveNode} test={draft => void task(() => measure([draft.id], nextNode(draft), false))}
+    sheetTitle = node ? tr('编辑节点') : tr('添加自定义节点')
+    sheet = <NodeEditor node={node} busy={busy} save={saveNode} test={draft => void task(() => measure([draft.id], nextNode(draft), false, { notify: 'nodeTest' }))}
       reset={node && library.edits[node.id] ? () => void task(async () => {
-        const edits = { ...library.edits }; delete edits[node.id]
-        await save({ ...library, edits }); setDialog(undefined); notice('已恢复订阅值')
+        await commit(latest => {
+          const edits = { ...latest.edits }; delete edits[node.id]
+          return { ...latest, edits }
+        })
+        setDialog(undefined); notice(tr('已恢复订阅值'))
       }) : undefined}
-      remove={node ? () => confirm('删除节点「' + node.config.name + '」', () => void task(async () => {
-        await removeNode(node); setDialog(undefined); notice('节点已删除')
+      remove={node ? () => confirm(tr('删除节点「{0}」', node.config.name), () => void task(async () => {
+        await removeNode(node); setDialog(undefined); notice(tr('节点已删除'))
       })) : undefined} />
   } else if (dialog?.kind === 'group') {
     const group = dialog.group
-    sheetTitle = group ? (group.sourceId ? group.name : '编辑分组') : '新建分组'
+    sheetTitle = group ? (group.sourceId ? group.name : tr('编辑分组')) : tr('新建分组')
     sheet = <GroupEditor group={group} library={library} model={model} busy={busy}
       save={next => void task(async () => {
-        await save({ ...library, groups: [...library.groups.filter(old => old.id !== next.id), next] })
-        setDialog(undefined); notice('分组已保存')
+        await commit(latest => ({ ...latest, groups: [...latest.groups.filter(old => old.id !== next.id), next] }))
+        setDialog(undefined); notice(tr('分组已保存'))
       })}
       choose={group ? () => choose({ type: 'group', id: group.id }) : undefined}
-      remove={group && !group.sourceId ? () => confirm('删除分组「' + group.name + '」', () => void task(async () => {
-        await save({ ...library, groups: library.groups.filter(old => old.id !== group.id) }); setDialog(undefined); notice('分组已删除')
+      remove={group && !group.sourceId ? () => confirm(tr('删除分组「{0}」', group.name), () => void task(async () => {
+        await commit(latest => ({ ...latest, groups: latest.groups.filter(old => old.id !== group.id) }))
+        setDialog(undefined); notice(tr('分组已删除'))
       })) : undefined} />
   } else if (dialog?.kind === 'chain') {
-    sheetTitle = '链路'
+    sheetTitle = tr('链路')
     sheet = <ChainEditor library={library} model={model} busy={busy}
-      save={chain => void task(async () => { await save(chainLibrary(chain)); notice('链路已保存') })}
+      save={chain => void task(async () => { await enqueueWrite(() => save(chainLibrary(chain))); notice(tr('链路已保存')) })}
       use={chain => choose({ type: 'chain', id: chain.id })}
-      remove={chain => confirm('删除链路「' + chain.name + '」', () => void task(async () => {
-        await save({ ...library, chains: library.chains.filter(c => c.id !== chain.id) }); setDialog(undefined); notice('链路已删除')
+      remove={chain => confirm(tr('删除链路「{0}」', chain.name), () => void task(async () => {
+        await commit(latest => ({ ...latest, chains: latest.chains.filter(c => c.id !== chain.id) }))
+        setDialog(undefined); notice(tr('链路已删除'))
       }))}
-      test={chain => void task(() => measureChain(chain))} />
+      test={chain => void task(() => measureChain(chain, true))} />
   } else if (dialog?.kind === 'join') {
     const groups = library.groups.filter(group => !group.automatic)
-    sheetTitle = '加入分组'
+    sheetTitle = tr('加入分组')
     sheet = <div className="sheet-form">
-      {!groups.length && <Empty icon={Network} title="暂无手动分组"><Button onClick={() => setDialog({ kind: 'group' })}>新建分组</Button></Empty>}
+      {!groups.length && <Empty icon={Network} title={tr("暂无手动分组")}><Button variant="default" onClick={() => setDialog({ kind: 'group' })}>{tr("新建分组")}</Button></Empty>}
       {groups.map(group => <button key={group.id} type="button" className="pick-row" disabled={busy} onClick={() => void task(async () => {
-        await save({ ...library, groups: library.groups.map(old => old.id === group.id ? { ...old, members: [...new Set([...old.members, ...checked])] } : old) })
-        setDialog(undefined); setChecked([]); notice('节点已加入 ' + group.name)
-      })}><Network size={16} /><span>{group.name}</span><Tag>{group.members.length} 个成员</Tag></button>)}
+        const visibleIds = new Set(visibleLibraryNodes.map(node => node.id))
+        const adding = checked.filter(id => visibleIds.has(id))
+        await commit(latest => ({
+          ...latest,
+          groups: latest.groups.map(old => old.id === group.id ? { ...old, members: [...new Set([...old.members, ...adding])] } : old),
+        }))
+        setDialog(undefined); setNodesSelecting(false); setChecked([]); notice(tr('已加入「{0}」', group.name))
+      })}><Network size={16} /><span>{group.name}</span><Tag>{group.members.length}{tr(" 个成员")}</Tag></button>)}
     </div>
+  } else if (dialog?.kind === 'connection') {
+    const conn = history.find(item => item.id === dialog.id) ?? dialog.snapshot
+    sheetTitle = tr('连接与分流策略')
+    sheet = (
+      <ConnectionPolicySheet
+        key={conn.id}
+        conn={conn}
+        history={history}
+        library={library}
+        model={model}
+        labels={compiled.labels}
+        running={running}
+        busy={busy}
+        sdk={kernelInfo.sdk}
+        onSwitchToRuleMode={() =>
+          void task(async () => {
+            await commit(latest => ({ ...latest, mode: 'rule' }), running)
+          })
+        }
+        onSaveRouting={(nextRouting, processName, host) =>
+          void task(async () => {
+            validateRouting(nextRouting)
+            await commit(latest => ({ ...latest, routing: nextRouting }), running)
+            if (running) {
+              const targetProc = processName?.trim().toLowerCase()
+              const targetHost = host?.trim().toLowerCase()
+              const matching = history.filter(item => {
+                if (item.closed) return false
+                if (targetProc) return item.metadata.process?.trim().toLowerCase() === targetProc
+                if (targetHost) {
+                  const itemHost = (item.metadata.host || item.metadata.destinationIP || '').trim().toLowerCase()
+                  return itemHost === targetHost || itemHost.endsWith('.' + targetHost)
+                }
+                return false
+              })
+              await Promise.allSettled(matching.map(item => native('closeConnection', { id: item.id })))
+            }
+            setDialog(undefined)
+            notice(tr('已保存到「设置 → 分流规则 → 自定义规则」'))
+          })
+        }
+        onCopyDest={dest =>
+          void copySubscriptionText(dest)
+            .then(() => notice(tr('已复制目标地址')))
+            .catch(() => showMessage({ type: 'error', title: tr('复制失败') }))
+        }
+        onCloseConnection={id =>
+          void task(async () => {
+            await native('closeConnection', { id })
+            setDialog(undefined)
+          })
+        }
+      />
+    )
   } else if (dialog?.kind === 'source') {
     const source = library.sources.find(source => source.id === dialog.id)
-    sheetTitle = source?.name ?? '订阅管理'
-    if (source) sheet = <div className="sheet-form">
-      <div className="panel settings-panel">
-        <Row icon={CloudDownload} title="编辑订阅" onClick={() => { setDialog(undefined); setScreen({ kind: 'import', id: source.id }) }} />
-        <Row icon={FileCode2} title="编辑 YAML" onClick={() => { setDialog(undefined); setScreen({ kind: 'yaml', id: source.id }) }} />
-        <Row icon={Puzzle} title="扩展" onClick={() => {
-          setDialog(undefined)
-          setTool({ name: source.name, data: { kind: 'extension', extension: source.extension ?? emptyExtension,
-            save: extension => updateSource(source.id, JSON.stringify(source.extension ?? emptyExtension) === JSON.stringify(extension) ? {} : { extension, autoUpdate: false }, running) } })
-        }} />
-        {source.url && <Row icon={CalendarClock} title={source.autoUpdate === false ? '自动更新（已暂停）' : '自动更新'} onClick={() => {
-          setDialog(undefined)
-          setTool({ name: source.name, data: { kind: 'policy', enabled: source.autoUpdate !== false, hours: source.customHours,
-            provider: source.intervalHours, save: (autoUpdate, customHours) => updateSource(source.id, { autoUpdate, customHours }, false) } })
-        }} />}
-        {source.url && <Row icon={RefreshCw} title="同步" onClick={() => { setDialog(undefined); refresh([source]) }} />}
-        <details><summary className="flex cursor-pointer items-center gap-3 p-3 text-sm"><ChevronDown size={17} />更多</summary>
-          <Row icon={Eye} title="运行时配置" onClick={() => void task(async () => {
-            const usesSource = library.routing.subscriptionId === source.id ||
-              (choice?.type === 'node' && model.nodes.some(n => n.id === choice.id && n.sourceId === source.id)) ||
-              (choice?.type === 'group' && model.groups.some(g => g.id === choice.id && membersOf(g, model, library).some(n => n.sourceId === source.id))) ||
-              (choice?.type === 'chain' && library.chains.find(c => c.id === choice.id)?.hops.some(hop => model.nodes.some(n => n.id === hop && n.sourceId === source.id)))
-            const active = running && usesSource ? await native<object | null>('runtimeConfig') : null
-            setDialog(undefined)
-            setTool({ name: source.name, data: { kind: 'runtime', yaml: active ? '# 当前运行配置\n' + stringify(active) :
-              '# 按当前设置生成的订阅预览\n' + effectiveYaml(library, source.id) } })
-          })} />
-          {source.url && <>
-            <Row icon={copied === source.id ? Check : Copy} title={copied === source.id ? '复制成功' : '复制链接'}
-              onClick={() => void task(() => copy(source.id, source.url!))} />
-            <Row icon={QrCode} title="二维码" onClick={() => {
-              setDialog(undefined); setTool({ name: source.name, data: { kind: 'qr', url: source.url! } })
-            }} />
-          </>}
-          <Row icon={Download} title="导出文件" onClick={() => void task(async () => {
-            const text = source.extendedYaml ?? source.yaml
-            const name = source.name.replace(/[<>:"/\\|?*]/g, '_').replace(/\.ya?ml$/i, '') + '.yaml'
-            if (onAndroid) {
-              if (await native('export', { name, text })) notice('订阅已导出')
-            } else downloadSubscription(name, text)
-          })} />
-          {sortedSources[0]?.id !== source.id && <Row icon={ArrowUp} title="上移订阅" onClick={() => { moveSource(source.id, -1); setDialog(undefined) }} />}
-          {sortedSources.at(-1)?.id !== source.id && <Row icon={ArrowDown} title="下移订阅" onClick={() => { moveSource(source.id, 1); setDialog(undefined) }} />}
-        </details>
-        <Row icon={Trash2} title="删除订阅" onClick={() => setDialog({ kind: 'deleteSource', id: source.id })} />
-      </div>
-    </div>
+    sheetTitle = source?.name ?? tr('订阅管理')
+    if (source) {
+      const openTool = (data: SubscriptionToolData) => {
+        setDialog({ kind: 'tool', key: `${source.id}:${data.kind}`, name: source.name, data })
+      }
+      sheet = <SourceActionsSheet
+        source={source}
+        copied={copied === source.id}
+        isRefreshing={refreshing.includes(source.id)}
+        canMoveUp={sortedSources[0]?.id !== source.id}
+        canMoveDown={sortedSources.at(-1)?.id !== source.id}
+        onEditImport={() => { setDialog(undefined); setScreen({ kind: 'import', id: source.id }) }}
+        onEditYaml={() => { setDialog(undefined); setScreen({ kind: 'yaml', id: source.id }) }}
+        onExtension={() => openTool({
+          kind: 'extension',
+          extension: source.extension ?? emptyExtension,
+          save: extension => updateSource(source.id, JSON.stringify(source.extension ?? emptyExtension) === JSON.stringify(extension) ? {} : { extension, autoUpdate: false }, running),
+        })}
+        onPolicy={() => openTool({
+          kind: 'policy',
+          enabled: source.autoUpdate !== false,
+          hours: source.customHours,
+          provider: source.intervalHours,
+          save: (autoUpdate, customHours) => updateSource(source.id, { autoUpdate, customHours }, false),
+        })}
+        onRefresh={() => { setDialog(undefined); refresh([source]) }}
+        onRuntime={() => void task(async () => {
+          const usesSource = compiled.ruleSourceId === source.id
+          const active = running && usesSource ? await native<object | null>('runtimeConfig') : null
+          openTool({
+            kind: 'runtime',
+            yaml: active ? '# ' + tr('当前运行配置') + '\n' + stringify(active) : '# ' + tr('按当前设置生成的订阅预览') + '\n' + effectiveYaml(library, source.id),
+          })
+        })}
+        onCopyLink={() => void task(() => copy(source.id, source.url!))}
+        onQr={() => openTool({ kind: 'qr', url: source.url! })}
+        onExport={() => void task(async () => {
+          const text = source.extendedYaml ?? source.yaml
+          const name = source.name.replace(/[<>:"/\\|?*]/g, '_').replace(/\.ya?ml$/i, '') + '.yaml'
+          if (onAndroid) {
+            if (await native('export', { name, text })) notice(tr('订阅文件已导出'))
+          } else downloadSubscription(name, text)
+        })}
+        onMove={delta => { moveSource(source.id, delta); setDialog(undefined) }}
+        onDelete={() => setDialog({ kind: 'deleteSource', id: source.id })}
+      />
+    }
+  } else if (dialog?.kind === 'tool') {
+    sheetTitle = `${subscriptionToolLabels[dialog.data.kind]} · ${dialog.name}`
+    sheet = <SubscriptionToolBody key={dialog.key} mobile data={dialog.data} close={() => setDialog(undefined)} />
   } else if (dialog?.kind === 'deleteSource') {
     const source = library.sources.find(source => source.id === dialog.id)
-    sheetTitle = '删除订阅'
+    sheetTitle = tr('删除订阅')
     if (source) {
       const stopsProxy = running && library.mode !== 'direct' && model.nodes.length > 0 &&
         model.nodes.every(node => node.sourceId === source.id)
       sheet = <div className="sheet-form">
-        <p>删除「{source.name}」及其节点和分组？失效的分流出口会改为「拒绝连接」。{stopsProxy && '删除后将自动停止代理。'}</p>
+        <p>{tr('删除「{0}」及其节点和分组？失效的分流出口会改为「拒绝连接」。', source.name)}{stopsProxy && tr('删除后将自动停止代理。')}</p>
         <div className="sheet-actions justify-end">
-          <Button variant="outline" onClick={() => setDialog(undefined)}>取消</Button>
-          <Button variant="destructive" disabled={busy} onClick={() => void task(() => removeSource(source.id))}>确认删除</Button>
+          <Button variant="outline" onClick={() => setDialog(undefined)}>{tr("取消")}</Button>
+          <Button variant="destructive" disabled={busy} onClick={() => void task(() => removeSource(source.id))}>{tr("确认删除")}</Button>
         </div>
       </div>
     }
+  } else if (dialog?.kind === 'scope') {
+    sheetTitle = tr('订阅与分组')
+    sheet = <NodeScopeSheet
+      nodes={visibleLibraryNodes}
+      sources={visibleSources}
+      includeCustom
+      model={model}
+      library={library}
+      selected={choice}
+      scope={nodeScope}
+      onSelect={next => {
+        setNodeScope(next)
+        setNodesSelecting(false)
+        setChecked([])
+        setDialog(undefined)
+      }}
+      onCreateGroup={() => setDialog({ kind: 'group' })}
+      onEditGroup={group => setDialog({ kind: 'group', group })}
+    />
+  } else if (dialog?.kind === 'nodeDensity') {
+    sheetTitle = tr('选择布局模式')
+    sheet = (
+      <NodeDensitySheet
+        value={nodeDensity}
+        onSelect={next => {
+          setNodeDensity(next)
+          preferences.setItem('air.mobile.nodeDensity', next)
+          if (library.view !== 'cards') {
+            void task(() => commit(latest => ({ ...latest, view: 'cards' }), false))
+          }
+          setDialog(undefined)
+        }}
+      />
+    )
   } else if (dialog?.kind === 'delete') {
-    sheetTitle = '确认操作'
+    sheetTitle = tr('确认操作')
     sheet = <div className="sheet-form"><p>{dialog.label}</p><div className="sheet-actions justify-end">
-      <Button variant="outline" onClick={() => setDialog(undefined)}>取消</Button><Button variant="destructive" disabled={busy} onClick={dialog.apply}>确认</Button>
+      <Button variant="outline" onClick={() => setDialog(undefined)}>{tr("取消")}</Button><Button variant="destructive" disabled={busy} onClick={dialog.apply}>{tr("确认")}</Button>
     </div></div>
   }
 
@@ -755,13 +1551,12 @@ export function App() {
     {loaded && (
       <>
         {page}
-        {tool && <SubscriptionTool data={tool.data} name={tool.name} close={() => setTool(undefined)} />}
         <BottomNavigation page={tab} onChange={go} />
         <Sheet open={Boolean(dialog && sheet)} title={sheetTitle} close={() => setDialog(undefined)}>{sheet}</Sheet>
       </>
     )}
     <AnimatePresence>
-      {!loaded && (
+      {!loaded && (!onAndroid || Boolean(loadError)) && (
         <motion.div
           key="air-splash"
           className="air-splash"
@@ -770,20 +1565,94 @@ export function App() {
         >
           <div className="air-splash-mark">
             <div className="air-splash-glow" aria-hidden="true" />
-            <img src={airLogo} alt="Air" className="air-splash-logo" draggable={false} />
+            <img src={airLogo} alt="" className="air-splash-logo" draggable={false} />
           </div>
-          <strong className="air-splash-title">Air</strong>
+          <strong className="air-splash-title">Air Proxy</strong>
           {loadError ? (
             <div className="air-splash-error">
               <p role="alert">{loadError}</p>
-              <Button onClick={() => location.reload()}>重新加载</Button>
+              <Button variant="default" onClick={() => location.reload()}>{tr("重新加载")}</Button>
             </div>
           ) : (
-            <div className="air-splash-bar" aria-label="正在启动" role="status" />
+            <div className="air-splash-bar" aria-label={tr("正在启动")} role="status" />
           )}
         </motion.div>
       )}
     </AnimatePresence>
     <MessageViewport mobile />
   </div></MotionConfig>
+}
+
+function SourceActionsSheet({ source, copied, isRefreshing, canMoveUp, canMoveDown, onEditImport, onEditYaml, onExtension, onPolicy, onRefresh, onRuntime, onCopyLink, onQr, onExport, onMove, onDelete }: {
+  source: Subscription
+  copied: boolean
+  isRefreshing: boolean
+  canMoveUp: boolean
+  canMoveDown: boolean
+  onEditImport: () => void
+  onEditYaml: () => void
+  onExtension: () => void
+  onPolicy: () => void
+  onRefresh: () => void
+  onRuntime: () => void
+  onCopyLink: () => void
+  onQr: () => void
+  onExport: () => void
+  onMove: (delta: -1 | 1) => void
+  onDelete: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <div className="sheet-form">
+      <div className="panel settings-panel">
+        <Row icon={CloudDownload} title={tr("编辑订阅")} onClick={onEditImport} />
+        <Row icon={FileCode2} title={tr("编辑 YAML")} onClick={onEditYaml} />
+        <Row icon={Puzzle} title={tr("扩展")} onClick={onExtension} />
+        {source.url && (
+          <Row icon={CalendarClock} title={source.autoUpdate === false ? tr('自动更新（已暂停）') : tr('自动更新')} onClick={onPolicy} />
+        )}
+        {source.url && (
+          <Row icon={RefreshCw} title={isRefreshing ? tr('正在刷新…') : tr('同步')} onClick={() => { if (!isRefreshing) onRefresh() }} />
+        )}
+        <button
+          type="button"
+          className="setting-row"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(value => !value)}
+        >
+          <span className="row-icon">
+            <ChevronDown size={17} className="setting-row-arrow" data-open={expanded || undefined} />
+          </span>
+          <span className="row-main">
+            <b>{tr("更多操作")}</b>
+            <small>{tr("预览配置、二维码、导出与排序")}</small>
+          </span>
+          <small className="shrink-0 whitespace-nowrap">{expanded ? tr('收起') : tr('展开')}</small>
+        </button>
+        <AnimatePresence initial={false}>
+          {expanded && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+              className="overflow-hidden border-t border-border-subtle"
+            >
+              <Row icon={Eye} title={tr("运行时配置")} onClick={onRuntime} />
+              {source.url && (
+                <>
+                  <Row icon={copied ? Check : Copy} title={copied ? tr('复制成功') : tr('复制链接')} onClick={onCopyLink} />
+                  <Row icon={QrCode} title={tr("二维码")} onClick={onQr} />
+                </>
+              )}
+              <Row icon={Download} title={tr("导出文件")} onClick={onExport} />
+              {canMoveUp && <Row icon={ArrowUp} title={tr("上移订阅")} onClick={() => onMove(-1)} />}
+              {canMoveDown && <Row icon={ArrowDown} title={tr("下移订阅")} onClick={() => onMove(1)} />}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <Row icon={Trash2} title={tr("删除订阅")} onClick={onDelete} />
+      </div>
+    </div>
+  )
 }

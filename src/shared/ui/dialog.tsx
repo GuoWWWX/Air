@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import { X } from 'lucide-react'
 import type * as React from 'react'
@@ -47,7 +48,7 @@ function DialogContent({
           {children}
           {showCloseButton && (
             <BaseDialog.Close
-              render={<Button variant="ghost" size="icon-sm" aria-label="关闭" />}
+              render={<Button variant="ghost" size="icon-sm" aria-label={tr("关闭")} />}
               className="absolute top-3.5 right-3.5"
             >
               <X />

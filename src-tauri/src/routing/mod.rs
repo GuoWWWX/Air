@@ -4,7 +4,7 @@ pub use file::{ConfigSource, Document, NetworkDocument, RoutingFile};
 
 use crate::{chains::EXIT_NAME, subscriptions::Source, AirResult};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use std::{borrow::Cow, collections::HashSet, net::IpAddr};
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -22,6 +22,10 @@ pub struct Rule {
     pub enabled: bool,
     pub matcher: Matcher,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_matcher: Option<HostMatcher>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_value: Option<String>,
     pub target: Target,
 }
 
@@ -29,7 +33,15 @@ fn enabled() -> bool {
     true
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HostMatcher {
+    Domain,
+    DomainSuffix,
+    Ip,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Matcher {
     Domain,
@@ -39,7 +51,7 @@ pub enum Matcher {
     ProcessPath,
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -50,6 +62,10 @@ pub enum Target {
     #[default]
     Direct,
     Reject,
+    Selected,
+    Node {
+        id: String,
+    },
     Group {
         source_id: String,
         name: String,
@@ -80,6 +96,19 @@ impl RoutingConfig {
         changed
     }
 
+    pub fn detach_nodes(&mut self, removed_node_ids: &HashSet<String>) -> bool {
+        let mut changed = false;
+        for target in std::iter::once(&mut self.fallback)
+            .chain(self.rules.iter_mut().map(|rule| &mut rule.target))
+        {
+            if matches!(target, Target::Node { id } if removed_node_ids.contains(id)) {
+                *target = Target::Reject;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn compile(&self, sources: &[Source]) -> AirResult<Vec<String>> {
         let source = self
             .subscription_id
@@ -99,7 +128,7 @@ impl RoutingConfig {
             .enumerate()
             .filter(|(_, rule)| rule.enabled)
         {
-            rule.append(source, &mut result)
+            rule.append(sources, source, &mut result)
                 .map_err(|error| format!("第 {} 条规则：{error}", index + 1))?;
         }
 
@@ -127,7 +156,7 @@ impl RoutingConfig {
                 result.push(line.clone());
             }
             target => {
-                result.push(format!("MATCH,{}", target.outbound(source)?));
+                result.push(format!("MATCH,{}", target.outbound(sources, source)?));
                 if matches!(target, Target::Residential) {
                     result.push("MATCH,REJECT".into());
                 }
@@ -138,32 +167,80 @@ impl RoutingConfig {
 }
 
 impl Rule {
-    fn append(&self, source: Option<&Source>, result: &mut Vec<String>) -> AirResult<()> {
+    fn append(&self, sources: &[Source], source: Option<&Source>, result: &mut Vec<String>) -> AirResult<()> {
         let (kind, value) = self.matcher.compile(&self.value)?;
-        let target = self.target.outbound(source)?;
-        result.push(format!("{kind},{value},{target}"));
-        // Mihomo can continue matching if the selected chain cannot carry UDP.
-        if matches!(self.target, Target::Residential) {
-            result.push(format!("{kind},{value},REJECT"));
+        let target = self.target.outbound(sources, source)?;
+        let host_value = self.host_value.as_deref().map(str::trim).unwrap_or("");
+        match (self.host_matcher, host_value.is_empty()) {
+            (None, true) => {
+                result.push(format!("{kind},{value},{target}"));
+                // Mihomo can continue matching if the selected chain cannot carry UDP.
+                if matches!(self.target, Target::Residential) {
+                    result.push(format!("{kind},{value},REJECT"));
+                }
+            }
+            (Some(_), true) | (None, false) => {
+                return Err("精细域名规则需要同时填写匹配方式与匹配值".into());
+            }
+            (Some(host_matcher), false) => {
+                if !matches!(self.matcher, Matcher::ProcessName | Matcher::ProcessPath) {
+                    return Err("仅支持按应用匹配时叠加域名或 IP 精细规则".into());
+                }
+                let (host_kind, host_val) = host_matcher.compile(host_value)?;
+                let host_clause = if matches!(host_matcher, HostMatcher::Ip) {
+                    format!("{host_kind},{host_val},no-resolve")
+                } else {
+                    format!("{host_kind},{host_val}")
+                };
+                result.push(format!("AND,(({kind},{value}),({host_clause})),{target}"));
+                if matches!(self.target, Target::Residential) {
+                    result.push(format!("AND,(({kind},{value}),({host_clause})),REJECT"));
+                }
+            }
         }
         Ok(())
     }
 }
 
 impl Target {
-    fn outbound<'a>(&'a self, source: Option<&Source>) -> AirResult<&'a str> {
+    pub(crate) fn group_alias(source_id: &str, name: &str) -> String {
+        format!("air-group-{}", crate::subscriptions::digest(format!("{source_id}\0{name}")))
+    }
+    fn outbound<'a>(&'a self, sources: &'a [Source], source: Option<&'a Source>) -> AirResult<Cow<'a, str>> {
         match self {
-            Self::Direct => Ok("DIRECT"),
-            Self::Reject => Ok("REJECT"),
-            Self::Residential => Ok(EXIT_NAME),
+            Self::Direct => Ok(Cow::Borrowed("DIRECT")),
+            Self::Reject => Ok(Cow::Borrowed("REJECT")),
+            Self::Selected => Ok(Cow::Borrowed("GLOBAL")),
+            Self::Node { id } => {
+                let node = sources
+                    .iter()
+                    .flat_map(|src| src.nodes.iter())
+                    .find(|node| node.id == id.trim())
+                    .ok_or("规则指向的代理节点已不存在")?;
+                if node.is_subscription_notice() {
+                    return Err("分流规则不能将订阅提示设为出站节点".into());
+                }
+                Ok(Cow::Owned(node.kernel_name()))
+            }
+            Self::Residential => Ok(Cow::Borrowed(EXIT_NAME)),
             Self::Subscription => Err("「沿用订阅默认出口」仅用于默认出口".into()),
-            Self::Group { source_id, name } => source
-                .filter(|source| {
-                    &source.id == source_id && source.groups.iter().any(|group| &group.name == name)
-                })
-                .filter(|_| safe_field(name))
-                .map(|_| name.as_str())
-                .ok_or_else(|| "所选代理组在当前订阅中不存在或名称不受支持".into()),
+            Self::Group { source_id, name } => {
+                if !safe_field(name) || !sources.iter().any(|s| &s.id == source_id && s.groups.iter().any(|g| &g.name == name)) {
+                    return Err("所选代理组在当前订阅中不存在或名称不受支持".into());
+                }
+                Ok(if source.is_some_and(|s| &s.id == source_id) { Cow::Borrowed(name) }
+                    else { Cow::Owned(Self::group_alias(source_id, name)) })
+            }
+        }
+    }
+}
+
+impl HostMatcher {
+    fn compile(self, raw: &str) -> AirResult<(&'static str, String)> {
+        match self {
+            Self::Domain => Matcher::Domain.compile(raw),
+            Self::DomainSuffix => Matcher::DomainSuffix.compile(raw),
+            Self::Ip => Matcher::Ip.compile(raw),
         }
     }
 }

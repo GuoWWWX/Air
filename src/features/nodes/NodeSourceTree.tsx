@@ -1,3 +1,5 @@
+import { preferences } from '@/shared/lib/preferences'
+import { tr } from '@/shared/i18n/messages'
 import {
   Bookmark,
   CheckSquare,
@@ -70,6 +72,16 @@ export function isCustomSource(source: Library['sources'][number]) {
   return source.id === 'custom' || source.details?.kind === 'custom'
 }
 
+function loadIdSet(key: string): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(preferences.getItem(key) ?? 'null')
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((item): item is string => typeof item === 'string'))
+    }
+  } catch { /* Ignore invalid saved set. */ }
+  return new Set()
+}
+
 export function NodeSourceTree({
   library,
   customGroups,
@@ -123,11 +135,19 @@ export function NodeSourceTree({
     .filter(source => library.groups.some(group => group.sourceId === source.id))
     .map(source => source.id)
 
-  const [collapsedSources, setCollapsedSources] = useState<Set<string>>(() => new Set())
+  const [collapsedSources, setCollapsedSources] = useState<Set<string>>(() => loadIdSet('air.nodeTreeCollapsedSources'))
   const [hoveredTool, setHoveredTool] = useState<'collapse' | 'newGroup' | null>(null)
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set())
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => loadIdSet('air.nodeTreeCollapsedGroups'))
   const [dropGroupId, setDropGroupId] = useState<string>()
   const selectedGroup = scope.kind === 'customGroup' ? scope.groupId : undefined
+
+  useEffect(() => {
+    preferences.setItem('air.nodeTreeCollapsedSources', JSON.stringify([...collapsedSources]))
+  }, [collapsedSources])
+
+  useEffect(() => {
+    preferences.setItem('air.nodeTreeCollapsedGroups', JSON.stringify([...collapsedGroups]))
+  }, [collapsedGroups])
 
   useEffect(() => {
     const ancestors = new Set<string>()
@@ -195,7 +215,7 @@ export function NodeSourceTree({
             {children && (
               <button
                 type="button"
-                aria-label={`${isExpanded ? '收起' : '展开'} ${group.name}`}
+                aria-label={`${isExpanded ? tr('收起') : tr('展开')} ${group.name}`}
                 aria-expanded={isExpanded}
                 onClick={() => toggleCustomGroup(group.id)}
                 className="grid size-5 shrink-0 place-items-center rounded-[5px] text-muted-foreground outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/60"
@@ -225,29 +245,28 @@ export function NodeSourceTree({
               <ContextMenuContent>
                 <ContextMenuItem disabled={!clipboardSize} onClick={() => onPasteNodes(group)}>
                   <ClipboardPaste />
-                  {clipboardSize ? `粘贴节点（${clipboardSize}）` : '粘贴节点'}
+                  {clipboardSize ? tr("粘贴节点（{0}）", clipboardSize) : tr('粘贴节点')}
                 </ContextMenuItem>
                 {validMembers.length > 0 && (
-                  <ContextMenuItem onClick={() => onCopyNodes(validMembers)}><Copy />复制组内节点</ContextMenuItem>
+                  <ContextMenuItem onClick={() => onCopyNodes(validMembers)}><Copy />{tr("复制组内节点")}</ContextMenuItem>
                 )}
                 <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => onCreateGroupNode(group.id)}><Plus />新建节点</ContextMenuItem>
+                <ContextMenuItem onClick={() => onCreateGroupNode(group.id)}><Plus />{tr("新建节点")}</ContextMenuItem>
                 {onCreateCustomGroup && (
-                  <ContextMenuItem onClick={() => onCreateCustomGroup(group)}><FolderPlus />新建子分组</ContextMenuItem>
+                  <ContextMenuItem onClick={() => onCreateCustomGroup(group)}><FolderPlus />{tr("新建子分组")}</ContextMenuItem>
                 )}
                 <ContextMenuSeparator />
                 <ContextMenuItem onClick={() => onSelectScope({ kind: 'customGroup', groupId: group.id })}>
-                  <Bookmark />筛选此分组节点
-                </ContextMenuItem>
+                  <Bookmark />{tr("筛选此分组节点")}</ContextMenuItem>
                 {onSelectGroupNodes && validMembers.length > 0 && (
-                  <ContextMenuItem onClick={() => onSelectGroupNodes(validMembers)}><CheckSquare />勾选组内全部节点</ContextMenuItem>
+                  <ContextMenuItem onClick={() => onSelectGroupNodes(validMembers)}><CheckSquare />{tr("勾选组内全部节点")}</ContextMenuItem>
                 )}
                 {(onRenameCustomGroup || onDeleteCustomGroup) && <ContextMenuSeparator />}
                 {onRenameCustomGroup && (
-                  <ContextMenuItem onClick={() => onRenameCustomGroup(group)}><Pencil />重命名分组</ContextMenuItem>
+                  <ContextMenuItem onClick={() => onRenameCustomGroup(group)}><Pencil />{tr("重命名分组")}</ContextMenuItem>
                 )}
                 {onDeleteCustomGroup && (
-                  <ContextMenuItem variant="destructive" onClick={() => onDeleteCustomGroup(group)}><Trash2 />删除分组</ContextMenuItem>
+                  <ContextMenuItem variant="destructive" onClick={() => onDeleteCustomGroup(group)}><Trash2 />{tr("删除分组")}</ContextMenuItem>
                 )}
               </ContextMenuContent>
             </ContextMenu>
@@ -264,18 +283,18 @@ export function NodeSourceTree({
 
   return (
     <Card
-      aria-label="订阅与分组目录"
+      aria-label={tr("订阅与分组目录")}
       className="h-full min-h-0 w-full gap-2 p-2.5 text-sm select-none"
     >
       <div className="flex shrink-0 items-center justify-between gap-2 px-1 py-0.5">
-        <span className="flex items-center gap-1.5 font-semibold text-foreground">
+        <span className="flex min-w-0 items-center gap-1.5 font-semibold text-foreground">
           <Layers className="size-4 shrink-0 text-primary" />
-          订阅与分组
+          <span className="truncate">{tr("订阅与分组")}</span>
         </span>
         <motion.button
           type="button"
-          aria-label="收起分组树"
-          title="收起分组树"
+          aria-label={tr("收起分组树")}
+          title={tr("收起分组树")}
           whileHover={{ scale: 1.06 }}
           whileTap={{ scale: 0.92 }}
           transition={{ type: 'spring', stiffness: 520, damping: 28 }}
@@ -318,7 +337,7 @@ export function NodeSourceTree({
                 scope.kind === 'all' ? 'text-primary' : 'text-secondary-foreground/75',
               )}
             />
-            <span className="min-w-0 flex-1 truncate">全部节点</span>
+            <span className="min-w-0 flex-1 truncate">{tr("全部节点")}</span>
             <span
               className={cn(
                 'mono shrink-0 text-xs transition-colors duration-150 group-hover:text-primary',
@@ -331,9 +350,7 @@ export function NodeSourceTree({
 
         {subscriptionSources.length > 0 && (
           <div className="mt-1.5 flex flex-col gap-0.5">
-            <span className="px-2 pb-1 text-xs font-semibold text-muted-foreground">
-              订阅来源
-            </span>
+            <span className="px-2 pb-1 text-xs font-semibold text-muted-foreground">{tr("订阅来源")}</span>
 
             {subscriptionSources.map(source => {
               const sourceGroups = library.groups.filter(group => group.sourceId === source.id)
@@ -364,7 +381,7 @@ export function NodeSourceTree({
                       {hasChildren ? (
                         <motion.button
                           type="button"
-                          aria-label={isExpanded ? `收起 ${source.name}` : `展开 ${source.name}`}
+                          aria-label={isExpanded ? tr("收起 {0}", source.name) : tr("展开 {0}", source.name)}
                           aria-expanded={isExpanded}
                           whileHover={{ scale: 1.08 }}
                           whileTap={{ scale: 0.9 }}
@@ -440,19 +457,15 @@ export function NodeSourceTree({
                           if (hasChildren && !isExpanded) toggleExpand(source.id)
                         }}
                       >
-                        <FolderOpen />
-                        查看该订阅节点
-                      </ContextMenuItem>
+                        <FolderOpen />{tr("查看该订阅节点")}</ContextMenuItem>
                       {sourceNodes.length > 0 && (
                         <ContextMenuItem onClick={() => onCopyNodes(sourceNodes)}>
-                          <Copy />
-                          复制订阅节点
-                        </ContextMenuItem>
+                          <Copy />{tr("复制订阅节点")}</ContextMenuItem>
                       )}
                       {hasChildren && (
                         <ContextMenuItem onClick={() => toggleExpand(source.id)}>
                           {isExpanded ? <ChevronDown /> : <ChevronRight />}
-                          {isExpanded ? '收起下属分组' : '展开下属分组'}
+                          {isExpanded ? tr('收起下属分组') : tr('展开下属分组')}
                         </ContextMenuItem>
                       )}
                       {(onRefreshSource || onEditYaml) && <ContextMenuSeparator />}
@@ -461,15 +474,11 @@ export function NodeSourceTree({
                           disabled={!canRefresh}
                           onClick={() => onRefreshSource(source.id)}
                         >
-                          <RefreshCw />
-                          刷新订阅
-                        </ContextMenuItem>
+                          <RefreshCw />{tr("刷新订阅")}</ContextMenuItem>
                       )}
                       {onEditYaml && (
                         <ContextMenuItem onClick={() => onEditYaml(source.id)}>
-                          <FileCode2 />
-                          编辑 YAML
-                        </ContextMenuItem>
+                          <FileCode2 />{tr("编辑 YAML")}</ContextMenuItem>
                       )}
                     </ContextMenuContent>
                   </ContextMenu>
@@ -544,22 +553,16 @@ export function NodeSourceTree({
                                       })
                                     }
                                   >
-                                    <Layers />
-                                    筛选此分组节点
-                                  </ContextMenuItem>
+                                    <Layers />{tr("筛选此分组节点")}</ContextMenuItem>
                                   {group.members.length > 0 && (
                                     <ContextMenuItem onClick={() => onCopyNodes(group.members)}>
-                                      <Copy />
-                                      复制组内节点
-                                    </ContextMenuItem>
+                                      <Copy />{tr("复制组内节点")}</ContextMenuItem>
                                   )}
                                   {onSelectGroupNodes && group.members.length > 0 && (
                                     <ContextMenuItem
                                       onClick={() => onSelectGroupNodes(group.members)}
                                     >
-                                      <CheckSquare />
-                                      勾选组内全部节点
-                                    </ContextMenuItem>
+                                      <CheckSquare />{tr("勾选组内全部节点")}</ContextMenuItem>
                                   )}
                                 </ContextMenuContent>
                               </ContextMenu>
@@ -577,14 +580,12 @@ export function NodeSourceTree({
 
         <div className="mt-1.5 flex flex-col gap-0.5">
           <div className="flex items-center justify-between px-2 pb-1">
-            <span className="text-xs font-semibold text-muted-foreground">
-              本地自定义
-            </span>
+            <span className="text-xs font-semibold text-muted-foreground">{tr("本地自定义")}</span>
             {onCreateCustomGroup && (
               <motion.button
                 type="button"
-                aria-label="新建自定义分组"
-                title="新建自定义分组"
+                aria-label={tr("新建自定义分组")}
+                title={tr("新建自定义分组")}
                 whileHover={{ scale: 1.08 }}
                 whileTap={{ scale: 0.9 }}
                 transition={{ type: 'spring', stiffness: 520, damping: 28 }}
@@ -631,7 +632,7 @@ export function NodeSourceTree({
                     : 'text-secondary-foreground/75',
                 )}
               />
-              <span className="min-w-0 flex-1 truncate">自定义节点</span>
+              <span className="min-w-0 flex-1 truncate">{tr("自定义节点")}</span>
               <span
                 className={cn(
                   'mono shrink-0 text-xs transition-colors duration-150 group-hover:text-primary',
@@ -648,14 +649,10 @@ export function NodeSourceTree({
               <ContextMenuItem
                 onClick={() => onSelectScope({ kind: 'source', sourceId: 'custom' })}
               >
-                <Server />
-                查看自定义节点
-              </ContextMenuItem>
+                <Server />{tr("查看自定义节点")}</ContextMenuItem>
               {onAddCustom && (
                 <ContextMenuItem onClick={onAddCustom}>
-                  <Plus />
-                  添加自定义节点
-                </ContextMenuItem>
+                  <Plus />{tr("添加自定义节点")}</ContextMenuItem>
               )}
             </ContextMenuContent>
           </ContextMenu>
@@ -664,50 +661,36 @@ export function NodeSourceTree({
         </div>
 
         {subscriptionSources.length === 0 && customNodeCount === 0 && customGroups.length === 0 && (
-          <p className="px-2 py-3 text-xs leading-relaxed text-muted-foreground">
-            导入订阅或添加自定义节点、自定义分组后，可在此按结构快速切换查看。
-          </p>
+          <p className="px-2 py-3 text-xs leading-relaxed text-muted-foreground">{tr("导入订阅或添加自定义节点、自定义分组后，可在此按结构快速切换查看。")}</p>
         )}
         </ContextMenuTrigger>
 
         <ContextMenuContent>
           <ContextMenuItem onClick={() => onSelectScope({ kind: 'all' })}>
-            <Network />
-            查看全部节点
-          </ContextMenuItem>
+            <Network />{tr("查看全部节点")}</ContextMenuItem>
           {(onAddCustom || onCreateCustomGroup) && <ContextMenuSeparator />}
           {onAddCustom && (
             <ContextMenuItem onClick={onAddCustom}>
-              <Plus />
-              添加自定义节点
-            </ContextMenuItem>
+              <Plus />{tr("添加自定义节点")}</ContextMenuItem>
           )}
           {onCreateCustomGroup && (
             <ContextMenuItem onClick={() => onCreateCustomGroup()}>
-              <Layers />
-              新建自定义分组
-            </ContextMenuItem>
+              <Layers />{tr("新建自定义分组")}</ContextMenuItem>
           )}
           {expandableSourceIds.length > 0 && (
             <>
               <ContextMenuSeparator />
               <ContextMenuItem onClick={() => setCollapsedSources(new Set())}>
-                <ChevronDown />
-                展开全部分组
-              </ContextMenuItem>
+                <ChevronDown />{tr("展开全部分组")}</ContextMenuItem>
               <ContextMenuItem onClick={() => setCollapsedSources(new Set(expandableSourceIds))}>
-                <ChevronRight />
-                收起全部分组
-              </ContextMenuItem>
+                <ChevronRight />{tr("收起全部分组")}</ContextMenuItem>
             </>
           )}
           {onImport && (
             <>
               <ContextMenuSeparator />
               <ContextMenuItem onClick={onImport}>
-                <CloudDownload />
-                导入订阅
-              </ContextMenuItem>
+                <CloudDownload />{tr("导入订阅")}</ContextMenuItem>
             </>
           )}
         </ContextMenuContent>

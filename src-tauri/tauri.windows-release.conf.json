@@ -8,11 +8,13 @@
     "resources": {
       "windows/Mihomo-LICENSE.txt": "Mihomo-LICENSE.txt",
       "windows/Mihomo-build-info.txt": "Mihomo-build-info.txt",
+      "../.cache/air/windows-x64/Wintun-LICENSE.txt": "Wintun-LICENSE.txt",
       "../src/assets/air.ico": "Air-Proxy.ico"
     },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
+        "languages": ["English", "SimpChinese"],
         "installerIcon": "../src/assets/air.ico",
         "installerHooks": "windows/shortcut-icons.nsh",
         "uninstallerIcon": "../src/assets/air.ico"

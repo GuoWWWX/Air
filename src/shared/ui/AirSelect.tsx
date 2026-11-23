@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { Select as BaseSelect } from '@base-ui/react/select'
 import { ChevronDown } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -21,6 +22,7 @@ interface Props<Value extends string> {
   variant?: 'default' | 'ghost'
   className?: string
   side?: 'top' | 'bottom'
+  align?: 'start' | 'center' | 'end'
   disabled?: boolean
   required?: boolean
 }
@@ -36,11 +38,13 @@ export function AirSelect<Value extends string>({
   variant = 'default',
   className,
   side = 'bottom',
+  align = 'start',
   disabled,
   required,
 }: Props<Value>) {
   const items = options.map(option => ({ value: option.value, label: option.label }))
   const current = value || null
+  const currentOption = options.find(item => item.value === value)
 
   return (
     <Select
@@ -57,6 +61,7 @@ export function AirSelect<Value extends string>({
     >
       <SelectTrigger
         aria-label={label}
+        title={currentOption?.label}
         showIcon={false}
         className={cn(
           'justify-between gap-2 font-normal',
@@ -68,7 +73,7 @@ export function AirSelect<Value extends string>({
       >
         <span className="flex min-w-0 items-center gap-1.5 truncate">
           {leading && <span className="flex shrink-0 items-center text-muted-foreground [&_svg]:size-3.5">{leading}</span>}
-          <SelectValue placeholder={placeholder ?? '请选择'} className="truncate data-placeholder:text-muted-foreground/70" />
+          <SelectValue placeholder={placeholder ?? tr('请选择')} className="truncate data-placeholder:text-muted-foreground/70" />
         </span>
         {trailing && (
           <BaseSelect.Icon className="flex shrink-0 items-center text-muted-foreground transition-transform duration-150 data-popup-open:rotate-180 [&_svg]:size-3.5">
@@ -76,17 +81,17 @@ export function AirSelect<Value extends string>({
           </BaseSelect.Icon>
         )}
       </SelectTrigger>
-      <SelectContent side={side} align="start">
+      <SelectContent side={side} align={align}>
         {options.length > 0 ? (
           <SelectGroup>
             {options.map(option => (
-              <SelectItem key={option.value} value={option.value} disabled={option.disabled} label={option.label}>
+              <SelectItem key={option.value} value={option.value} disabled={option.disabled} label={option.label} title={option.label}>
                 {option.label}
               </SelectItem>
             ))}
           </SelectGroup>
         ) : (
-          <div className="px-2.5 py-2 text-center text-xs text-muted-foreground">暂无可选项</div>
+          <div className="px-2.5 py-2 text-center text-xs text-muted-foreground">{tr("暂无可选项")}</div>
         )}
       </SelectContent>
     </Select>

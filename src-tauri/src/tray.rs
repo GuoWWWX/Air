@@ -1,6 +1,7 @@
 mod artwork;
 mod menu_icons;
 
+use crate::languages::tr;
 use self::artwork::TaskbarAppearance;
 use air::proxy::{Mode, Status};
 use serde::Serialize;
@@ -66,6 +67,7 @@ impl TrayStatusIcon {
 
 struct TrayMenu {
     state: Mutex<MenuState>,
+    captions: [(&'static str, IconMenuItem<tauri::Wry>); 4],
     power: IconMenuItem<tauri::Wry>,
     icons: Mutex<menu_icons::MenuIcons>,
     modes: [(Mode, CheckMenuItem<tauri::Wry>); 3],
@@ -83,11 +85,11 @@ impl TrayMenu {
         if icon != state.status_icon() || next.appearance != state.appearance {
             if let Some(tray) = app.tray_by_id(ID) {
                 tray.set_icon(Some(next.appearance.image(icon)?))?;
-                tray.set_tooltip(Some(icon.tooltip()))?;
+                tray.set_tooltip(Some(tr(icon.tooltip())))?;
             }
         }
         if next.running != state.running {
-            self.power.set_text(if next.running { "停止代理" } else { "启动代理" })?;
+            self.power.set_text(tr(if next.running { "停止代理" } else { "启动代理" }))?;
         }
         let size_changed = next.appearance.icon_size != state.appearance.icon_size;
         if size_changed || next.running != state.running {
@@ -139,10 +141,10 @@ impl TrayMenu {
 
 pub fn setup(app: &App) -> tauri::Result<()> {
     let icon_item = |id, text, enabled| {
-        IconMenuItem::with_id(app, id, text, enabled, None, None::<&str>)
+        IconMenuItem::with_id(app, id, tr(text), enabled, None, None::<&str>)
     };
     let check_item = |id, text, enabled, checked| {
-        CheckMenuItem::with_id(app, id, text, enabled, checked, None::<&str>)
+        CheckMenuItem::with_id(app, id, tr(text), enabled, checked, None::<&str>)
     };
     let state = MenuState {
         appearance: TaskbarAppearance::current(),
@@ -192,6 +194,7 @@ pub fn setup(app: &App) -> tauri::Result<()> {
     icons.apply(state.appearance.icon_size, state.running, false)?;
     app.manage(TrayMenu {
         state: Mutex::new(state),
+        captions: [("打开 Air", show), ("出站模式", route), ("网络接管", network), ("退出 Air", exit)],
         power,
         icons: Mutex::new(icons),
         modes,
@@ -200,7 +203,7 @@ pub fn setup(app: &App) -> tauri::Result<()> {
     });
     TrayIconBuilder::with_id(ID)
         .icon(icon)
-        .tooltip(state.status_icon().tooltip())
+        .tooltip(tr(state.status_icon().tooltip()))
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
@@ -221,6 +224,28 @@ pub fn setup(app: &App) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    Ok(())
+}
+
+pub fn refresh_language(app: &AppHandle) -> tauri::Result<()> {
+    let menu = app.state::<TrayMenu>();
+    let state = *menu.state.lock().expect("tray state poisoned");
+    for (key, item) in &menu.captions {
+        item.set_text(tr(key))?;
+    }
+    menu.power.set_text(tr(if state.running { "停止代理" } else { "启动代理" }))?;
+    for (mode, item) in &menu.modes {
+        item.set_text(tr(match mode {
+            Mode::Rule => "规则",
+            Mode::Global => "全局",
+            Mode::Direct => "直连",
+        }))?;
+    }
+    menu.system_proxy.set_text(tr("系统代理"))?;
+    menu.tun.set_text(tr("虚拟网卡"))?;
+    if let Some(tray) = app.tray_by_id(ID) {
+        tray.set_tooltip(Some(tr(state.status_icon().tooltip())))?;
+    }
     Ok(())
 }
 
@@ -277,6 +302,9 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn show_window(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(startup) = app.try_state::<crate::StartupReveal>() {
+        startup.0.store(true, std::sync::atomic::Ordering::Release);
+    }
     if let Some(window) = app.get_webview_window("main") {
         app.state::<Arc<crate::commands::App>>().set_window_hidden(false);
         window.show()?;

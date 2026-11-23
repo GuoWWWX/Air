@@ -23,7 +23,7 @@ export function TrafficBars({ running, heights }: { running: boolean; heights: r
             key={index}
             style={{ height: `${running ? height : Math.max(12, Math.round(height * 0.45))}%` }}
             className={cn(
-              'flex-1 rounded-t-[2px] transition-all duration-300',
+              'flex-1 rounded-t-[2px] transition-[height,background-color] duration-300',
               running
                 ? last
                   ? 'bg-primary'

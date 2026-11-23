@@ -119,6 +119,7 @@ val buildWeb by tasks.registering(Exec::class) {
     workingDir(projectRoot)
     inputs.dir(rootProject.file("web"))
     inputs.dir(projectRoot.resolve("src/shared"))
+    inputs.dir(projectRoot.resolve("resources/languages"))
     inputs.dir(projectRoot.resolve("src/assets"))
     inputs.file(projectRoot.resolve("package.json"))
     inputs.file(projectRoot.resolve("pnpm-lock.yaml"))
@@ -126,6 +127,9 @@ val buildWeb by tasks.registering(Exec::class) {
     val buildArgs = listOf("pnpm", "exec", "vite", "build", "--config", "android/web/vite.config.ts")
     commandLine(if (System.getProperty("os.name").startsWith("Windows")) listOf("cmd", "/d", "/c") + buildArgs else buildArgs)
 }
+
+val supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+val splitApks = providers.gradleProperty("airSplitApks").map(String::toBoolean).getOrElse(false)
 
 android {
     namespace = "app.air.android"
@@ -136,8 +140,18 @@ android {
         targetSdk = 36
         versionCode = 3
         versionName = "1.0.2"
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        if (!splitApks) {
+            ndk { abiFilters += supportedAbis }
+        }
+    }
+    if (splitApks) {
+        splits {
+            abi {
+                isEnable = true
+                reset()
+                include(*supportedAbis.toTypedArray())
+                isUniversalApk = true
+            }
         }
     }
     compileOptions {
@@ -145,6 +159,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     sourceSets["main"].assets.srcDir(webAssets)
+    sourceSets["main"].assets.srcDir(projectRoot.resolve("resources"))
     sourceSets["main"].assets.srcDir(geodataAssets)
     sourceSets["main"].res.srcDir(iconResources)
     packaging {

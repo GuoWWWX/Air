@@ -2,7 +2,8 @@ use crate::AirResult;
 use serde_json::{Map, Value};
 
 const CORE_FIELDS: &str = "mode find-process-mode profile log-level rules proxies proxy-groups rule-providers
-    dns hosts ipv6 tcp-concurrent tun mixed-port allow-lan bind-address lan-allowed-ips";
+    dns hosts ipv6 tcp-concurrent unified-delay keep-alive-idle keep-alive-interval disable-keep-alive sniffer
+    tun mixed-port allow-lan bind-address lan-allowed-ips";
 const PROXY_FIELDS: &str = "name type server port mport ports udp udp-over-tcp udp-over-tcp-version
     ip-version dialer-proxy tfo mux smux network uuid alterId alter-id cipher security flow packet-encoding
     xudp packet-addr global-padding authenticated-length tls servername sni skip-cert-verify
@@ -19,7 +20,7 @@ const DNS_FIELDS: &str = "enable ipv6 use-system-hosts use-hosts respect-rules n
     direct-nameserver proxy-server-nameserver fallback fallback-filter fake-ip-filter fake-ip-range enhanced-mode
     nameserver-policy direct-nameserver-follow-policy cache-algorithm";
 const TUN_FIELDS: &str = "enable device stack auto-route auto-detect-interface strict-route
-    route-exclude-address dns-hijack inet6-address mtu";
+    endpoint-independent-nat route-exclude-address dns-hijack inet6-address mtu";
 
 fn fields<'a>(value: &'a Value, allowed: &str, label: &str) -> AirResult<&'a Map<String, Value>> {
     let values = value.as_object().ok_or_else(|| format!("虚拟网卡服务中的{label}格式无效"))?;
@@ -76,6 +77,19 @@ pub(super) fn runtime_config(mut value: Value) -> AirResult<serde_yaml::Value> {
     if value["tun"]["device"].as_str() != Some("Air-TUN") {
         return Err("虚拟网卡服务中的网卡名称无效".into());
     }
+    if let Some(sniffer) = value.get("sniffer") {
+        fields(
+            sniffer,
+            "enable force-dns-mapping parse-pure-ip override-destination sniff skip-domain force-domain",
+            "域名嗅探",
+        )?;
+        if let Some(protocols) = sniffer.get("sniff") {
+            let map = fields(protocols, "HTTP TLS QUIC", "嗅探协议")?;
+            for (proto, opts) in map {
+                fields(opts, "ports override-destination", proto)?;
+            }
+        }
+    }
     if let Some(entries) = value.get_mut("rule-providers") {
         let providers = entries.as_object_mut().ok_or("虚拟网卡服务中的规则集无效")?;
         for (index, provider) in providers.values_mut().enumerate() {
@@ -119,6 +133,32 @@ mod tests {
         let mut node_file = config();
         node_file["proxies"][0]["private-key"] = json!("example-path");
         assert!(runtime_config(node_file).is_err());
+    }
+
+    #[test]
+    fn accepts_runtime_keepalive_sniffer_and_nat_fields_and_rejects_unknown_sniffer_keys() {
+        let mut valid = config();
+        valid["unified-delay"] = json!(true);
+        valid["keep-alive-idle"] = json!(600);
+        valid["keep-alive-interval"] = json!(15);
+        valid["disable-keep-alive"] = json!(false);
+        valid["tun"]["endpoint-independent-nat"] = json!(true);
+        valid["sniffer"] = json!({
+            "enable": true,
+            "force-dns-mapping": true,
+            "parse-pure-ip": false,
+            "override-destination": false,
+            "sniff": {
+                "HTTP": { "ports": [80, "8080-8880"], "override-destination": false },
+                "TLS": { "ports": [443, 8443] },
+                "QUIC": { "ports": [443, 8443] }
+            },
+            "skip-domain": ["Mijia Cloud", "+.push.apple.com", "+.lan", "+.local", "+.localdomain"]
+        });
+        assert!(runtime_config(valid.clone()).is_ok());
+
+        valid["sniffer"]["unexpected"] = json!(true);
+        assert!(runtime_config(valid).is_err());
     }
 
     #[test]

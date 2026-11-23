@@ -104,13 +104,16 @@ pub(super) fn sample(
                     Application {
                         name: "未知应用".into(),
                         executable: None,
+                        process_name: None,
+                        process_path: None,
                         icon_key: None,
                     },
                 );
             }
             continue;
         };
-        let key = path.to_string_lossy().to_lowercase();
+        let full_path = path.to_string_lossy().into_owned();
+        let key = full_path.to_lowercase();
         if cache.len() >= CACHE_LIMIT && !cache.contains_key(&key) {
             if let Some(oldest) = cache
                 .iter()
@@ -139,6 +142,8 @@ pub(super) fn sample(
             Application {
                 name: executable.name.clone(),
                 executable: (executable.name != executable.file).then(|| executable.file.clone()),
+                process_name: Some(executable.file.clone()),
+                process_path: Some(full_path),
                 icon_key,
             },
         );

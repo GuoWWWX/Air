@@ -128,7 +128,7 @@ impl RoutingFile {
         }
         let legacy = NetworkSettings {
             nameserver: vec!["system".into()], proxy_server_nameserver: vec![], enhanced_mode: "auto".into(),
-            respect_rules: false, strict_route: false, ..NetworkSettings::default()
+            respect_rules: false, strict_route: false, tcp_concurrent: false, ..NetworkSettings::default()
         };
         let template = serde_yaml::to_string(&serde_json::json!({ "routing": RoutingConfig::default(), "network": legacy }))
             .map_err(yaml_error)?;

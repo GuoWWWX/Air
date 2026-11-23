@@ -1,6 +1,8 @@
 package app.air.android
 
 import android.Manifest
+import android.animation.ValueAnimator
+import android.app.UiModeManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -9,10 +11,15 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.AtomicFile
 import android.util.Base64
 import android.util.LruCache
 import android.webkit.PermissionRequest
@@ -25,6 +32,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.annotation.RequiresApi
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -41,31 +49,54 @@ import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 
 class MainActivity : ComponentActivity() {
+    private lateinit var root: FrameLayout
     private lateinit var web: WebView
     private lateinit var container: FrameLayout
     private val requests = Executors.newSingleThreadExecutor()
-    private val applications = LruCache<String, JSONObject>(64)
+    private val probeRequests = Executors.newSingleThreadExecutor()
+    private val networkRequests = Executors.newFixedThreadPool(3)
+    private val applications = LruCache<String, JSONObject>(128)
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var pendingVpn: Pair<Message, JSONObject>? = null
     private var pendingExport: Pair<Message, String>? = null
     private var pendingFile: Pair<Message, Boolean>? = null
     private var pendingCamera: PermissionRequest? = null
+    private var currentDark = false
+    private var splashReady = false
+    private var splashShownAt = 0L
+    private var visualStateToken = 0L
+    private var splashOverlay: SplashOverlay? = null
+    private var splashTimeoutRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        root = FrameLayout(this)
         container = FrameLayout(this)
-        setContentView(container)
+        root.addView(container, FrameLayout.LayoutParams(-1, -1))
+        setContentView(root)
         ViewCompat.setOnApplyWindowInsetsListener(container) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
             view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, keyboard.bottom))
             insets
         }
-        // 初始化仅同步系统栏图标明暗，保留 windowBackground 展示冷启动 Logo
-        val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        WindowCompat.getInsetsController(window, container).apply {
-            isAppearanceLightStatusBars = !systemDark
-            isAppearanceLightNavigationBars = !systemDark
+        val systemDark = isNightConfig(resources.configuration)
+        currentDark = when (savedThemeMode()) {
+            "dark" -> true
+            "light" -> false
+            else -> systemDark
+        }
+        val overlay = SplashOverlay(this, currentDark)
+        splashOverlay = overlay
+        root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        applyThemeChrome(currentDark)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            setupSplashV31()
+        }
+        root.post { startSplashOverlay() }
+        splashTimeoutRunnable = Runnable { markWebReady() }.also {
+            mainHandler.postDelayed(it, SPLASH_TIMEOUT_MS)
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -80,9 +111,11 @@ class MainActivity : ComponentActivity() {
         })
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             container.addView(TextView(this).apply {
-                text = "请更新 Android System WebView 后重新打开 Air。"
+                text = Languages.read(this@MainActivity).getJSONObject("messages").getString("请更新 Android System WebView 后重新打开 Air。")
+                setTextColor(if (currentDark) Color.rgb(244, 244, 245) else Color.rgb(27, 36, 53))
                 setPadding(32, 48, 32, 32)
             })
+            dismissSplashOverlayImmediate()
             return
         }
         val loader = WebViewAssetLoader.Builder().addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this)).build()
@@ -92,7 +125,13 @@ class MainActivity : ComponentActivity() {
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.setSupportMultipleWindows(false)
+            settings.setSupportZoom(false)
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
+            settings.setGeolocationEnabled(false)
             overScrollMode = WebView.OVER_SCROLL_NEVER
+            isVerticalScrollBarEnabled = false
+            isHorizontalScrollBarEnabled = false
             setBackgroundColor(Color.TRANSPARENT)
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
@@ -128,6 +167,18 @@ class MainActivity : ComponentActivity() {
         val data = request.optJSONObject("data") ?: JSONObject()
         try {
             when (request.optString("action")) {
+                "readUiPreferences" -> work(message, requests) {
+                    val file = File(configDirectory(this), "interface.json")
+                    if (file.isFile) JSONObject(file.readText()) else JSONObject.NULL
+                }
+                "writeUiPreferences" -> work(message, requests) {
+                    val file = File(configDirectory(this), "interface.json")
+                    writeAtomic(AtomicFile(file), data.getJSONObject("values").toString().toByteArray(Charsets.UTF_8))
+                    true
+                }
+                "languages" -> work(message, requests) { Languages.read(this) }
+                "chooseLanguage" -> work(message, requests) { Languages.choose(this, data.getString("code")) }
+                "importLanguage" -> work(message, requests) { Languages.importPack(this, data.getString("text")); true }
                 "load" -> work(message, requests) { AirLibrary.read(this).apply {
                     SubscriptionUpdates.schedule(this@MainActivity, this)
                     val stored = remove("monitorPlan") as? JSONObject
@@ -137,13 +188,26 @@ class MainActivity : ComponentActivity() {
                     AirLibrary.save(this, data)
                     true
                 }
+                "saveOutbound" -> work(message, requests) {
+                    val mode = data.getString("mode")
+                    require(mode in setOf("rule", "global", "direct"))
+                    AirLibrary.saveOutbound(this, mode, data.optJSONObject("choice"))
+                    true
+                }
                 "kernelInfo" -> message.send(JSONObject().put("version", "1.19.34").put("appVersion", appVersion())
                     .put("sdk", Build.VERSION.SDK_INT).put("abi", Build.SUPPORTED_ABIS.firstOrNull().orEmpty()))
                 "monitorResults" -> work(message, requests) { AirLibrary.monitorResults(this) }
-                "validatePlan", "testDns", "probe" -> work(message, requests) {
+                "validatePlan", "testDns" -> work(message, requests) {
                     AirDiagnostics.run(this, request.getString("action"), data)
                 }
-                "checkUpdate" -> work(message, requests) { checkForAndroidUpdate(appVersion()) }
+                "probe" -> work(message, probeRequests) {
+                    val progress = if (data.optBoolean("reportProgress")) message::progress else null
+                    AirDiagnostics.run(this, "probe", data, progress)
+                }
+                "cancelProbe" -> work(message, networkRequests) {
+                    AirDiagnostics.run(this, "cancelProbe", data)
+                }
+                "checkUpdate" -> work(message, networkRequests) { checkForAndroidUpdate(appVersion()) }
                 "openLink" -> {
                     val url = data.getString("url")
                     require(url == "https://github.com/GuoWWWX" || url.startsWith(RELEASE_PAGE_PREFIX)) {
@@ -152,7 +216,7 @@ class MainActivity : ComponentActivity() {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     message.send()
                 }
-                "fetch" -> work(message, requests) { fetchSubscription(data.getString("url")) }
+                "fetch" -> work(message, networkRequests) { fetchSubscription(data.getString("url")) }
                 "paste" -> {
                     val clip = getSystemService(ClipboardManager::class.java).primaryClip
                     message.send(clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty())
@@ -173,6 +237,10 @@ class MainActivity : ComponentActivity() {
                     catch (error: Exception) { pendingExport = null; throw error }
                 }
                 "file" -> pickFile(message, data.optString("type") == "qr")
+                "prepareProxy" -> work(message, Core.worker) {
+                    if (AirVpnService.isIdle()) Core.prepare(this, data)
+                    true
+                }
                 "start" -> startVpn(message, data)
                 "stop" -> {
                     AirVpnService.disconnect(this)
@@ -180,7 +248,13 @@ class MainActivity : ComponentActivity() {
                 }
                 "apply" -> work(message, Core.worker) {
                     check(AirVpnService.running()) { "VPN 未连接" }
-                    Core.applyLive(this, data)
+                    try {
+                        Core.applyLive(this, data)
+                        AirVpnService.updateOutbound(data)
+                    } catch (error: Exception) {
+                        if (!Core.hasActiveProfile()) runCatching { AirVpnService.disconnect(this) }
+                        throw error
+                    }
                     true
                 }
                 "runtimeConfig" -> work(message, Core.worker) {
@@ -188,20 +262,33 @@ class MainActivity : ComponentActivity() {
                 }
                 "status" -> message.send(AirVpnService.snapshot())
                 "connections" -> work(message, requests) {
-                    if (AirVpnService.running()) withApplicationIcons(jsonResult(Core.action("getConnections"))) else JSONObject()
+                    withApplicationIcons(AirVpnService.connections())
                 }
                 "closeConnection" -> work(message, Core.worker) {
                     if (AirVpnService.running()) Core.action("closeConnection", data.getString("id"))
                     true
                 }
-                "exit" -> work(message, requests) {
+                "exit" -> work(message, networkRequests) {
                     check(AirVpnService.running()) { "启动代理后可以检测出口" }
                     val result = jsonResult(Core.action("probeCurrentProxyIp", data.optString("mode")))
                     check(result.has("ip")) { "无法验证当前出口 IP" }
                     result
                 }
                 "theme" -> {
-                    setThemeColors(data.optBoolean("dark"))
+                    val dark = data.optBoolean("dark")
+                    val mode = data.optString("mode").takeIf { it in setOf("system", "light", "dark") }
+                    runOnUiThread {
+                        if (isDestroyed || isFinishing) return@runOnUiThread
+                        if (mode != null) persistThemeMode(mode)
+                        currentDark = dark
+                        applyThemeChrome(dark)
+                    }
+                    message.send()
+                }
+                "ready" -> {
+                    runOnUiThread {
+                        if (!isDestroyed && !isFinishing) markWebReady()
+                    }
                     message.send()
                 }
                 else -> message.fail("此版本不支持该操作")
@@ -224,9 +311,16 @@ class MainActivity : ComponentActivity() {
             val connection = connections.getJSONObject(index)
             val meta = connection.optJSONObject("metadata") ?: continue
             if (meta.optString("type").equals("inner", true)) continue
-            visible.put(connection)
-            val pkg = meta.optString("process")
-            if (pkg.isBlank() || visited.size >= 64 || !visited.add(pkg)) continue
+            val reportedPackage = meta.optString("process")
+            val pkg = reportedPackage.ifBlank {
+                val uid = meta.optInt("uid", -1)
+                if (uid > 0) packageManager.getPackagesForUid(uid)?.firstOrNull().orEmpty() else ""
+            }
+            val identified = if (reportedPackage.isBlank() && pkg.isNotBlank()) {
+                JSONObject(connection.toString()).apply { getJSONObject("metadata").put("process", pkg) }
+            } else connection
+            visible.put(identified)
+            if (pkg.isBlank() || visited.size >= 128 || !visited.add(pkg)) continue
             val info = applications.get(pkg) ?: runCatching {
                 val item = packageManager.getApplicationInfo(pkg, 0)
                 val name = packageManager.getApplicationLabel(item).toString()
@@ -261,6 +355,14 @@ class MainActivity : ComponentActivity() {
 
     private inner class Message(private val id: String, private val reply: JavaScriptReplyProxy) {
         fun send(value: Any = true) = deliver(JSONObject().put("id", id).put("value", value))
+        fun progress(completed: Int, alias: String? = null, delay: Int? = null) = deliver(
+            JSONObject().put("id", id).put("progress", completed).apply {
+                if (alias != null && delay != null) {
+                    put("alias", alias)
+                    put("delay", delay)
+                }
+            }
+        )
         fun fail(reason: String) = deliver(JSONObject().put("id", id).put("error", reason.take(400)))
         private fun deliver(data: JSONObject) {
             runOnUiThread {
@@ -275,12 +377,21 @@ class MainActivity : ComponentActivity() {
         check(pendingVpn == null) { "请先完成 Android VPN 授权" }
         val permission = VpnService.prepare(this)
         if (permission == null) {
-            AirVpnService.connect(this, plan)
-            message.send()
+            AirVpnService.connect(this, plan, message::send)
+            requestNotificationPermissionIfNeeded()
         } else {
             pendingVpn = message to plan
             startActivityForResult(permission, VPN_REQUEST)
         }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val prefs = getSharedPreferences(UI_PREFS, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_NOTIFICATIONS_ASKED, false)) return
+        prefs.edit().putBoolean(KEY_NOTIFICATIONS_ASKED, true).apply()
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_REQUEST)
     }
 
     private fun pickFile(message: Message, image: Boolean) {
@@ -303,9 +414,10 @@ class MainActivity : ComponentActivity() {
             VPN_REQUEST -> pendingVpn?.also { (message, plan) ->
                 pendingVpn = null
                 if (resultCode == RESULT_OK) {
-                    runCatching { AirVpnService.connect(this, plan) }.fold(
-                        { message.send() }, { message.fail(it.message ?: "VPN 启动失败") }
-                    )
+                    runCatching {
+                        AirVpnService.connect(this, plan, message::send)
+                        requestNotificationPermissionIfNeeded()
+                    }.onFailure { message.fail(it.message ?: "VPN 启动失败") }
                 } else message.fail("未授予 Android VPN 权限")
             }
             EXPORT_REQUEST -> pendingExport?.also { (message, text) ->
@@ -359,6 +471,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFICATION_REQUEST) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                AirVpnService.refreshNotification()
+            }
+            return
+        }
         if (requestCode == CAMERA_REQUEST) {
             val request = pendingCamera
             pendingCamera = null
@@ -368,18 +486,158 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun setThemeColors(dark: Boolean) {
-        container.setBackgroundColor(if (dark) Color.rgb(17, 24, 39) else Color.WHITE)
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (savedThemeMode() == "system") {
+            val systemDark = isNightConfig(newConfig)
+            currentDark = systemDark
+            applyThemeChrome(systemDark)
+            if (::web.isInitialized) {
+                web.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('air-system-theme',{detail:{dark:$systemDark}}))",
+                    null
+                )
+            }
+        }
+    }
+
+    private fun isNightConfig(config: Configuration): Boolean =
+        (config.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+    private fun themeColor(dark: Boolean): Int =
+        if (dark) Color.rgb(22, 22, 24) else Color.WHITE
+
+    private fun savedThemeMode(): String =
+        getSharedPreferences(UI_PREFS, MODE_PRIVATE).getString(KEY_THEME_MODE, "system") ?: "system"
+
+    private fun persistThemeMode(mode: String) {
+        val prefs = getSharedPreferences(UI_PREFS, MODE_PRIVATE)
+        if (prefs.getString(KEY_THEME_MODE, null) == mode) return
+        prefs.edit().putString(KEY_THEME_MODE, mode).apply()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            applyApplicationNightModeV31(mode)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun applyApplicationNightModeV31(mode: String) {
+        val nightMode = when (mode) {
+            "dark" -> UiModeManager.MODE_NIGHT_YES
+            "light" -> UiModeManager.MODE_NIGHT_NO
+            else -> UiModeManager.MODE_NIGHT_AUTO
+        }
+        runCatching {
+            getSystemService(UiModeManager::class.java)?.setApplicationNightMode(nightMode)
+        }
+    }
+
+    private fun applySystemBars(dark: Boolean) {
         WindowCompat.getInsetsController(window, container).apply {
             isAppearanceLightStatusBars = !dark
             isAppearanceLightNavigationBars = !dark
         }
     }
 
+    private fun applyThemeChrome(dark: Boolean) {
+        applySystemBars(dark)
+        val color = themeColor(dark)
+        container.setBackgroundColor(color)
+        window.setBackgroundDrawable(ColorDrawable(color))
+        splashOverlay?.applyTheme(dark)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun setupSplashV31() {
+        splashScreen.setOnExitAnimationListener { splashView ->
+            runCatching { splashView.remove() }
+            if (!isDestroyed && !isFinishing) {
+                applySystemBars(currentDark)
+                startSplashOverlay()
+            }
+        }
+    }
+
+    private fun startSplashOverlay() {
+        if (isDestroyed || isFinishing) return
+        val overlay = splashOverlay ?: return
+        if (splashShownAt == 0L) {
+            splashShownAt = SystemClock.uptimeMillis()
+        }
+        overlay.startAnimations()
+    }
+
+    private fun dismissSplashOverlay() {
+        if (isDestroyed || isFinishing) return
+        val overlay = splashOverlay ?: return
+        overlay.dismiss {
+            if (!isDestroyed && !isFinishing) {
+                root.removeView(overlay)
+                if (splashOverlay === overlay) splashOverlay = null
+                applySystemBars(currentDark)
+            }
+        }
+    }
+
+    private fun dismissSplashOverlayImmediate() {
+        splashReady = true
+        splashTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        splashTimeoutRunnable = null
+        splashOverlay?.let { overlay ->
+            overlay.stopAnimations()
+            root.removeView(overlay)
+            splashOverlay = null
+        }
+    }
+
+    private fun waitForWebFrame(onReady: () -> Unit) {
+        if (!::web.isInitialized || isDestroyed || isFinishing) {
+            onReady()
+            return
+        }
+        var fired = false
+        lateinit var timeout: Runnable
+        fun trigger() {
+            if (fired) return
+            fired = true
+            mainHandler.removeCallbacks(timeout)
+            onReady()
+        }
+        timeout = Runnable { trigger() }
+        mainHandler.postDelayed(timeout, VISUAL_STATE_CAP_MS)
+        web.postVisualStateCallback(++visualStateToken, object : WebView.VisualStateCallback() {
+            override fun onComplete(requestId: Long) {
+                if (Looper.myLooper() == Looper.getMainLooper()) trigger()
+                else mainHandler.post { trigger() }
+            }
+        })
+    }
+
+    private fun markWebReady() {
+        if (splashReady) return
+        splashReady = true
+        splashTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        splashTimeoutRunnable = null
+        val minDuration = if (ValueAnimator.areAnimatorsEnabled()) MIN_SPLASH_MS else 0L
+        val elapsed = if (splashShownAt > 0L) SystemClock.uptimeMillis() - splashShownAt else 0L
+        val delay = maxOf(0L, minDuration - elapsed)
+        val finish = Runnable {
+            if (!isDestroyed && !isFinishing) {
+                waitForWebFrame(::dismissSplashOverlay)
+            }
+        }
+        if (delay == 0L) finish.run() else mainHandler.postDelayed(finish, delay)
+    }
+
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        splashTimeoutRunnable = null
+        splashOverlay?.stopAnimations()
+        splashOverlay = null
         pendingCamera?.deny()
         requests.shutdownNow()
+        networkRequests.shutdownNow()
         if (::web.isInitialized) {
+            web.animate().cancel()
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                 WebViewCompat.removeWebMessageListener(web, "airAndroid")
             }
@@ -396,6 +654,13 @@ class MainActivity : ComponentActivity() {
         private const val EXPORT_REQUEST = 24
         private const val FILE_REQUEST = 21
         private const val CAMERA_REQUEST = 22
+        private const val NOTIFICATION_REQUEST = 23
+        private const val UI_PREFS = "air_ui"
+        private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_NOTIFICATIONS_ASKED = "notifications_asked"
+        private const val MIN_SPLASH_MS = 560L
+        private const val SPLASH_TIMEOUT_MS = 2500L
+        private const val VISUAL_STATE_CAP_MS = 120L
     }
 }
 
@@ -451,17 +716,71 @@ private fun readBounded(stream: java.io.InputStream, limit: Int): ByteArray {
     }
 }
 
-internal fun subscriptionTitle(header: String?): String? {
+private fun headerText(value: String): String {
+    // Some HTTP stacks expose raw UTF-8 header bytes as Latin-1 characters.
+    if (value.any { it.code >= 128 } && value.all { it.code <= 255 }) {
+        return runCatching { value.toByteArray(Charsets.ISO_8859_1).decodeToString(throwOnInvalidSequence = true) }
+            .getOrDefault(value)
+    }
+    return value
+}
+
+private fun validSubscriptionTitle(value: String): String? =
+    value.trim().takeIf { it.isNotEmpty() && it.codePointCount(0, it.length) <= 256 && it.none(Char::isISOControl) }
+
+private fun profileHeaderTitle(header: String?): String? {
     val raw = header?.trim() ?: return null
     val value = if (raw.startsWith("base64:", ignoreCase = true)) {
         runCatching {
             java.util.Base64.getDecoder().decode(raw.substring(7).trim()).decodeToString(throwOnInvalidSequence = true)
         }.getOrNull() ?: return null
-    } else if (raw.any { it.code >= 128 } && raw.all { it.code <= 255 }) {
-        // Some HTTP stacks expose the original UTF-8 bytes as Latin-1 characters.
-        runCatching { raw.toByteArray(Charsets.ISO_8859_1).decodeToString(throwOnInvalidSequence = true) }.getOrDefault(raw)
-    } else raw
-    return value.trim().takeIf { it.isNotEmpty() && it.codePointCount(0, it.length) <= 256 && it.none(Char::isISOControl) }
+    } else headerText(raw)
+    return validSubscriptionTitle(value)
+}
+
+private val dispositionField = Regex(""";\s*([^;=\s]+)\s*=\s*("(?:\\.|[^"\\])*"|[^;"]*)""")
+private val quotedPair = Regex("""\\(.)""")
+
+private fun extendedFilename(value: String): String? {
+    val fields = value.split('\'', limit = 3)
+    if (fields.size != 3) return null
+    val charset = fields[0]
+    val encoded = fields[2]
+    if (encoded.any { it.code > 127 }) return null
+    return runCatching {
+        // The extended filename uses percent escapes. A literal plus is not a space.
+        val octets = java.net.URLDecoder.decode(encoded.replace("+", "%2B"), Charsets.ISO_8859_1.name())
+        when {
+            charset.equals("UTF-8", true) -> octets.toByteArray(Charsets.ISO_8859_1).decodeToString(throwOnInvalidSequence = true)
+            charset.equals("ISO-8859-1", true) -> octets
+            else -> null
+        }
+    }.getOrNull()
+}
+
+private fun dispositionFilename(header: String): String? {
+    if (header.substringBefore(';').isBlank()) return null
+    var filename: String? = null
+    for (field in dispositionField.findAll(header)) {
+        val name = field.groupValues[1]
+        val raw = field.groupValues[2].trim()
+        val value = if (raw.startsWith('"')) quotedPair.replace(raw.removeSurrounding("\"")) { it.groupValues[1] } else raw
+        if (name.equals("filename*", true)) {
+            extendedFilename(value)?.let { return it }
+        } else if (name.equals("filename", true) && filename == null) {
+            filename = value
+        }
+    }
+    return filename
+}
+
+internal fun subscriptionTitle(profileHeader: String?, disposition: String?): String? {
+    profileHeaderTitle(profileHeader)?.let { return it }
+    val filename = disposition?.let(::headerText)?.let(::dispositionFilename)
+        ?.substringAfterLast('/')?.substringAfterLast('\\')?.trim() ?: return null
+    val extension = filename.substringAfterLast('.', "")
+    val label = if (extension.equals("yaml", true) || extension.equals("yml", true)) filename.substringBeforeLast('.') else filename
+    return validSubscriptionTitle(label)?.takeUnless { it == "." || it == ".." }
 }
 
 internal fun fetchSubscription(address: String): JSONObject {
@@ -482,7 +801,10 @@ internal fun fetchSubscription(address: String): JSONObject {
                 200 -> {
                     val bytes = connection.inputStream.use { readBounded(it, MAX_SUBSCRIPTION) }
                     return JSONObject().put("text", bytes.toString(Charsets.UTF_8))
-                        .put("profileTitle", subscriptionTitle(connection.getHeaderField("Profile-Title")))
+                        .put("profileTitle", subscriptionTitle(
+                            connection.getHeaderField("Profile-Title"),
+                            connection.getHeaderField("Content-Disposition"),
+                        ))
                         .put("usage", connection.getHeaderField("subscription-userinfo"))
                         .put("intervalHours", connection.getHeaderField("profile-update-interval")?.trim()?.toIntOrNull()?.takeIf { it in 1..720 })
                 }

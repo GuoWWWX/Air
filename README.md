@@ -1,6 +1,6 @@
 # Air Proxy
 
-Air 在本机管理代理订阅、节点、分组和链路，通过 Mihomo 提供代理、连接记录与测速。当前仓库可以构建 Windows 桌面版和 Android 手机版。iOS、macOS、HarmonyOS 与 Linux 的工程位置、权限模型和首轮验收见 [跨平台架构](docs/architecture.md#后续平台)。
+Air 在本机管理代理订阅、节点、分组和链路，通过 Mihomo 提供代理、连接记录与测速。当前仓库可以构建 Windows 桌面版和 Android 手机版。iOS、macOS、HarmonyOS 与 Linux 的工程位置、权限模型和首轮验收见 [跨平台架构](docs/目录与跨平台架构.md#后续平台)。
 
 **[下载最新版 Windows 安装包](https://github.com/GuoWWWX/Air-Proxy/releases/latest)**
 
@@ -13,10 +13,10 @@ Mihomo 作为独立进程随 Air 分发。安装目录包含其 GPL-3.0 许可�
 | 从哪里开始 | 入口 |
 | --- | --- |
 | 查看全部功能、两端差异及订阅更新和扩展用法 | [Air 功能与使用说明](docs/页面功能说明.md) |
-| 找源码，判断功能属于哪一端 | [目录与架构](docs/architecture.md) |
-| 启动开发版、构建 Android APK、运行测试、清理临时文件 | [开发与清理](docs/development.md) |
-| 制作 Windows 安装包和更新包、签名 Android APK | [Windows 发布](docs/releases/windows.md) · [Android 发布](docs/releases/android.md) |
-| 核对功能目标、交互和原型 | [项目规范](docs/project-standards.md) · [可编辑原型](design/air-prototype.pen) |
+| 找源码，判断功能属于哪一端 | [目录与架构](docs/目录与跨平台架构.md) |
+| 启动开发版、构建 Android APK、运行测试、清理临时文件 | [开发与清理](docs/开发构建与清理.md) |
+| 制作 Windows 安装包和更新包、签名 Android APK | [Windows 发布](docs/版本发布/windows.md) · [Android 发布](docs/版本发布/android.md) |
+| 核对功能目标、交互和原型 | [项目规范](docs/项目规范.md) · [可编辑原型](design/air-prototype.pen) |
 
 ## 工程入口
 
@@ -28,4 +28,4 @@ Mihomo 作为独立进程随 Air 分发。安装目录包含其 GPL-3.0 许可�
 | [android/web](android/web)、[android/app](android/app) | 手机页面与 Android 原生 VPN、后台服务、APK 构建 |
 | [scripts](scripts)、[docs](docs)、[design](design) | 构建工具、项目文档、设计源文件 |
 
-在仓库根目录执行 `pnpm install --frozen-lockfile` 和 `pnpm dev` 可以预览桌面界面。要验证真实网络接管，请按 [开发指南](docs/development.md) 启动原生程序。
+在仓库根目录执行 `pnpm install --frozen-lockfile` 和 `pnpm dev` 可以预览桌面界面。要验证真实网络接管，请按 [开发指南](docs/开发构建与清理.md) 启动原生程序。

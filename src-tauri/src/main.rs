@@ -2,11 +2,95 @@
 
 mod commands;
 mod tray;
+mod languages;
+mod profile;
 #[cfg(windows)]
 mod updater;
 
-use std::{io, sync::Arc};
+use std::{
+    io,
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tauri::{Manager, WebviewWindowBuilder};
+
+fn window_background_color(dark: bool) -> tauri::window::Color {
+    if dark {
+        tauri::window::Color(22, 22, 24, 255)
+    } else {
+        tauri::window::Color(243, 245, 249, 255)
+    }
+}
+
+pub(crate) struct StartupReveal(pub(crate) AtomicBool);
+
+fn reveal_on_startup(app: &tauri::AppHandle) {
+    if !app.state::<StartupReveal>().0.swap(true, Ordering::AcqRel) {
+        let _ = tray::show_window(app);
+    }
+}
+
+#[tauri::command]
+fn reveal_startup_window(app: tauri::AppHandle) {
+    reveal_on_startup(&app);
+}
+
+#[tauri::command]
+fn set_window_background(window: tauri::WebviewWindow, dark: bool) {
+    let _ = window.set_background_color(Some(window_background_color(dark)));
+}
+
+#[tauri::command]
+fn system_prefers_dark() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+        let key = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
+            .ok()?;
+        Some(key.get_value::<u32, _>("AppsUseLightTheme").ok()? == 0)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn saved_window_theme(directory: &Path) -> Option<tauri::Theme> {
+    let preferences = std::fs::read(directory.join("interface.json"))
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<std::collections::HashMap<String, String>>(&bytes).ok()
+        });
+    match preferences.as_ref().and_then(|values| values.get("air.theme")).map(String::as_str) {
+        Some("dark") => Some(tauri::Theme::Dark),
+        Some("system") => None,
+        _ => Some(tauri::Theme::Light),
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn following_system_leaves_the_native_window_theme_automatic() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("interface.json");
+        assert_eq!(saved_window_theme(profile.path()), Some(tauri::Theme::Light));
+        for (preference, expected) in [
+            ("system", None),
+            ("dark", Some(tauri::Theme::Dark)),
+            ("light", Some(tauri::Theme::Light)),
+        ] {
+            std::fs::write(&path, serde_json::json!({ "air.theme": preference }).to_string()).unwrap();
+            assert_eq!(saved_window_theme(profile.path()), expected);
+        }
+    }
+}
 
 #[cfg(windows)]
 fn set_taskbar_icon(hwnd: windows_sys::Win32::Foundation::HWND) {
@@ -60,7 +144,13 @@ fn main() {
         .setup(|app| {
             let directory = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&directory)?;
-            let state = Arc::new(commands::App::open(directory.clone()).map_err(io::Error::other)?);
+            let resources = app.path().resource_dir()?;
+            let install = std::env::current_exe()?;
+            let config = profile::prepare(if tauri::is_dev() { None } else { install.parent() }, &directory, &resources.join("languages"))?;
+            languages::init(&config)?;
+            let preferred_theme = saved_window_theme(&config);
+            let system_dark = system_prefers_dark();
+            let state = Arc::new(commands::App::open_profile(config, directory.clone()).map_err(io::Error::other)?);
             app.manage(state.clone());
             #[cfg(windows)]
             let updates = {
@@ -70,8 +160,23 @@ fn main() {
                 updates
             };
 
+            app.manage(StartupReveal(AtomicBool::new(false)));
+            let dark = preferred_theme.map_or(system_dark.unwrap_or(false), |theme| theme == tauri::Theme::Dark);
+            let boot_theme = match preferred_theme {
+                Some(tauri::Theme::Dark) => "dark",
+                Some(_) => "light",
+                None => "system",
+            };
             let window =
-                WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?;
+                WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
+                    .visible(false)
+                    .initialization_script(format!(
+                        "window.airBootTheme = {{ preference: '{boot_theme}', systemDark: {} }};\
+                        if (!window.__airFindDisabled) {{ window.__airFindDisabled = true; window.addEventListener('keydown', function(e) {{ if (e.defaultPrevented) return; var k = (e.key || '').toLowerCase(); if (((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'f' || k === 'g')) || e.key === 'F3') e.preventDefault(); }}); }}",
+                        serde_json::to_string(&system_dark)?
+                    ))
+                    .background_color(window_background_color(dark))
+                    .theme(preferred_theme);
             // An active dev WebView2 process can block another app using its profile.
             #[cfg(windows)]
             let window = if tauri::is_dev() {
@@ -83,6 +188,12 @@ fn main() {
             #[cfg(windows)]
             set_taskbar_icon(_main_window.hwnd()?.0);
             tray::setup(app)?;
+            let startup_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+                let reveal_handle = startup_handle.clone();
+                let _ = startup_handle.run_on_main_thread(move || reveal_on_startup(&reveal_handle));
+            });
 
             #[cfg(windows)]
             tauri::async_runtime::spawn(updates.background(app.handle().clone()));
@@ -114,6 +225,7 @@ fn main() {
                         && window.hide().is_ok() =>
                 {
                     api.prevent_close();
+                    window.app_handle().state::<StartupReveal>().0.store(true, Ordering::Release);
                     state.set_window_hidden(true);
                 }
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(_) => {
@@ -125,6 +237,14 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            system_prefers_dark,
+            reveal_startup_window,
+            set_window_background,
+            languages::list_languages,
+            languages::choose_language,
+            languages::import_language,
+            commands::read_ui_preferences,
+            commands::write_ui_preferences,
             commands::library,
             commands::import_subscription,
             commands::preview_subscription,
@@ -176,7 +296,10 @@ fn main() {
             commands::install_tun_service,
             commands::proxy_telemetry,
             commands::proxy_control,
+            commands::clear_connection_logs,
+            commands::close_matching_connections,
             commands::batch_probe,
+            commands::cancel_batch_probe,
             commands::probe_node,
             commands::node_metrics,
             commands::set_background,

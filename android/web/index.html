@@ -2,88 +2,22 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'" />
-    <title>Air</title>
+    <title>Air Proxy</title>
+    <script src="./boot-theme.js"></script>
     <style>
-      .air-boot {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 14px;
-        background: #ffffff;
-        color: #1b2435;
-        font-family: system-ui, -apple-system, sans-serif;
-      }
-      .air-boot-mark {
-        position: relative;
-        display: grid;
-        place-items: center;
-        width: 88px;
-        height: 88px;
-      }
-      .air-boot-glow {
-        position: absolute;
-        inset: 4px;
-        border-radius: 999px;
-        background: radial-gradient(circle, rgba(32, 93, 215, 0.22) 0%, rgba(138, 209, 250, 0) 70%);
-        animation: air-boot-pulse 2.2s ease-in-out infinite;
-      }
-      .air-boot-logo {
-        position: relative;
-        width: 68px;
-        height: 68px;
-        animation: air-boot-float 2.4s ease-in-out infinite;
-      }
-      .air-boot-title {
-        font-size: 20px;
-        font-weight: 720;
-        letter-spacing: -0.03em;
-      }
+      html, body, #root { height: 100%; margin: 0; background: #f6f8fc; color: #1b2435; }
       @media (prefers-color-scheme: dark) {
-        .air-boot {
-          background: #111827;
-          color: #e7effb;
-        }
-        .air-boot-glow {
-          background: radial-gradient(circle, rgba(86, 143, 249, 0.28) 0%, rgba(86, 143, 249, 0) 70%);
-        }
+        html:not([data-theme="light"]),
+        html:not([data-theme="light"]) body,
+        html:not([data-theme="light"]) #root { background: #161618; color: #f4f4f5; }
       }
-      @keyframes air-boot-float {
-        0%, 100% { transform: translateY(0) scale(1); }
-        50% { transform: translateY(-4px) scale(1.03); }
-      }
-      @keyframes air-boot-pulse {
-        0%, 100% { opacity: 0.65; transform: scale(0.95); }
-        50% { opacity: 1; transform: scale(1.1); }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .air-boot-logo, .air-boot-glow { animation: none; }
-      }
+      html[data-theme="dark"], html[data-theme="dark"] body, html[data-theme="dark"] #root { background: #161618; color: #f4f4f5; }
     </style>
   </head>
   <body>
-    <div id="root">
-      <div class="air-boot" aria-hidden="true">
-        <div class="air-boot-mark">
-          <div class="air-boot-glow"></div>
-          <svg class="air-boot-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72">
-            <defs>
-              <clipPath id="boot-cut"><path d="M7 34L61 13Q65 11 64 16L53 58Q52 63 48 60L33.8 48L42.3 30.4L23.4 42.4L8 39Q2 37 7 34ZM21.6 46.8L35.8 37.65Q36.7 37.1 36.25 38.15L30.25 51.55Q30.05 52.05 29.56 52.28L22.1 55.55Q21.35 55.9 21.38 55.1Z"/></clipPath>
-              <linearGradient id="boot-wing" x1="16" y1="17" x2="47" y2="64" gradientUnits="userSpaceOnUse"><stop stop-color="#8AD1FA"/><stop offset=".53" stop-color="#4698DF"/><stop offset="1" stop-color="#2466B9"/></linearGradient>
-              <linearGradient id="boot-body" x1="47" y1="16" x2="57" y2="62" gradientUnits="userSpaceOnUse"><stop stop-color="#3488D8"/><stop offset=".53" stop-color="#276DC0"/><stop offset="1" stop-color="#174F9B"/></linearGradient>
-            </defs>
-            <path d="M7 34L61 13Q65 11 64 16L53 58Q52 63 48 60L33.8 48L42.3 30.4L23.4 42.4L8 39Q2 37 7 34ZM21.6 46.8L35.8 37.65Q36.7 37.1 36.25 38.15L30.25 51.55Q30.05 52.05 29.56 52.28L22.1 55.55Q21.35 55.9 21.38 55.1Z" transform="translate(.45 1.25)" fill="#164C92"/>
-            <path d="M7 34L61 13Q65 11 64 16L53 58Q52 63 48 60L33.8 48L42.3 30.4L23.4 42.4L8 39Q2 37 7 34ZM21.6 46.8L35.8 37.65Q36.7 37.1 36.25 38.15L30.25 51.55Q30.05 52.05 29.56 52.28L22.1 55.55Q21.35 55.9 21.38 55.1Z" fill="url(#boot-wing)"/>
-            <g clip-path="url(#boot-cut)"><path d="M65 12L23.4 42.4L19 48L19 64L33 64L55 65Z" fill="url(#boot-body)"/><path d="M64 13L35.8 42.3L32.7 48.8L51.9 62.4L52 62Z" fill="#164C92" opacity=".43"/></g>
-          </svg>
-        </div>
-        <span class="air-boot-title">Air</span>
-      </div>
-    </div>
+    <div id="root"></div>
     <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>

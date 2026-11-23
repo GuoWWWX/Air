@@ -1,3 +1,4 @@
+import { diagnostic, tr } from '@/shared/i18n/messages'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useState } from 'react'
@@ -73,11 +74,11 @@ export function useUpdates(onError: (error: unknown) => void) {
       const next = await invoke<UpdateStatus>('check_update')
       if (next.version) {
         setOpen(true)
-        showMessage({ type: 'info', title: `发现新版本 Air ${next.version}` })
+        showMessage({ type: 'info', title: tr("发现新版本 Air {0}", next.version) })
       } else if (next.phase === 'current') {
-        showMessage({ type: 'success', title: '当前已是最新版本' })
+        showMessage({ type: 'success', title: tr('当前已是最新版本') })
       } else if (next.message) {
-        showMessage({ type: 'info', title: next.message })
+        showMessage({ type: 'info', title: diagnostic(next.message) })
       }
     } catch (error) {
       onError(error)

@@ -1,3 +1,7 @@
+import { invoke, isTauri } from '@tauri-apps/api/core'
+import { displayPath } from '@/shared/lib/displayPath'
+import { LanguagePicker } from '@/shared/i18n/LanguagePicker'
+import { savePreviewLanguage, tr } from '@/shared/i18n/messages'
 import {
   Activity,
   ArrowLeft,
@@ -15,7 +19,10 @@ import {
   Sun,
   Waypoints,
 } from 'lucide-react'
-import { lazy, Suspense, type ReactNode } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
+import { lazy, Suspense, useLayoutEffect, useRef, type ReactNode } from 'react'
+
+let savedOverviewScrollTop = 0
 import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
@@ -25,7 +32,7 @@ import { Label } from '@/shared/ui/label'
 import { showMessage } from '@/shared/ui/message'
 import { Separator } from '@/shared/ui/separator'
 import { Switch } from '@/shared/ui/switch'
-import { TraceLines } from '@/shared/ui/TraceLines'
+import { PageHeaderIcon } from '@/shared/ui/PageHeaderIcon'
 import type { Nodes } from '../nodes/useNodes'
 import { AboutPanel } from '../updates/AboutPanel'
 import type { Updates } from '../updates/useUpdates'
@@ -36,10 +43,25 @@ const ConfigFilePanel = lazy(() => import('./ConfigFilePanel'))
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type SettingsPage = 'overview' | 'theme' | 'kernel' | 'monitoring' | 'routing' | 'about' | 'configFile' | NetworkPage
 
+async function importDesktopLanguage(): Promise<boolean> {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json,application/json'
+  const file = await new Promise<File | undefined>(resolve => {
+    input.oncancel = () => resolve(undefined)
+    input.onchange = () => resolve(input.files?.[0])
+    input.click()
+  })
+  if (!file) return false
+  if (file.size > 2 * 1024 * 1024) throw new Error(tr('语言包无效'))
+  await invoke('import_language', { text: await file.text() })
+  return true
+}
+
 export const themeOptions = [
-  { id: 'system', label: '跟随系统', desc: '自动匹配 Windows 外观偏好', icon: Monitor },
-  { id: 'light', label: '浅色', desc: '明亮清透的冷白工作区', icon: Sun },
-  { id: 'dark', label: '深色', desc: '纯粹沉稳的中性碳黑', icon: Moon },
+  { id: 'system', get label() { return tr('跟随系统') }, get desc() { return tr('自动匹配 Windows 外观偏好') }, icon: Monitor },
+  { id: 'light', get label() { return tr('浅色') }, get desc() { return tr('明亮清透的冷白工作区') }, icon: Sun },
+  { id: 'dark', get label() { return tr('深色') }, get desc() { return tr('纯粹沉稳的中性碳黑') }, icon: Moon },
 ] as const
 
 function ThemeThumbnail({ mode }: { mode: ThemeMode }) {
@@ -127,9 +149,9 @@ function SettingRow({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-muted/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
+      className="group flex w-full items-center gap-3 px-4 py-3.5 text-left transition-[transform,background-color,color] duration-150 hover:bg-muted/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 active:scale-[0.996]"
     >
-      <span className="grid size-8.5 shrink-0 place-items-center rounded-[8px] border border-border-subtle bg-muted/70 text-muted-foreground [&_svg]:size-4">
+      <span className="grid size-8.5 shrink-0 place-items-center rounded-[8px] border border-border-subtle bg-muted/70 text-muted-foreground transition-colors duration-150 group-hover:border-accent-border group-hover:bg-accent-soft group-hover:text-primary [&_svg]:size-4">
         {icon}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -137,12 +159,13 @@ function SettingRow({
         <small className="text-xs text-muted-foreground">{description}</small>
       </span>
       {trailing}
-      <ChevronRight className="size-4 shrink-0 text-icon-muted" />
+      <ChevronRight className="size-4 shrink-0 text-icon-muted transition-transform duration-150 group-hover:translate-x-0.5 group-hover:text-primary" />
     </button>
   )
 }
 
 export function SettingsView({
+  visitKey,
   settingsPage,
   theme,
   activeTheme,
@@ -154,6 +177,7 @@ export function SettingsView({
   onSetTheme,
   onKernelDraft,
 }: {
+  visitKey?: number
   settingsPage: Exclude<SettingsPage, 'routing'>
   theme: ThemeMode
   activeTheme: 'light' | 'dark'
@@ -174,83 +198,94 @@ export function SettingsView({
     }
   }
   const measured = sampleCounts.available + sampleCounts.timeout + sampleCounts.unreachable
+  const scrollRef = useRef<HTMLElement>(null)
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop = settingsPage === 'overview' ? savedOverviewScrollTop : 0
+  }, [settingsPage])
 
   return (
-    <section className="air-scroll h-full overflow-y-auto px-5 py-7">
-      <div className={cn('mx-auto flex w-full max-w-[640px] flex-col gap-5', settingsPage === 'configFile' && 'h-full min-h-[350px]')}>
+    <section
+      ref={scrollRef}
+      onScroll={e => {
+        if (settingsPage === 'overview') {
+          savedOverviewScrollTop = e.currentTarget.scrollTop
+        }
+      }}
+      className="air-scroll h-full overflow-y-auto px-5 py-7"
+    >
+      <div className={cn('mx-auto flex w-full flex-col gap-5', settingsPage === 'configFile' ? 'h-full min-h-[350px] max-w-[920px]' : 'max-w-[640px]')}>
         {settingsPage === 'overview' ? (
           <>
             <header className="flex flex-col gap-1">
-              <div className="flex items-center justify-between gap-4">
-                <h1 className="text-[26px] font-bold tracking-tight text-foreground">设置</h1>
-                <TraceLines variant="settings" />
+              <div className="flex items-center gap-2.5">
+                <PageHeaderIcon kind="settings" animateKey={visitKey} />
+                <h1 className="text-[26px] font-bold tracking-tight text-foreground">{tr("设置")}</h1>
               </div>
-              <p className="text-xs text-muted-foreground">管理代理网络、分流规则、配置文件与后台测速</p>
+              <p className="text-xs text-muted-foreground">{tr("管理代理网络、分流规则、配置文件与后台测速")}</p>
             </header>
 
             <StartupSettingsCard />
 
             <section className="flex flex-col gap-2">
-              <h2 className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                外观
-              </h2>
-              <Card className="overflow-hidden p-0">
+              <h2 className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{tr("外观")}</h2>
+              <Card className="gap-0 overflow-hidden p-0">
                 <SettingRow
                   icon={<Palette />}
-                  title="主题"
-                  description="选择浅色、深色或跟随 Windows 系统外观"
+                  title={tr("主题")}
+                  description={tr("选择浅色、深色或跟随 Windows 系统外观")}
                   trailing={<Badge variant="default">{currentThemeLabel}</Badge>}
                   onClick={() => onOpenSettings('theme')}
                 />
+                <Separator />
+                <LanguagePicker embedded importPack={isTauri() ? importDesktopLanguage : undefined} save={code => isTauri() ? invoke('choose_language', { code }) : savePreviewLanguage(code)} />
               </Card>
             </section>
 
             <section className="flex flex-col gap-2">
-              <h2 className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                代理配置
-              </h2>
+              <h2 className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{tr("代理配置")}</h2>
               <Card className="overflow-hidden p-0">
-                <SettingRow icon={<Globe />} title="DNS 设置" description="主 DNS、加密解析、分域 DNS 与 Fake-IP" onClick={() => onOpenSettings('dns')} />
+                <SettingRow icon={<Globe />} title={tr("DNS 设置")} description={tr("主 DNS、加密解析、分域 DNS 与 Fake-IP")} onClick={() => onOpenSettings('dns')} />
                 <Separator />
-                <SettingRow icon={<Network />} title="虚拟网卡（TUN）" description="协议栈、MTU、DNS 劫持与绕过网段" onClick={() => onOpenSettings('tun')} />
+                <SettingRow icon={<Network />} title={tr("虚拟网卡（TUN）")} description={tr("协议栈、MTU、DNS 劫持与绕过网段")} onClick={() => onOpenSettings('tun')} />
                 <Separator />
-                <SettingRow icon={<Plug />} title="代理接入" description="本地端口、局域网共享、IPv6 与系统代理绕过" onClick={() => onOpenSettings('inbound')} />
+                <SettingRow icon={<Plug />} title={tr("代理接入")} description={tr("本地端口、局域网共享、IPv6 与系统代理绕过")} onClick={() => onOpenSettings('inbound')} />
                 <Separator />
                 <SettingRow
                   icon={<Waypoints />}
-                  title="分流规则"
-                  description="按域名、IP 网段或 Windows 程序路径选择出站"
+                  title={tr("分流规则")}
+                  description={tr("按域名、IP 网段或 Windows 程序路径选择出站")}
                   onClick={onOpenRouting}
                 />
                 <Separator />
                 <SettingRow
                   icon={<Settings />}
-                  title="诊断内核"
-                  description="配置本机 Mihomo 可执行文件路径"
+                  title={tr("诊断内核")}
+                  description={tr("配置本机 Mihomo 可执行文件路径")}
                   trailing={
                     <Badge variant={store.kernelPath ? 'success' : 'warning'}>
-                      {store.kernelPath ? '已就绪' : '未配置'}
+                      {store.kernelPath ? tr('已就绪') : tr('未配置')}
                     </Badge>
                   }
                   onClick={() => onOpenSettings('kernel')}
                 />
                 <Separator />
-                <SettingRow icon={<FileCode2 />} title="配置文件" description="编辑和校验 Air 的 YAML 配置" onClick={() => onOpenSettings('configFile')} />
+                <SettingRow icon={<FileCode2 />} title={tr("配置文件")} description={tr("编辑和校验 Air 的 YAML 配置")} onClick={() => onOpenSettings('configFile')} />
               </Card>
             </section>
 
             <section className="flex flex-col gap-2">
-              <h2 className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                监测
-              </h2>
+              <h2 className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{tr("监测")}</h2>
               <Card className="overflow-hidden p-0">
                 <SettingRow
                   icon={<Activity />}
-                  title="后台监测"
-                  description="窗口收起后自动刷新节点可用率与延迟"
+                  title={tr("后台监测")}
+                  description={tr("窗口收起后自动刷新节点可用率与延迟")}
                   trailing={
                     <Badge variant={store.background ? 'accent' : 'default'}>
-                      {store.background ? '已开启' : '已关闭'}
+                      {store.background ? tr('已开启') : tr('已关闭')}
                     </Badge>
                   }
                   onClick={() => onOpenSettings('monitoring')}
@@ -260,8 +295,8 @@ export function SettingsView({
             <Card className="overflow-hidden p-0">
               <SettingRow
                 icon={<Info />}
-                title="关于"
-                description="Air 版本、软件更新与作者 GitHub"
+                title={tr("关于")}
+                description={tr("Air 版本、软件更新与作者 GitHub")}
                 onClick={() => onOpenSettings('about')}
               />
             </Card>
@@ -275,21 +310,22 @@ export function SettingsView({
                 className="text-[14px]"
                 onClick={() => onOpenSettings('overview')}
               >
-                <ArrowLeft data-icon="inline-start" />
-                返回设置
-              </Button>
-              <h1 className="text-[24px] font-bold tracking-tight text-foreground">
-                {settingsPage === 'theme'
-                  ? '主题'
-                  : settingsPage === 'kernel'
-                    ? '诊断内核'
-                    : ({ about: '关于', monitoring: '后台监测', dns: 'DNS 设置', tun: '虚拟网卡（TUN）', inbound: '代理接入', configFile: '配置文件' } as const)[settingsPage]}
-              </h1>
+                <ArrowLeft data-icon="inline-start" />{tr("返回设置")}</Button>
+              <div className="flex items-center gap-2.5">
+                <PageHeaderIcon kind={settingsPage} size="subpage" animateKey={settingsPage} />
+                <h1 className="text-[24px] font-bold tracking-tight text-foreground">
+                  {settingsPage === 'theme'
+                    ? tr('主题')
+                    : settingsPage === 'kernel'
+                      ? tr('诊断内核')
+                      : ({ about: tr('关于'), monitoring: tr('后台监测'), dns: tr('DNS 设置'), tun: tr('虚拟网卡（TUN）'), inbound: tr('代理接入'), configFile: tr('配置文件') } as const)[settingsPage]}
+                </h1>
+              </div>
             </header>
 
             {settingsPage === 'about' && <AboutPanel updates={updates} />}
             {settingsPage === 'configFile' && (
-              <Suspense fallback={<span role="status">正在打开编辑器…</span>}><ConfigFilePanel /></Suspense>
+              <Suspense fallback={<span role="status">{tr("正在打开编辑器…")}</span>}><ConfigFilePanel /></Suspense>
             )}
             {(['dns', 'tun', 'inbound'] as const).map(page =>
               settingsPage === page && <NetworkPanel key={page} page={page} kernelPath={store.kernelPath} sources={store.library.sources} />)}
@@ -298,27 +334,29 @@ export function SettingsView({
               <div className="flex flex-col gap-4">
                 <Card className="flex-row items-center justify-between gap-4 p-4">
                   <div className="flex flex-col gap-1">
-                    <strong className="text-sm font-semibold text-foreground">当前外观</strong>
-                    <p className="text-xs text-muted-foreground">
-                      正在使用{activeTheme === 'dark' ? '深色' : '浅色'}主题（{currentThemeLabel}）
+                    <strong className="text-sm font-semibold text-foreground">{tr("当前外观")}</strong>
+                    <p className="text-xs text-muted-foreground">{tr('正在使用{0}主题（{1}）', activeTheme === 'dark' ? tr('深色') : tr('浅色'), currentThemeLabel)}
                     </p>
                   </div>
                   <Badge variant="accent">
-                    {activeTheme === 'dark' ? 'Dark Mode' : 'Light Mode'}
+                    {tr('{0}模式', activeTheme === 'dark' ? tr('深色') : tr('浅色'))}
                   </Badge>
                 </Card>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" role="group" aria-label="主题模式">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" role="group" aria-label={tr("主题模式")}>
                   {themeOptions.map(({ id, label, desc, icon: Icon }) => {
                     const selected = theme === id
                     return (
-                      <button
+                      <motion.button
                         key={id}
                         type="button"
                         aria-pressed={selected}
+                        whileHover={{ y: -2 }}
+                        whileTap={{ scale: 0.985 }}
+                        transition={{ duration: 0.14 }}
                         onClick={() => onSetTheme(id)}
                         className={cn(
-                          'air-card-surface flex flex-col gap-3 rounded-[11px] border p-3 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                          'air-card-surface flex flex-col gap-3 rounded-[11px] border p-3 text-left transition-[border-color,background-color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
                           selected
                             ? 'border-primary bg-accent-soft/45 ring-2 ring-primary/20'
                             : 'border-border hover:border-accent-border',
@@ -333,13 +371,21 @@ export function SettingsView({
                             </span>
                             <span className="text-[12px] text-muted-foreground">{desc}</span>
                           </div>
-                          {selected && (
-                            <span className="grid size-4.5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
-                              <Check className="size-3 stroke-[2.6]" />
-                            </span>
-                          )}
+                          <AnimatePresence>
+                            {selected && (
+                              <motion.span
+                                initial={{ scale: 0, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ scale: 0, opacity: 0 }}
+                                transition={{ type: 'spring', stiffness: 520, damping: 28 }}
+                                className="grid size-4.5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground"
+                              >
+                                <Check className="size-3 stroke-[2.6]" />
+                              </motion.span>
+                            )}
+                          </AnimatePresence>
                         </div>
-                      </button>
+                      </motion.button>
                     )
                   })}
                 </div>
@@ -353,29 +399,27 @@ export function SettingsView({
                   onSubmit={event => {
                     event.preventDefault()
                     store.setKernelPath(kernelDraft)
-                    showMessage({ type: 'success', title: '诊断内核路径已保存' })
+                    showMessage({ type: 'success', title: tr('诊断内核路径已保存') })
                   }}
                 >
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="kernel-path-input">Mihomo 可执行文件路径</Label>
+                    <Label htmlFor="kernel-path-input">{tr("Mihomo 可执行文件路径")}</Label>
                     <Input
                       id="kernel-path-input"
-                      value={kernelDraft}
+                      value={displayPath(kernelDraft)}
                       onChange={e => onKernelDraft(e.target.value)}
-                      placeholder={store.defaultKernelPath || 'C:\\Mihomo\\mihomo.exe'}
+                      placeholder={displayPath(store.defaultKernelPath) || 'C:\\Mihomo\\mihomo.exe'}
                       spellCheck={false}
                       className="mono"
                     />
                     <p className="text-[12px] text-muted-foreground">
                       {store.defaultKernelPath
-                        ? '已检测到随 Air 放置的默认内核，留空即可自动使用。'
-                        : '请填写本机 Mihomo 可执行文件的完整路径。'}
+                        ? tr('已检测到随 Air 放置的默认内核，留空即可自动使用。')
+                        : tr('请填写本机 Mihomo 可执行文件的完整路径。')}
                     </p>
                   </div>
                   <div className="flex items-center justify-end gap-2">
-                    <Button type="submit" variant="default">
-                      保存路径
-                    </Button>
+                    <Button type="submit" variant="default">{tr("保存路径")}</Button>
                   </div>
                 </form>
               </Card>
@@ -385,22 +429,19 @@ export function SettingsView({
               <Card className="gap-4 p-5">
                 <label className="flex cursor-pointer items-center justify-between gap-4">
                   <div className="flex flex-col gap-1">
-                    <strong className="text-sm font-semibold text-foreground">
-                      后台定时测速
-                    </strong>
+                    <strong className="text-sm font-semibold text-foreground">{tr("后台定时测速")}</strong>
                     <span className="text-xs text-muted-foreground">
                       {store.kernelPath
-                        ? '窗口最小化或隐藏到托盘时更新测速结果，打开窗口时显示已保存的结果。'
-                        : '请先在「诊断内核」配置 Mihomo 路径后再开启后台监测。'}
+                        ? tr('窗口最小化或隐藏到托盘时更新测速结果，打开窗口时显示已保存的结果。')
+                        : tr('请先在「诊断内核」配置 Mihomo 路径后再开启后台监测。')}
                     </span>
                   </div>
                   <Switch
-                    aria-label="后台定时测速"
+                    aria-label={tr("后台定时测速")}
                     checked={store.background}
                     disabled={!store.kernelPath}
                     onCheckedChange={enabled => {
                       store.toggleBackground(enabled)
-                      showMessage({ type: 'success', title: enabled ? '已开启后台定时测速' : '已关闭后台定时测速' })
                     }}
                   />
                 </label>
@@ -416,11 +457,11 @@ export function SettingsView({
                         {measured} / {nodes.length}
                       </span>
                       <Separator orientation="vertical" className="h-3.5" />
-                      <span className="text-success">{sampleCounts.available} 可用</span>
+                      <span className="text-success">{sampleCounts.available}{tr(" 可用")}</span>
                       <span>·</span>
-                      <span className="text-warning">{sampleCounts.timeout} 超时</span>
+                      <span className="text-warning">{sampleCounts.timeout}{tr(" 超时")}</span>
                       <span>·</span>
-                      <span className="text-destructive">{sampleCounts.unreachable} 失败</span>
+                      <span className="text-destructive">{sampleCounts.unreachable}{tr(" 失败")}</span>
                     </div>
                   )
                 )}

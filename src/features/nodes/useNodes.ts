@@ -1,3 +1,5 @@
+import { preferences } from '@/shared/lib/preferences'
+import { tr } from '@/shared/i18n/messages'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   air,
@@ -10,20 +12,21 @@ import { showMessage } from '@/shared/ui/message'
 
 export function useNodes() {
   const [library, setLibrary] = useState<Library>({ nodes: [], sources: [], groups: [] })
+  const [loaded, setLoaded] = useState(false)
   const [customGroups, setCustomGroups] = useState<CustomGroup[]>([])
   const [progress, setProgress] = useState<Progress>()
   const [selected, setSelected] = useState<string[]>(() => {
     try {
-      const ids: unknown = JSON.parse(localStorage.getItem('air.checkedNodeIds') ?? '[]')
+      const ids: unknown = JSON.parse(preferences.getItem('air.checkedNodeIds') ?? '[]')
       return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
     } catch { return [] }
   })
   const [testing, setTesting] = useState<string[]>([])
   const [batchPending, setBatchPending] = useState(false)
-  const [kernelOverride, setPath] = useState(() => localStorage.getItem('air.kernelPath') ?? '')
+  const [kernelOverride, setPath] = useState(() => preferences.getItem('air.kernelPath') ?? '')
   const [defaultKernelPath, setDefaultKernelPath] = useState('')
   const kernelPath = kernelOverride || defaultKernelPath
-  const [background, setBackground] = useState(() => localStorage.getItem('air.backgroundMonitoring') !== '0')
+  const [background, setBackground] = useState(() => preferences.getItem('air.backgroundMonitoring') !== '0')
   const [backgroundError, setBackgroundError] = useState('')
   const hasNodes = library.nodes.length > 0
   const libraryQueue = useRef(Promise.resolve())
@@ -32,9 +35,10 @@ export function useNodes() {
   const progressRef = useRef<Progress>(undefined)
   const inFlight = useRef(new Set<string>())
   const batching = useRef(false)
+  const batchVersion = useRef(0)
 
   useEffect(() => {
-    localStorage.setItem('air.checkedNodeIds', JSON.stringify(selected))
+    preferences.setItem('air.checkedNodeIds', JSON.stringify(selected))
   }, [selected])
 
   useEffect(() => {
@@ -49,7 +53,7 @@ export function useNodes() {
         if (!current) return
         const text = error instanceof Error ? error.message : String(error)
         setBackgroundError(text)
-        showMessage({ type: 'error', id: 'background-monitor-error', title: '后台监测异常', description: text })
+        showMessage({ type: 'error', id: 'background-monitor-error', title: tr('后台监测异常'), description: text })
       },
     )
     return () => { current = false }
@@ -74,6 +78,7 @@ export function useNodes() {
       setSelected(previous => previous.filter(node => valid.has(node)))
       setLibrary(next)
     })])
+    setLoaded(true)
   }, [queueLibraryUpdate, refreshGroups])
 
   const refreshMetrics = useCallback((ids: string[]) => queueLibraryUpdate(async () => {
@@ -124,15 +129,31 @@ export function useNodes() {
 
   async function batch(ids: string[]) {
     if (batching.current) return
+    const version = ++batchVersion.current
     batching.current = true
     setBatchPending(true)
     try { await air.batch(kernelPath, ids) }
-    finally { batching.current = false; setBatchPending(false); await poll() }
+    finally {
+      if (batchVersion.current === version) {
+        batching.current = false
+        setBatchPending(false)
+      }
+      await poll()
+    }
+  }
+
+  async function cancelBatch() {
+    batchVersion.current += 1
+    batching.current = false
+    setBatchPending(false)
+    setProgress(current => (current ? { ...current, running: false, activeIds: [] } : current))
+    await air.cancelBatch()
+    await poll()
   }
 
   function toggleBackground(enabled: boolean) {
     setBackground(enabled)
-    localStorage.setItem('air.backgroundMonitoring', enabled ? '1' : '0')
+    preferences.setItem('air.backgroundMonitoring', enabled ? '1' : '0')
   }
 
   async function saveCustomGroup(input: CustomGroupInput) {
@@ -159,11 +180,12 @@ export function useNodes() {
   function setKernelPath(value: string) {
     const path = value.trim()
     setPath(path)
-    localStorage.setItem('air.kernelPath', path)
+    preferences.setItem('air.kernelPath', path)
   }
 
   return {
     library,
+    loaded,
     customGroups,
     progress,
     selected,
@@ -179,6 +201,7 @@ export function useNodes() {
     poll,
     measure,
     batch,
+    cancelBatch,
     toggleBackground,
     saveCustomGroup,
     deleteCustomGroup,

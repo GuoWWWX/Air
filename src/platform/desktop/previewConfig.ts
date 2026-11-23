@@ -41,7 +41,19 @@ export function parse(contents: string) {
   if (!network.nameserver.length) throw new Error('请至少填写一个主 DNS')
   if (network.respectRules && !network.proxyServerNameserver.length) throw new Error('请填写节点 DNS')
   const routing: RoutingConfig = { ...emptyRouting, ...root.routing }
-  if (!Array.isArray(routing.rules) || !routing.fallback?.kind || routing.rules.some(r => !r?.matcher || typeof r.value !== 'string' || !r.target?.kind)) throw new Error('分流规则格式无效')
+  if (
+    !Array.isArray(routing.rules)
+    || !routing.fallback?.kind
+    || routing.rules.some(
+      r => !r?.matcher
+        || typeof r.value !== 'string'
+        || !r.target?.kind
+        || (r.hostMatcher !== undefined && !['domain', 'domainSuffix', 'ip'].includes(r.hostMatcher))
+        || (r.hostValue !== undefined && typeof r.hostValue !== 'string'),
+    )
+  ) {
+    throw new Error('分流规则格式无效')
+  }
   return { doc, network, routing }
 }
 

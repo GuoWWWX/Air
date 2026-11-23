@@ -93,6 +93,27 @@ impl RuntimeKernel {
         }
     }
 
+    pub async fn close_connections(&self, ids: &[String]) -> AirResult<()> {
+        match self {
+            Self::Local(kernel) => {
+                for id in ids {
+                    let _ = kernel.close_connection(id).await;
+                }
+                Ok(())
+            }
+            #[cfg(windows)]
+            Self::Service(session) => session.close_connections(ids).await,
+        }
+    }
+
+    pub async fn close_all_connections(&self) -> AirResult<()> {
+        match self {
+            Self::Local(kernel) => kernel.close_all_connections().await,
+            #[cfg(windows)]
+            Self::Service(session) => session.close_all_connections().await,
+        }
+    }
+
     #[cfg(windows)]
     pub async fn set_tun(&self, settings: &crate::network::NetworkSettings, enabled: bool) -> AirResult<()> {
         match self {

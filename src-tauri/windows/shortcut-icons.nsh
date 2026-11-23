@@ -61,3 +61,27 @@ FunctionEnd
     ${EndIf}
   ${EndIf}
 !macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $UpdateMode <> 1
+  ${AndIf} $DeleteAppDataCheckboxState = 1
+  ${AndIf} ${FileExists} "$INSTDIR\config\.air-profile-v1"
+    Delete "$INSTDIR\config\subscriptions\*.airsub"
+    RMDir "$INSTDIR\config\subscriptions"
+    Delete "$INSTDIR\config\languages\*.json"
+    RMDir "$INSTDIR\config\languages"
+    Delete "$INSTDIR\config\air.sqlite3"
+    Delete "$INSTDIR\config\air.sqlite3-wal"
+    Delete "$INSTDIR\config\air.sqlite3-shm"
+    Delete "$INSTDIR\config\air.sqlite3-journal"
+    Delete "$INSTDIR\config\air-config*.yaml"
+    Delete "$INSTDIR\config\custom-groups.json"
+    Delete "$INSTDIR\config\custom-groups.lock"
+    Delete "$INSTDIR\config\interface.json"
+    Delete "$INSTDIR\config\language.txt"
+    Delete "$INSTDIR\config\language-seeds.json"
+    Delete "$INSTDIR\config\.air-profile-v1"
+    RMDir "$INSTDIR\config"
+    RMDir "$INSTDIR"
+  ${EndIf}
+!macroend

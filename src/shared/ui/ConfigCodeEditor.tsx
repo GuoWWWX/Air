@@ -1,4 +1,5 @@
-import { useImperativeHandle, useLayoutEffect, useRef, type Ref } from 'react'
+import { tr } from '@/shared/i18n/messages'
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, type Ref } from 'react'
 import { EditorState } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, type ViewUpdate } from '@codemirror/view'
 import { HighlightStyle, bracketMatching, foldGutter, foldKeymap, indentUnit, syntaxHighlighting, syntaxTree } from '@codemirror/language'
@@ -7,17 +8,19 @@ import { yaml } from '@codemirror/lang-yaml'
 import { diagnosticCount, linter, setDiagnostics, type Diagnostic } from '@codemirror/lint'
 import { tags } from '@lezer/highlight'
 import { parseDocument, type YAMLParseError } from 'yaml'
+import type { EditorSearchState } from './EditorSearchBar'
+import { searchHighlightExtension, syncCodeMirrorSearch } from './cmSearch'
 
 function syntaxMessage(error: YAMLParseError) {
-  if (error.message.includes('end with a ]')) return '检查列表的缩进，并补全右方括号 ]'
-  if (error.message.includes('end with a }')) return '检查映射的缩进，并补全右花括号 }'
-  if (error.message.includes('Missing closing')) return '引号没有闭合'
+  if (error.message.includes('end with a ]')) return tr('检查列表的缩进，并补全右方括号 ]')
+  if (error.message.includes('end with a }')) return tr('检查映射的缩进，并补全右花括号 }')
+  if (error.message.includes('Missing closing')) return tr('引号没有闭合')
   switch (error.code) {
-    case 'TAB_AS_INDENT': return '缩进请使用空格'
-    case 'BAD_INDENT': return '同一层的项目需要对齐，请检查缩进'
-    case 'DUPLICATE_KEY': return '同一层出现了重复的键名'
-    case 'BAD_DQ_ESCAPE': return '双引号内的转义字符无效'
-    case 'MULTIPLE_DOCS': return '配置文件只能包含一个 YAML 文档'
+    case 'TAB_AS_INDENT': return tr('缩进请使用空格')
+    case 'BAD_INDENT': return tr('同一层的项目需要对齐，请检查缩进')
+    case 'DUPLICATE_KEY': return tr('同一层出现了重复的键名')
+    case 'BAD_DQ_ESCAPE': return tr('双引号内的转义字符无效')
+    case 'MULTIPLE_DOCS': return tr('配置文件只能包含一个 YAML 文档')
     default: return error.message
   }
 }
@@ -72,6 +75,7 @@ const plainScalars = ViewPlugin.fromClass(class {
 interface Props {
   ref: Ref<{ checkForSave: () => string | undefined }>
   initialText: string
+  search?: EditorSearchState
   onEdit: (value: string) => void
   onSyntaxCount: (count: number) => void
   onCursor: (line: number, column: number) => void
@@ -80,6 +84,7 @@ interface Props {
 export function ConfigCodeEditor(props: Props) {
   const host = useRef<HTMLDivElement>(null)
   const editor = useRef<EditorView>(null)
+  const lastScrollTick = useRef(-1)
   useImperativeHandle(props.ref, () => ({
     checkForSave() {
       const view = editor.current
@@ -92,7 +97,7 @@ export function ConfigCodeEditor(props: Props) {
         selection: { anchor: first.from }, scrollIntoView: true,
       })
       view.focus()
-      return `未保存 · 第 ${line.number} 行，第 ${first.from - line.from + 1} 列：${first.message}`
+      return tr("未保存 · 第 {0} 行，第 {1} 列：{2}", line.number, first.from - line.from + 1, first.message)
     },
   }), [])
   const callbacks = useRef(props)
@@ -105,12 +110,12 @@ export function ConfigCodeEditor(props: Props) {
       state: EditorState.create({
         doc: text.replace(/\r\n/g, '\n'),
         extensions: [
-          yaml(), syntaxHighlighting(palette), plainScalars, linter(syntaxErrors, { delay: 220 }),
+          yaml(), syntaxHighlighting(palette), plainScalars, searchHighlightExtension, linter(syntaxErrors, { delay: 220 }),
           lineNumbers(), foldGutter(), history(),
           highlightActiveLine(), highlightActiveLineGutter(), drawSelection(), bracketMatching(),
           indentUnit.of('  '), EditorState.tabSize.of(2),
           keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap, indentWithTab]),
-          EditorView.contentAttributes.of({ 'aria-label': '配置文件 YAML', spellcheck: 'false' }),
+          EditorView.contentAttributes.of({ 'aria-label': tr('配置文件 YAML'), spellcheck: 'false' }),
           EditorView.updateListener.of(update => {
             const count = diagnosticCount(update.state)
             if (count !== diagnosticCount(update.startState)) callbacks.current.onSyntaxCount(count)
@@ -125,7 +130,27 @@ export function ConfigCodeEditor(props: Props) {
       }),
     })
     editor.current = view
-    return () => { editor.current = null; view.destroy() }
+    if (callbacks.current.search) {
+      if (callbacks.current.search.matches.length > 0) {
+        lastScrollTick.current = callbacks.current.search.scrollTick
+      }
+      syncCodeMirrorSearch(view, callbacks.current.search, true)
+    }
+    return () => {
+      editor.current = null
+      lastScrollTick.current = -1
+      view.destroy()
+    }
   }, [])
+  useEffect(() => {
+    const view = editor.current
+    if (!view) return
+    const nextTick = props.search ? props.search.scrollTick : -1
+    const hasMatches = Boolean(props.search && props.search.matches.length > 0)
+    const shouldScroll = hasMatches && nextTick !== lastScrollTick.current
+    if (hasMatches) lastScrollTick.current = nextTick
+    else if (!props.search) lastScrollTick.current = -1
+    syncCodeMirrorSearch(view, props.search, shouldScroll)
+  }, [props.search])
   return <div ref={host} className="air-config-editor min-h-0 flex-1" />
 }

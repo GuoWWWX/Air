@@ -57,6 +57,17 @@ extern "system" {
     fn ConvertInterfaceAliasToLuid(alias: *const u16, luid: *mut u64) -> u32;
 }
 
+#[link(name = "dnsapi")]
+extern "system" {
+    fn DnsFlushResolverCache() -> i32;
+}
+
+pub(super) fn flush_dns_cache() {
+    unsafe {
+        DnsFlushResolverCache();
+    }
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> RawHandle;
@@ -117,17 +128,35 @@ pub(crate) fn own_process(process: RawHandle) -> AirResult<OwnedHandle> {
     Ok(job)
 }
 
-pub(super) fn is_admin() -> bool {
+pub(crate) fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
 
-pub(super) fn adapter_present(name: &str) -> bool {
+pub(super) fn adapter_luid(name: &str) -> Option<u64> {
     let alias = name.encode_utf16().chain([0]).collect::<Vec<_>>();
     let mut luid = 0;
-    unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &mut luid) == 0 }
+    (unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &mut luid) } == 0).then_some(luid)
+}
+
+pub(super) fn adapter_active(name: &str) -> bool {
+    use windows_sys::Win32::NetworkManagement::{
+        IpHelper::{GetIfEntry2, MIB_IF_ROW2},
+        Ndis::MediaConnectStateConnected,
+    };
+    let Some(luid) = adapter_luid(name) else {
+        return false;
+    };
+    let mut row = MIB_IF_ROW2::default();
+    row.InterfaceLuid.Value = luid;
+    (unsafe { GetIfEntry2(&mut row) } == 0) && row.MediaConnectState == MediaConnectStateConnected
 }
 
 pub(crate) fn probe_interface() -> Option<String> {
+    physical_default_interfaces().into_iter().flatten().next().map(|(_, name)| name)
+}
+
+// Best hardware uplink for each address family, IPv4 first for node probes.
+pub(super) fn physical_default_interfaces() -> [Option<(u64, String)>; 2] {
     use windows_sys::Win32::{
         NetworkManagement::{
             IpHelper::{FreeMibTable, GetIfEntry2, GetIpForwardTable2, GetIpInterfaceEntry,
@@ -138,33 +167,36 @@ pub(crate) fn probe_interface() -> Option<String> {
     };
     let mut table = null_mut();
     if unsafe { GetIpForwardTable2(AF_UNSPEC, &mut table) } != 0 {
-        return None;
+        return [None, None];
     }
     // Only read the OS-owned rows until FreeMibTable. Ignore virtual default routes
     // so the diagnostic kernel cannot count the active TUN as a second proxy hop.
     let routes = unsafe {
         std::slice::from_raw_parts(std::ptr::addr_of!((*table).Table).cast::<MIB_IPFORWARD_ROW2>(), (*table).NumEntries as usize)
     };
-    let best = routes.iter()
-        .filter(|r| r.DestinationPrefix.PrefixLength == 0 && !r.Loopback && r.ValidLifetime > 0)
-        .filter_map(|r| {
-            let mut adapter = MIB_IF_ROW2 { InterfaceIndex: r.InterfaceIndex, ..Default::default() };
-            if unsafe { GetIfEntry2(&mut adapter) } != 0 || adapter.OperStatus != IfOperStatusUp
-                || adapter.InterfaceAndOperStatusFlags._bitfield & 1 == 0 {
-                return None;
+    let mut best = [None, None];
+    for r in routes.iter().filter(|r| r.DestinationPrefix.PrefixLength == 0 && !r.Loopback && r.ValidLifetime > 0) {
+        let mut adapter = MIB_IF_ROW2 { InterfaceIndex: r.InterfaceIndex, ..Default::default() };
+        if unsafe { GetIfEntry2(&mut adapter) } != 0 || adapter.OperStatus != IfOperStatusUp
+            || adapter.InterfaceAndOperStatusFlags._bitfield & 1 == 0 {
+            continue;
+        }
+        let family = unsafe { r.DestinationPrefix.Prefix.si_family };
+        let mut ip = MIB_IPINTERFACE_ROW { Family: family, InterfaceIndex: r.InterfaceIndex, ..Default::default() };
+        if unsafe { GetIpInterfaceEntry(&mut ip) } != 0 || !ip.Connected {
+            continue;
+        }
+        let priority = (r.Metric.saturating_add(ip.Metric), r.InterfaceIndex);
+        let slot = &mut best[usize::from(family != AF_INET)];
+        if slot.as_ref().is_none_or(|(current, _, _)| priority < *current) {
+            let end = adapter.Alias.iter().position(|&ch| ch == 0).unwrap_or(adapter.Alias.len());
+            if let Ok(name) = String::from_utf16(&adapter.Alias[..end]) {
+                *slot = Some((priority, unsafe { r.InterfaceLuid.Value }, name));
             }
-            let family = unsafe { r.DestinationPrefix.Prefix.si_family };
-            let mut ip = MIB_IPINTERFACE_ROW { Family: family, InterfaceIndex: r.InterfaceIndex, ..Default::default() };
-            if unsafe { GetIpInterfaceEntry(&mut ip) } != 0 || !ip.Connected {
-                return None;
-            }
-            let end = adapter.Alias.iter().position(|&ch| ch == 0)?;
-            let name = String::from_utf16(&adapter.Alias[..end]).ok()?;
-            Some(((family != AF_INET, r.Metric.saturating_add(ip.Metric), r.InterfaceIndex), name))
-        })
-        .min_by_key(|(priority, _)| *priority);
+        }
+    }
     unsafe { FreeMibTable(table.cast()) };
-    best.map(|(_, name)| name)
+    best.map(|entry| entry.map(|(_, luid, name)| (luid, name)))
 }
 
 pub(crate) fn free_tun_pool() -> AirResult<String> {
@@ -373,13 +405,58 @@ pub(super) fn has_restore(directory: &Path) -> bool {
     directory.join(JOURNAL).is_file()
 }
 
+const DEFAULT_SYSTEM_PROXY_BYPASS: [&str; 21] = [
+    "localhost",
+    "127.*",
+    "192.168.*",
+    "10.*",
+    "172.16.*",
+    "172.17.*",
+    "172.18.*",
+    "172.19.*",
+    "172.20.*",
+    "172.21.*",
+    "172.22.*",
+    "172.23.*",
+    "172.24.*",
+    "172.25.*",
+    "172.26.*",
+    "172.27.*",
+    "172.28.*",
+    "172.29.*",
+    "172.30.*",
+    "172.31.*",
+    "<local>",
+];
+
+fn effective_bypass(custom: &[String]) -> String {
+    let mut entries = Vec::with_capacity(DEFAULT_SYSTEM_PROXY_BYPASS.len() + custom.len());
+    for entry in DEFAULT_SYSTEM_PROXY_BYPASS {
+        if entry != "<local>" {
+            entries.push(entry.to_owned());
+        }
+    }
+    for entry in custom {
+        let trimmed = entry.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("<local>")
+            || entries.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            continue;
+        }
+        entries.push(trimmed.to_owned());
+    }
+    entries.push("<local>".to_owned());
+    entries.join(";")
+}
+
 pub(super) fn enable(directory: &Path, port: u16, bypass: &[String]) -> AirResult<()> {
     let path = directory.join(JOURNAL);
     let change = Restore {
         installed: Settings {
             flags: PROXY_TYPE_DIRECT | PROXY_TYPE_PROXY,
             server: format!("127.0.0.1:{port}"),
-            bypass: (!bypass.is_empty()).then(|| bypass.join(";")),
+            bypass: Some(effective_bypass(bypass)),
         },
         previous: Settings::read()?,
     };
@@ -450,5 +527,24 @@ mod tests {
     fn fragmented_routes_can_still_leave_a_smaller_pool() {
         let routes: Vec<_> = (0..=255).step_by(16).map(|n| route([198, 19, n, 1], 32)).collect();
         assert_eq!(choose_tun_pool(&routes).unwrap(), "198.19.65.1/24");
+    }
+
+    #[test]
+    fn default_system_proxy_bypass_covers_local_and_merges_custom_entries() {
+        let default_list = super::effective_bypass(&[]);
+        assert!(default_list.starts_with("localhost;127.*;192.168.*;10.*;"));
+        assert!(default_list.contains(";172.16.*;"));
+        assert!(default_list.contains(";172.31.*;"));
+        assert!(default_list.ends_with(";<local>"));
+
+        let custom = super::effective_bypass(&[
+            "*.corp.internal".into(),
+            "LOCALHOST".into(),
+            " <local> ".into(),
+            "  ".into(),
+        ]);
+        assert_eq!(custom.matches("<local>").count(), 1);
+        assert!(custom.contains(";*.corp.internal;<local>"));
+        assert_eq!(custom.to_ascii_lowercase().matches("localhost").count(), 1);
     }
 }

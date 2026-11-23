@@ -5,7 +5,7 @@ use air::{
     custom_groups::{self, CustomGroup, CustomGroupInput, MemberAction},
     mihomo::Kernel,
     network::NetworkSettings,
-    monitoring::{Probe, Scheduler, BACKGROUND_INTERVAL, CONCURRENCY, TIMEOUT},
+    monitoring::{Probe, Scheduler, BACKGROUND_CONCURRENCY, BACKGROUND_INTERVAL, FOREGROUND_CONCURRENCY, TIMEOUT},
     proxy::{
         self, Action as ProxyAction, Mode, ProxyConfig, Runtime as ProxyRuntime, StartTarget,
         Status as ProxyStatus,
@@ -210,6 +210,7 @@ impl Library {
 pub struct App {
     launch_pending: std::sync::atomic::AtomicBool,
     directory: PathBuf,
+    runtime: PathBuf,
     store: Arc<Store>,
     library: RwLock<Library>,
     edits: Mutex<()>,
@@ -217,6 +218,7 @@ pub struct App {
     kernel: Mutex<Option<CachedKernel>>,
     pub proxy: Mutex<ProxyRuntime>,
     batch: Mutex<()>,
+    batch_cancel: watch::Sender<u64>,
     progress: StdMutex<Progress>,
     background: watch::Sender<BackgroundMonitoring>,
 }
@@ -243,26 +245,34 @@ struct CachedKernel {
 }
 
 impl App {
+    #[cfg(test)]
     pub fn open(directory: PathBuf) -> AirResult<Self> {
+        Self::open_profile(directory.clone(), directory)
+    }
+
+    pub fn open_profile(directory: PathBuf, runtime: PathBuf) -> AirResult<Self> {
         let store = Arc::new(Store::open(&directory.join("air.sqlite3"))?);
         let session = store.startup_proxy()?;
-        let mut proxy = ProxyRuntime::with_preferences(directory.clone(), session.mode, session.tun);
+        let mut proxy = ProxyRuntime::with_profile(runtime.clone(), directory.clone(), session.mode, session.tun);
         #[cfg(windows)]
         proxy.set_system_proxy(store.system_proxy_preference()?)?;
         RoutingFile::new(&directory).upgrade_factory_network()?;
         let library = Library::load(&store)?;
         store.initialize_updates(&library.sources)?;
+        let (batch_cancel, _) = watch::channel(0u64);
         let (background, _) = watch::channel(BackgroundMonitoring::default());
         Ok(Self {
             launch_pending: std::sync::atomic::AtomicBool::new(true),
             proxy: Mutex::new(proxy),
             directory,
+            runtime,
             store,
             library: RwLock::new(library),
             edits: Mutex::new(()),
-            scheduler: Scheduler::new(CONCURRENCY, TIMEOUT),
+            scheduler: Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT),
             kernel: Mutex::new(None),
             batch: Mutex::new(()),
+            batch_cancel,
             progress: StdMutex::new(Progress::default()),
             background,
         })
@@ -275,11 +285,20 @@ impl App {
 
     async fn delete_subscription(&self, id: &str) -> AirResult<()> {
         let _edit = self.edits.lock().await;
+        let removed_node_ids: HashSet<String> = self
+            .library
+            .read()
+            .await
+            .sources
+            .iter()
+            .filter(|source| source.id == id)
+            .flat_map(|source| source.nodes.iter().map(|node| node.id.clone()))
+            .collect();
         let file = RoutingFile::new(&self.directory);
         let previous = file.load()?;
         let mut routing = previous.routing.clone();
-        let updated = routing
-            .detach_subscription(id)
+        let detached = routing.detach_subscription(id) | routing.detach_nodes(&removed_node_ids);
+        let updated = detached
             .then(|| file.save(&routing, &previous.revision))
             .transpose()?;
         if let Err(error) = self.store.delete_source(id) {
@@ -296,21 +315,15 @@ impl App {
         let _edit = self.edits.lock().await;
         let library = self.library.read().await;
         let routing = RoutingFile::new(&self.directory).load()?.routing;
-        let source = if let Some(id) = &routing.subscription_id {
-            self.store
-                .sources()?
-                .into_iter()
-                .find(|source| &source.id == id)
-        } else {
-            None
+        self.compile_target(mode, &routing, &library, target)
+    }
+
+    fn compile_target(&self, mode: Mode, routing: &RoutingConfig, library: &Library, target: &StartTarget) -> AirResult<ProxyConfig> {
+        let yaml = match (target, &routing.subscription_id) {
+            (StartTarget::Routing, Some(id)) => self.store.effective_source_yaml(id)?,
+            _ => None,
         };
-        proxy::compile(
-            mode,
-            &routing,
-            &library.sources,
-            source.as_ref().map(|source| source.yaml.as_str()),
-            target,
-        )
+        proxy::compile(mode, routing, &library.sources, yaml.as_deref(), target)
     }
 
     async fn probe_batches(&self, requested: &[String]) -> AirResult<Vec<ProbeBatch>> {
@@ -347,7 +360,7 @@ impl App {
             return Ok(active.kernel.clone());
         }
         let config = node_configs(&batch.nodes)?;
-        let kernel = Arc::new(Kernel::start_probes(path, &self.directory, config, &batch.hosts, &network, interface.as_deref()).await?);
+        let kernel = Arc::new(Kernel::start_probes(path, &self.runtime, config, &batch.hosts, &network, interface.as_deref()).await?);
         if let Some(mut cached) = cached {
             *cached = Some(CachedKernel {
                 network, interface, revision: batch.revision.clone(), path: path.to_owned(), kernel: kernel.clone(),
@@ -378,7 +391,17 @@ impl App {
         Ok(result)
     }
 
+    pub fn cancel_batch(&self) {
+        self.batch_cancel
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        let mut progress = self.progress.lock().expect("progress lock");
+        progress.running = false;
+        progress.active_ids.clear();
+    }
+
     async fn run_batch(&self, path: PathBuf, requested: Vec<String>) -> AirResult<()> {
+        let mut cancel = self.batch_cancel.subscribe();
+        cancel.borrow_and_update();
         {
             let mut progress = self.progress.lock().expect("progress lock");
             *progress = Progress {
@@ -387,54 +410,59 @@ impl App {
                 ..Progress::default()
             };
         }
-        let result = async {
-            let batches = self.probe_batches(&requested).await?;
-            self.progress.lock().expect("progress lock").total = batches.iter().map(|batch| batch.selected.len()).sum();
-            self.store.prune_samples()?;
-            let mut write_error = None;
-            for batch in batches {
-                let kernel = self.probe_kernel(&path, &batch, true).await?;
-                self.scheduler
-                    .batch(
-                        batch.selected,
-                        |(node, revision)| {
-                            let kernel = kernel.clone();
-                            async move {
-                                let id = node.id.clone();
-                                self.progress
-                                    .lock()
-                                    .expect("progress lock")
-                                    .active_ids
-                                    .insert(id.clone());
-                                let probe = self.measure(revision, kernel, node).await;
-                                (id, probe)
-                            }
-                        },
-                        |(id, probe)| {
-                            let mut progress = self.progress.lock().expect("progress lock");
-                            progress.active_ids.remove(&id);
-                            progress.completed += 1;
-                            if probe.is_ok() {
-                                progress.completed_ids.push(id);
-                            }
-                            match probe {
-                                Ok(Probe::Available(_)) => progress.available += 1,
-                                Ok(Probe::Timeout) => progress.timeouts += 1,
-                                Ok(Probe::Unreachable) => progress.failed += 1,
-                                Err(error) => {
-                                    progress.failed += 1;
-                                    write_error = Some(error);
+        let result = tokio::select! {
+            biased;
+            _ = cancel.changed() => Ok(()),
+            outcome = async {
+                let batches = self.probe_batches(&requested).await?;
+                self.progress.lock().expect("progress lock").total = batches.iter().map(|batch| batch.selected.len()).sum();
+                self.store.prune_samples()?;
+                let mut write_error = None;
+                for batch in batches {
+                    let kernel = self.probe_kernel(&path, &batch, true).await?;
+                    self.scheduler
+                        .batch(
+                            batch.selected,
+                            FOREGROUND_CONCURRENCY,
+                            |(node, revision)| {
+                                let kernel = kernel.clone();
+                                async move {
+                                    let id = node.id.clone();
+                                    self.progress
+                                        .lock()
+                                        .expect("progress lock")
+                                        .active_ids
+                                        .insert(id.clone());
+                                    let probe = self.measure(revision, kernel, node).await;
+                                    (id, probe)
                                 }
-                            }
-                        },
-                    )
-                    .await;
-            }
-            write_error.map_or(Ok(()), Err)
-        }
-        .await;
+                            },
+                            |(id, probe)| {
+                                let mut progress = self.progress.lock().expect("progress lock");
+                                progress.active_ids.remove(&id);
+                                progress.completed += 1;
+                                if probe.is_ok() {
+                                    progress.completed_ids.push(id);
+                                }
+                                match probe {
+                                    Ok(Probe::Available(_)) => progress.available += 1,
+                                    Ok(Probe::Timeout) => progress.timeouts += 1,
+                                    Ok(Probe::Unreachable) => progress.failed += 1,
+                                    Err(error) => {
+                                        progress.failed += 1;
+                                        write_error = Some(error);
+                                    }
+                                }
+                            },
+                        )
+                        .await;
+                }
+                write_error.map_or(Ok(()), Err)
+            } => outcome,
+        };
         let mut progress = self.progress.lock().expect("progress lock");
         progress.running = false;
+        progress.active_ids.clear();
         progress.error = result.as_ref().err().cloned();
         result
     }
@@ -469,6 +497,7 @@ impl App {
                 self.scheduler
                     .batch(
                         batch.selected,
+                        BACKGROUND_CONCURRENCY,
                         |(node, revision)| {
                             let kernel = &kernel;
                             async move {
@@ -607,6 +636,24 @@ struct GroupView {
     #[serde(flatten)]
     group: Group,
     member_names: Vec<String>,
+}
+
+#[tauri::command]
+pub fn read_ui_preferences(state: State<'_, Arc<App>>) -> AirResult<Option<HashMap<String, String>>> {
+    match std::fs::read(state.directory.join("interface.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn write_ui_preferences(state: State<'_, Arc<App>>, values: HashMap<String, String>) -> AirResult<()> {
+    let file = tempfile::NamedTempFile::new_in(&state.directory).map_err(|e| e.to_string())?;
+    serde_json::to_writer(file.as_file(), &values).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(state.directory.join("interface.json")).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -787,7 +834,7 @@ async fn download_existing_subscription(state: &App, id: &str, url: &str) -> Air
         });
         (nodes, source.hosts.clone())
     };
-    let retry = subscriptions::fetch_with_saved_nodes(&url, &binary, &state.directory, &nodes, &hosts);
+    let retry = subscriptions::fetch_with_saved_nodes(&url, &binary, &state.directory, &state.runtime, &nodes, &hosts);
     match tokio::time::timeout(Duration::from_secs(25), retry).await {
         Ok(Ok(download)) => Ok(download),
         Ok(Err(error)) => Err(format!("{first_error} · 订阅节点 {error}")),
@@ -1007,21 +1054,15 @@ pub async fn subscription_yaml(state: State<'_, Arc<App>>, id: String, runtime: 
         }
     }
     let _guard = state.edits.lock().await;
-    let source = state.store.sources()?.into_iter().find(|s| s.id == id).ok_or("订阅已不存在")?;
-    if !runtime { return Ok(source.yaml); }
-    let file = RoutingFile::new(&state.directory);
-    let mut routing = file.load()?.routing;
-    let library = state.library.read().await;
-    if routing.subscription_id.as_deref() != Some(&id) {
-        routing = RoutingConfig::default();
-        routing.subscription_id = Some(id.clone());
-        routing.inherit_rules = true;
-        if library.sources.iter().find(|s| s.id == id).is_some_and(|s| s.rules.iter().any(|r| r.starts_with("MATCH,"))) {
-            routing.fallback = Target::Subscription;
-        }
+    if !runtime {
+        return state.store.sources()?.into_iter().find(|s| s.id == id).map(|s| s.yaml).ok_or("订阅已不存在".into());
     }
+    let file = RoutingFile::new(&state.directory);
+    let library = state.library.read().await;
+    let node = library.sources.iter().find(|s| s.id == id).ok_or("订阅已不存在")?.nodes.iter()
+        .find(|node| !node.is_subscription_notice()).ok_or("订阅没有可用的节点")?;
     let session = state.store.startup_proxy()?;
-    let config = proxy::compile(session.mode, &routing, &library.sources, Some(&source.yaml), &StartTarget::Routing)?;
+    let config = state.compile_target(session.mode, &file.load()?.routing, &library, &StartTarget::Node { id: node.id.clone() })?;
     config.preview_yaml(&file.network()?.settings, session.mode, session.tun).map(|yaml| format!("# 按当前设置生成的订阅预览\n{yaml}"))
 }
 
@@ -1264,6 +1305,14 @@ pub async fn delete_custom_node(state: State<'_, Arc<App>>, id: String) -> AirRe
         .ok_or("自定义节点已不存在")?;
     entries.remove(index);
     state.store.reset_override(&id)?;
+    let removed = HashSet::from([id]);
+    let file = RoutingFile::new(&state.directory);
+    if let Ok(previous) = file.load() {
+        let mut routing = previous.routing.clone();
+        if routing.detach_nodes(&removed) {
+            let _ = file.save(&routing, &previous.revision);
+        }
+    }
     if entries.is_empty() {
         state.store.delete_source(CUSTOM_SOURCE_ID)?;
     } else {
@@ -1287,7 +1336,7 @@ pub async fn test_custom_node(
 ) -> AirResult<u64> {
     let mut mapping = custom_node_mapping(&input)?;
     mapping.insert("name".into(), "air-custom-test".into());
-    let kernel = Kernel::start(&kernel_path, &state.directory, vec![Value::Mapping(mapping)], &Mapping::new(), None).await?;
+    let kernel = Kernel::start(&kernel_path, &state.directory, &state.runtime, vec![Value::Mapping(mapping)], &Mapping::new(), None).await?;
     match kernel.delay("air-custom-test").await {
         Probe::Available(ms) => Ok(ms),
         Probe::Timeout => Err("连接测试超时".into()),
@@ -1361,7 +1410,7 @@ pub async fn verify_chain(
     let used = nodes.iter().filter(|node| hops.contains(&node.id)).map(|node| node.source_id.clone()).collect();
     let hosts = subscriptions::combined_hosts(&library.sources, &used)?;
     drop(library);
-    let kernel = Kernel::start(&kernel_path, &state.directory, config, &hosts, Some(EXIT_NAME))
+    let kernel = Kernel::start(&kernel_path, &state.directory, &state.runtime, config, &hosts, Some(EXIT_NAME))
         .await
         .map_err(|error| format!("启动探测内核失败 · {error}"))?;
     let (ip, latency_ms) = kernel
@@ -1440,7 +1489,7 @@ pub async fn test_dns_settings(state: State<'_, Arc<App>>, kernel_path: PathBuf,
         || !label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')) {
         return Err("请填写要解析的域名，例如 www.baidu.com".into());
     }
-    let mut kernel = Kernel::start_diagnostic(&kernel_path, &state.directory, vec![], &Mapping::new(), None, &settings).await?;
+    let mut kernel = Kernel::start_diagnostic(&kernel_path, &state.runtime, vec![], &Mapping::new(), None, &settings).await?;
     let result = kernel.query_dns(domain).await;
     kernel.stop().await?;
     result
@@ -1456,8 +1505,15 @@ pub async fn save_network_settings(state: State<'_, Arc<App>>, settings: Network
 pub async fn preview_routing(
     state: State<'_, Arc<App>>,
     config: RoutingConfig,
+    target: Option<StartTarget>,
 ) -> AirResult<Vec<String>> {
-    config.compile(&state.library.read().await.sources)
+    let active = state.proxy.lock().await.active_target();
+    let library = state.library.read().await;
+    let Some(target) = active.or(target).filter(|t| !matches!(t, StartTarget::Routing)) else {
+        return config.compile(&library.sources);
+    };
+    let file = RoutingFile::new(&state.directory);
+    state.compile_target(Mode::Rule, &config, &library, &target)?.preview_rules(&file.network()?.settings)
 }
 
 #[tauri::command]
@@ -1465,10 +1521,54 @@ pub async fn save_routing(
     state: State<'_, Arc<App>>,
     config: RoutingConfig,
     revision: String,
+    target: Option<StartTarget>,
 ) -> AirResult<Document> {
+    let mut runtime = state.proxy.lock().await;
     let _guard = state.edits.lock().await;
-    config.compile(&state.library.read().await.sources)?;
-    RoutingFile::new(&state.directory).save(&config, &revision)
+    let library = state.library.read().await;
+    let active = runtime.active_target();
+    let next_proxy = if let Some(target) = &active {
+        Some(state.compile_target(runtime.mode(), &config, &library, target)?)
+    } else {
+        if let Some(selected) = target.filter(|t| !matches!(t, StartTarget::Routing)) {
+            state.compile_target(Mode::Rule, &config, &library, &selected)?;
+        } else {
+            config.compile(&library.sources)?;
+        }
+        None
+    };
+    let file = RoutingFile::new(&state.directory);
+    let previous = file.load()?;
+    let document = file.save(&config, &revision)?;
+    if let Some(proxy_config) = next_proxy {
+        if let Err(error) = runtime.reload_routing(proxy_config).await {
+            file.save(&previous.routing, &document.revision)
+                .map_err(|restore| format!("{error}。未能恢复分流配置：{restore}"))?;
+            return Err(error);
+        }
+    }
+    Ok(document)
+}
+
+#[tauri::command]
+pub async fn clear_connection_logs(state: State<'_, Arc<App>>) -> AirResult<()> {
+    state.proxy.lock().await.clear_connection_logs();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_matching_connections(
+    state: State<'_, Arc<App>>,
+    process_name: Option<String>,
+    host: Option<String>,
+) -> AirResult<()> {
+    state
+        .proxy
+        .lock()
+        .await
+        .close_matching_connections(process_name.as_deref(), host.as_deref())
+        .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1528,7 +1628,7 @@ pub async fn proxy_control(
             runtime.select_node(config).await?;
             session.target = Some(target);
         }
-        ProxyAction::Stop => runtime.stop().await?,
+        ProxyAction::Stop => runtime.pause().await?,
         ProxyAction::Mode { mode } => runtime.set_mode(mode).await?,
         ProxyAction::SystemProxy { enabled } => {
             let previous = state.store.system_proxy_preference()?;
@@ -1557,6 +1657,11 @@ pub async fn batch_probe(
 ) -> AirResult<()> {
     let _batch = state.batch.lock().await;
     state.run_batch(kernel_path, ids).await
+}
+
+#[tauri::command]
+pub fn cancel_batch_probe(state: State<'_, Arc<App>>) {
+    state.cancel_batch();
 }
 
 #[tauri::command]

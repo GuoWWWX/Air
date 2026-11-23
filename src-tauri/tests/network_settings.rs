@@ -9,12 +9,13 @@ fn factory_dns_uses_real_ips_and_upgrades_only_the_generated_legacy_file() {
     let current = NetworkSettings::default();
     current.validate().unwrap();
     assert!(current.dns_hijack && current.respect_rules);
+    assert!(current.tcp_concurrent);
     assert_eq!(current.enhanced_mode, "redir-host");
     assert!(current.nameserver.iter().all(|host| host.starts_with("https://")));
     assert!(!current.proxy_server_nameserver.is_empty());
     let legacy = NetworkSettings {
         nameserver: vec!["system".into()], proxy_server_nameserver: vec![],
-        respect_rules: false, enhanced_mode: "auto".into(), strict_route: false, ..current.clone()
+        respect_rules: false, enhanced_mode: "auto".into(), strict_route: false, tcp_concurrent: false, ..current.clone()
     };
     let template = serde_yaml::to_string(&serde_json::json!({ "network": legacy, "routing": RoutingConfig::default() })).unwrap();
     fs::write(file.path(), format!("# custom\n{template}")).unwrap();

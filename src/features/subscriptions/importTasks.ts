@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { useSyncExternalStore } from 'react'
 import { air, type ImportInput } from '@/platform/desktop/air'
 import { showMessage } from '@/shared/ui/message'
@@ -43,7 +44,7 @@ export function startBackgroundSubscriptionImport(
   onImported: () => Promise<void>,
 ) {
   const sourceHost = formatSourceHost(input)
-  const label = input.name.trim() || sourceHost || '新订阅'
+  const label = input.name.trim() || sourceHost || tr('新订阅')
   const id = crypto.randomUUID()
   const task: PendingSubscriptionImport = {
     id,
@@ -68,14 +69,14 @@ export function startBackgroundSubscriptionImport(
       await onImported()
       showMessage({
         type: 'success',
-        title: `订阅已导入 · ${name}`,
-        description: `${preview.nodes} 个节点 · ${preview.groups} 个分组`,
+        title: tr("订阅已导入 · {0}", name),
+        description: tr("{0} 个节点 · {1} 个分组", preview.nodes, preview.groups),
       })
     } catch (failure) {
       const reason = failure instanceof Error ? failure.message : String(failure)
       showMessage({
         type: 'error',
-        title: `导入订阅失败 · ${label}`,
+        title: tr("导入订阅失败 · {0}", label),
         description: reason,
       })
     } finally {

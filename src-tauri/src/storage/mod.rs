@@ -3,6 +3,7 @@ use crate::{
     subscriptions::{Download, Usage},
     AirResult,
 };
+mod documents;
 mod subscription_updates;
 mod source_names;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -14,7 +15,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub struct Store(Mutex<Connection>);
+pub struct Store {
+    db: Mutex<Connection>,
+    documents: documents::Documents,
+}
 
 #[derive(Default, serde::Deserialize, Serialize)]
 pub struct StartupProxy {
@@ -82,11 +86,13 @@ impl Store {
             .execute_batch(include_str!("../../migrations/001_initial.sql"))
             .map_err(|_| "无法初始化 Air 本地数据库")?;
         source_names::repair_duplicates(&mut connection).map_err(|_| "无法整理同名订阅")?;
-        Ok(Self(Mutex::new(connection)))
+        let directory = path.parent().ok_or("无效的配置目录")?.join("subscriptions");
+        let documents = documents::Documents::open(directory, &mut connection)?;
+        Ok(Self { db: Mutex::new(connection), documents })
     }
 
     fn connection(&self) -> AirResult<MutexGuard<'_, Connection>> {
-        self.0.lock().map_err(|_| "无法访问 Air 本地数据库".into())
+        self.db.lock().map_err(|_| "无法访问 Air 本地数据库".into())
     }
 
     pub fn system_proxy_preference(&self) -> AirResult<bool> {
@@ -170,7 +176,6 @@ impl Store {
         kind: &str,
         url: Option<&str>,
     ) -> AirResult<String> {
-        let bytes = protect(download.yaml.as_bytes(), true)?;
         let usage = download
             .usage
             .as_ref()
@@ -181,7 +186,8 @@ impl Store {
             .map(|value| protect(value.as_bytes(), true))
             .transpose()?;
         let mut connection = self.connection()?;
-        let transaction = connection.transaction().map_err(|_| "订阅保存失败")?;
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "订阅保存失败")?;
+        let bytes = self.documents.write(&download.yaml)?;
         let (base, automatic) = match url {
             Some(url) => Self::resolve_remote_name(&transaction, id, name, url, download.profile_title.as_deref())?,
             None => (name.to_owned(), false),
@@ -202,8 +208,9 @@ impl Store {
             transaction.execute("INSERT INTO subscription_updates(source_id,enabled,hours) VALUES (?1,1,?2) ON CONFLICT(source_id) DO UPDATE SET hours=excluded.hours", params![id,hours]).map_err(|_| "更新计划保存失败")?;
         }
         let has_local: bool = transaction.query_row("SELECT encrypted_local_yaml IS NOT NULL FROM sources WHERE id=?1", [id], |r| r.get(0)).map_err(|_| "读取本地配置失败")?;
-        if !has_local { Self::render_extension(&transaction, id, &download.yaml)?; }
+        if !has_local { self.render_extension(&transaction, id, &download.yaml)?; }
         transaction.commit().map_err(|_| "订阅保存失败")?;
+        self.documents.after_commit(&mut connection);
         Ok(name)
     }
 
@@ -247,8 +254,8 @@ impl Store {
     }
 
     pub fn source_document(&self, id: &str) -> AirResult<SourceDocument> {
-        let (original, local): (Vec<u8>, Option<Vec<u8>>) = self
-            .connection()?
+        let db = self.connection()?;
+        let (original, local): (Vec<u8>, Option<Vec<u8>>) = db
             .query_row(
                 "SELECT encrypted_yaml,encrypted_local_yaml FROM sources WHERE id=?1",
                 [id],
@@ -256,8 +263,8 @@ impl Store {
             )
             .map_err(|_| "无法读取订阅 YAML")?;
         Ok(SourceDocument {
-            original: decode(&original)?,
-            local: local.map(|bytes| decode(&bytes)).transpose()?,
+            original: self.documents.read(&original)?,
+            local: local.map(|bytes| self.documents.read(&bytes)).transpose()?,
         })
     }
 
@@ -288,17 +295,18 @@ impl Store {
     }
 
     pub fn delete_source(&self, id: &str) -> AirResult<()> {
-        self.connection()?
-            .execute("DELETE FROM sources WHERE id=?1", [id])
+        let mut db = self.connection()?;
+        db.execute("DELETE FROM sources WHERE id=?1", [id])
             .map_err(|_| "删除订阅失败")?;
+        self.documents.after_commit(&mut db);
         Ok(())
     }
 
     pub fn use_original_yaml(&self, id: &str) -> AirResult<()> {
         let original = self.source_document(id)?.original;
         let mut db = self.connection()?;
-        let tx = db.transaction().map_err(|_| "无法恢复订阅")?;
-        Self::render_extension(&tx, id, &original)?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "无法恢复订阅")?;
+        self.render_extension(&tx, id, &original)?;
         let changed = tx.execute(
                 "UPDATE sources SET encrypted_local_yaml=NULL WHERE id=?1",
                 [id],
@@ -307,7 +315,18 @@ impl Store {
         if changed == 0 {
             return Err("订阅已不存在".into());
         }
-        tx.commit().map_err(|_| "无法恢复订阅".into())
+        tx.commit().map_err(|_| "无法恢复订阅")?;
+        self.documents.after_commit(&mut db);
+        Ok(())
+    }
+
+    pub fn effective_source_yaml(&self, id: &str) -> AirResult<Option<String>> {
+        let connection = self.connection()?;
+        let reference = connection.query_row(
+            "SELECT coalesce(e.rendered,s.encrypted_local_yaml,s.encrypted_yaml) FROM sources s LEFT JOIN subscription_extensions e ON e.source_id=s.id WHERE s.id=?1",
+            [id], |row| row.get::<_, Vec<u8>>(0),
+        ).optional().map_err(|_| "无法读取订阅 YAML")?;
+        reference.as_deref().map(|bytes| self.documents.read(bytes)).transpose()
     }
 
     pub fn sources(&self) -> AirResult<Vec<StoredSource>> {
@@ -325,18 +344,17 @@ impl Store {
             .map_err(|_| "无法读取订阅列表")?;
         rows.map(|row| {
             let (id, name, bytes) = row.map_err(|_| "订阅读取失败")?;
-            let yaml =
-                String::from_utf8(protect(&bytes, false)?).map_err(|_| "本地订阅编码无效")?;
+            let yaml = self.documents.read(&bytes)?;
             Ok(StoredSource { id, name, yaml })
         })
         .collect()
     }
 
     pub fn save_local_yaml(&self, source_id: &str, yaml: &str) -> AirResult<()> {
-        let bytes = protect(yaml.as_bytes(), true)?;
         let mut db = self.connection()?;
-        let tx = db.transaction().map_err(|_| "无法保存 YAML")?;
-        Self::render_extension(&tx, source_id, yaml)?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "无法保存 YAML")?;
+        let bytes = self.documents.write(yaml)?;
+        self.render_extension(&tx, source_id, yaml)?;
         let changed = tx.execute(
                 "UPDATE sources SET encrypted_local_yaml=?2 WHERE id=?1",
                 params![source_id, bytes],
@@ -345,7 +363,9 @@ impl Store {
         if changed == 0 {
             return Err("订阅已不存在".into());
         }
-        tx.commit().map_err(|_| "无法保存 YAML".into())
+        tx.commit().map_err(|_| "无法保存 YAML")?;
+        self.documents.after_commit(&mut db);
+        Ok(())
     }
 
     pub fn node_overrides(&self) -> AirResult<Vec<NodeOverride>> {

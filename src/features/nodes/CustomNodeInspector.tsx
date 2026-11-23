@@ -1,4 +1,5 @@
-import { Check, Network, Play, ShieldAlert, Trash2, X } from 'lucide-react'
+import { tr } from '@/shared/i18n/messages'
+import { Check, Network, ShieldAlert, Trash2, X, Zap } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
@@ -94,7 +95,7 @@ export function CustomNodeInspector({
       parsedPort < 1 ||
       parsedPort > 65535
     ) {
-      onError('请填写节点名称、服务器地址和有效端口（1–65535）')
+      onError(tr('请填写节点名称、服务器地址和有效端口（1–65535）'))
       return null
     }
     return {
@@ -110,6 +111,7 @@ export function CustomNodeInspector({
 
   async function runTest() {
     if (!kernelPath) {
+      onError(tr('测速需要 Mihomo 诊断内核。请在下方设置内核路径，保存后再测速。'))
       onSettings()
       return
     }
@@ -119,12 +121,12 @@ export function CustomNodeInspector({
     setTestResult(undefined)
     try {
       const ms = await air.testCustomNode(kernelPath, payload)
-      setTestResult({ ok: true, text: `连接测试通过 · ${ms} ms` })
-      showMessage({ type: 'success', title: `连接测试通过 · ${ms} ms` })
+      setTestResult({ ok: true, text: tr("连接测试通过 · {0} ms", ms) })
+      showMessage({ type: 'success', title: tr("连接测试通过 · {0} ms", ms) })
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       setTestResult({ ok: false, text: reason })
-      showMessage({ type: 'error', title: '连接测试失败', description: reason })
+      showMessage({ type: 'error', title: tr('连接测试失败'), description: reason })
     } finally {
       setTesting(false)
     }
@@ -141,11 +143,11 @@ export function CustomNodeInspector({
         savedId = await air.saveCustomNode(payload)
       }
       await onSaved(savedId)
-      showMessage({ type: 'success', title: nodeId ? '节点已保存' : '自定义节点已添加' })
+      showMessage({ type: 'success', title: nodeId ? tr('节点已保存') : tr('自定义节点已添加') })
     } catch (error) {
       if (savedId) {
         setPendingGroupNodeId(savedId)
-        onError(`节点已保存，加入分组失败（${error instanceof Error ? error.message : String(error)}）`)
+        onError(tr("节点已保存，加入分组失败（{0}）", error instanceof Error ? error.message : String(error)))
       } else {
         onError(error)
       }
@@ -160,7 +162,7 @@ export function CustomNodeInspector({
     try {
       await air.deleteCustomNode(nodeId)
       await onDeleted(nodeId)
-      showMessage({ type: 'success', title: '自定义节点已删除' })
+      showMessage({ type: 'success', title: tr('自定义节点已删除') })
     } catch (error) {
       onError(error)
     } finally {
@@ -182,23 +184,23 @@ export function CustomNodeInspector({
             <Network className="size-3.5" />
           </span>
           <h2 className="text-sm font-semibold text-foreground">
-            {nodeId ? '编辑自定义节点' : groupName ? '在分组中新建节点' : '添加自定义节点'}
+            {nodeId ? tr('编辑自定义节点') : groupName ? tr('在分组中新建节点') : tr('添加自定义节点')}
           </h2>
         </div>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="关闭自定义节点" onClick={onClose}>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label={tr("关闭自定义节点")} onClick={onClose}>
           <X />
         </Button>
       </div>
 
       <div className="air-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-4 py-3.5">
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="custom-node-name">名称</Label>
+          <Label htmlFor="custom-node-name">{tr("名称")}</Label>
           <Input
             id="custom-node-name"
             required
             disabled={inputsDisabled}
             maxLength={150}
-            placeholder="例如 美国住宅 / 自建中转"
+            placeholder={tr("例如 美国住宅 / 自建中转")}
             value={name}
             onChange={e => {
               setName(e.target.value)
@@ -208,10 +210,10 @@ export function CustomNodeInspector({
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <Label>代理协议</Label>
+          <Label>{tr("代理协议")}</Label>
           <Segmented
             layoutId="custom-node-protocol"
-            ariaLabel="代理协议"
+            ariaLabel={tr("代理协议")}
             value={protocol}
             options={protocols}
             fullWidth
@@ -225,7 +227,7 @@ export function CustomNodeInspector({
 
         <div className="grid grid-cols-[minmax(0,1fr)_88px] gap-2">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="custom-node-server">服务器地址</Label>
+            <Label htmlFor="custom-node-server">{tr("服务器地址")}</Label>
             <Input
               id="custom-node-server"
               required
@@ -241,7 +243,7 @@ export function CustomNodeInspector({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="custom-node-port">端口</Label>
+            <Label htmlFor="custom-node-port">{tr("端口")}</Label>
             <Input
               id="custom-node-port"
               required
@@ -260,12 +262,12 @@ export function CustomNodeInspector({
 
         <div className="grid grid-cols-2 gap-2">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="custom-node-username">用户名（可选）</Label>
+            <Label htmlFor="custom-node-username">{tr("用户名（可选）")}</Label>
             <Input
               id="custom-node-username"
               disabled={inputsDisabled}
               autoComplete="off"
-              placeholder="选填"
+              placeholder={tr("选填")}
               value={username}
               onChange={e => {
                 setUsername(e.target.value)
@@ -274,13 +276,13 @@ export function CustomNodeInspector({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="custom-node-password">密码（可选）</Label>
+            <Label htmlFor="custom-node-password">{tr("密码（可选）")}</Label>
             <Input
               id="custom-node-password"
               type="password"
               disabled={inputsDisabled}
               autoComplete="off"
-              placeholder="选填"
+              placeholder={tr("选填")}
               value={password}
               onChange={e => {
                 setPassword(e.target.value)
@@ -292,13 +294,13 @@ export function CustomNodeInspector({
 
         <Separator />
 
-        <div className="flex items-center justify-between gap-2 rounded-[8px] border border-border-subtle bg-muted/30 px-3 py-2">
-          <span className="min-w-0 text-[12px] text-muted-foreground">
-            {groupName ? `保存后加入「${groupName}」` : '保存至节点库 · 可用于任意一跳'}
+        <div className="flex items-center justify-between gap-2 rounded-[8px] border border-border bg-muted/55 px-3 py-2 dark:bg-background/60">
+          <span className="min-w-0 break-words text-[12px] text-muted-foreground">
+            {groupName ? tr("保存后加入「{0}」", groupName) : tr('保存至节点库 · 可用于任意一跳')}
           </span>
-          <Button type="button" variant="secondary" size="sm" disabled={busy || Boolean(pendingGroupNodeId)} onClick={() => void runTest()}>
-            <Play data-icon="inline-start" />
-            {testing ? '测试中…' : '测试连接'}
+          <Button type="button" variant="secondary" size="sm" className="shrink-0" disabled={busy || Boolean(pendingGroupNodeId)} onClick={() => void runTest()}>
+            <Zap data-icon="inline-start" />
+            {testing ? tr('测试中…') : tr('测试连接')}
           </Button>
         </div>
 
@@ -333,17 +335,13 @@ export function CustomNodeInspector({
               onClick={() => void remove()}
               className="text-destructive hover:bg-danger-soft hover:text-destructive"
             >
-              <Trash2 data-icon="inline-start" />
-              删除
-            </Button>
+              <Trash2 data-icon="inline-start" />{tr("删除")}</Button>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Button type="button" variant="secondary" disabled={saving} onClick={onClose}>
-            取消
-          </Button>
-          <Button type="submit" variant="default" disabled={busy}>
-            {saving ? '保存中…' : pendingGroupNodeId ? '重试加入分组' : '保存节点'}
+          <Button type="button" variant="secondary" size="sm" disabled={saving} onClick={onClose}>{tr("取消")}</Button>
+          <Button type="submit" variant="default" size="sm" disabled={busy}>
+            {saving ? tr('保存中…') : pendingGroupNodeId ? tr('重试加入分组') : tr('保存节点')}
           </Button>
         </div>
       </div>

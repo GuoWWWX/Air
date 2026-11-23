@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { X } from 'lucide-react'
 import type { FormEvent, ReactNode } from 'react'
 import { Button } from '@/shared/ui/button'
@@ -40,13 +41,13 @@ export function SubscriptionDialog({
       <DialogContent className="max-w-[480px] gap-0 p-5">
         <form className="flex min-h-0 flex-col gap-4" onSubmit={onSubmit}>
           <DialogHeader className="pb-0">
-            <DialogTitle>{title}</DialogTitle>
+            <DialogTitle className="min-w-0 [overflow-wrap:anywhere]">{title}</DialogTitle>
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
               disabled={pending}
-              aria-label="关闭对话框"
+              aria-label={tr("关闭对话框")}
               onClick={onClose}
             >
               <X />

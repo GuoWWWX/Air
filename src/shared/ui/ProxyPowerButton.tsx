@@ -1,10 +1,11 @@
+import { tr } from '@/shared/i18n/messages'
 import { Play, Square } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { cn, formatCompactRate } from '@/shared/lib/utils'
 import type { ProxyTraffic } from '@/shared/proxy/state'
 
-const minimumMotionTime = { start: 520, stop: 280 }
+const minimumMotionTime = { start: 650, stop: 320 }
 
 export function waitForProxyPowerAnimation(action: 'start' | 'stop', startedAt: number) {
   const remaining = minimumMotionTime[action] - (performance.now() - startedAt)
@@ -106,24 +107,24 @@ export function ProxyPowerButton({
 
   const label =
     phase === 'starting'
-      ? '正在启动代理…'
+      ? tr('正在启动代理…')
       : phase === 'stopping'
-        ? '正在停止代理…'
+        ? tr('正在停止代理…')
         : phase === 'running'
           ? traffic
-            ? `代理运行中 · ↑${formatCompactRate(traffic.uploadRate)} ↓${formatCompactRate(traffic.downloadRate)}（点击停止）`
-            : '代理运行中 · 等待流量数据（点击停止）'
-          : '启动代理'
+            ? tr("代理运行中 · ↑{0} ↓{1}（点击停止）", formatCompactRate(traffic.uploadRate), formatCompactRate(traffic.downloadRate))
+            : tr('代理运行中 · 等待流量数据（点击停止）')
+          : tr('启动代理')
 
   const isActiveSurface = phase === 'running' || phase === 'stopping'
   const showStopIcon = !mobile && phase === 'running' && (hovered || focusVisible)
-  const targetWidth = phase === 'running' ? (mobile ? 146 : 104) : (mobile ? 106 : 36)
+  const targetWidth = phase === 'running' ? (mobile ? 132 : 104) : (mobile ? 104 : 36)
 
   return (
     <motion.button
       type="button"
       data-proxy-power={tone}
-      aria-label={mobile && phase === 'running' ? '停止代理' : label}
+      aria-label={mobile && phase === 'running' ? tr('停止代理') : label}
       title={label}
       aria-busy={switching}
       disabled={disabled}
@@ -134,8 +135,12 @@ export function ProxyPowerButton({
         width: { type: 'spring', stiffness: 420, damping: 32 },
         scale: { type: 'spring', stiffness: 540, damping: 32 },
       }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onPointerEnter={event => {
+        if (event.pointerType === 'mouse') setHovered(true)
+      }}
+      onPointerLeave={event => {
+        if (event.pointerType === 'mouse') setHovered(false)
+      }}
       onFocus={event => setFocusVisible(event.currentTarget.matches(':focus-visible'))}
       onBlur={() => setFocusVisible(false)}
       onClick={() => {
@@ -143,7 +148,7 @@ export function ProxyPowerButton({
       }}
       className={cn(
         'relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-[7px] px-2 outline-none transition-[background-color,border-color,box-shadow,color] duration-300 ease-out select-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-        mobile ? 'h-10' : 'h-7',
+        mobile ? 'h-9' : 'h-7',
         switching ? 'cursor-wait' : 'cursor-pointer',
         isActiveSurface
           ? cn(
@@ -195,7 +200,7 @@ export function ProxyPowerButton({
             className="relative z-10 inline-flex items-center justify-center gap-1.5"
           >
             <OrbitRing duration={0.85} />
-            {mobile && <span className="whitespace-nowrap text-xs font-semibold">正在启动</span>}
+            {mobile && <span className="whitespace-nowrap text-xs font-semibold">{tr("正在启动")}</span>}
           </motion.span>
         ) : phase === 'stopping' ? (
           <motion.span
@@ -207,7 +212,7 @@ export function ProxyPowerButton({
             className="relative z-10 inline-flex items-center justify-center gap-1.5"
           >
             <OrbitRing duration={0.7} />
-            {mobile && <span className="whitespace-nowrap text-xs font-semibold">正在停止</span>}
+            {mobile && <span className="whitespace-nowrap text-xs font-semibold">{tr("正在停止")}</span>}
           </motion.span>
         ) : phase === 'running' ? (
           <motion.span
@@ -229,7 +234,7 @@ export function ProxyPowerButton({
                   className="inline-flex items-center gap-1.5 text-[12px] font-semibold whitespace-nowrap"
                 >
                   <Square className="size-3 stroke-[2.1]" />
-                  <span>停止</span>
+                  <span>{tr("停止")}</span>
                 </motion.span>
               ) : (
                 <motion.span
@@ -259,7 +264,7 @@ export function ProxyPowerButton({
             className="relative z-10 inline-flex items-center justify-center gap-1.5"
           >
             <Play className="size-3.5 translate-x-[0.5px] fill-current" />
-            {mobile && <span className="whitespace-nowrap text-xs font-semibold">启动代理</span>}
+            {mobile && <span className="whitespace-nowrap text-xs font-semibold">{tr("启动代理")}</span>}
           </motion.span>
         )}
       </AnimatePresence>

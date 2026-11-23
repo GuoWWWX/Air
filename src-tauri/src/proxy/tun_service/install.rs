@@ -1,4 +1,4 @@
-use super::{service_pid, SecurityDescriptor, SERVICE_NAME};
+use super::{current_service_pid, SecurityDescriptor, SERVICE_NAME, STARTUP_TIMEOUT};
 use crate::{subscriptions::digest, AirResult};
 use std::{
     ffi::{OsStr, OsString},
@@ -29,18 +29,31 @@ use windows_sys::Win32::{
     UI::{Shell::{SHGetKnownFolderPath, ShellExecuteExW, FOLDERID_ProgramFiles, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW}, WindowsAndMessaging::SW_HIDE},
 };
 
-pub(super) const RUN: &str = "--air-tun-service-v3";
-pub(super) const PREVIOUS_RUN: &str = "--air-tun-service-v2";
+pub(super) const RUN: &str = "--air-tun-service-v9";
+pub(super) const V8_RUN: &str = "--air-tun-service-v8";
+pub(super) const V7_RUN: &str = "--air-tun-service-v7";
+pub(super) const V6_RUN: &str = "--air-tun-service-v6";
+pub(super) const COMPATIBLE_RUN: &str = "--air-tun-service-v5";
+pub(super) const OLDER_COMPATIBLE_RUN: &str = "--air-tun-service-v4";
+pub(super) const PREVIOUS_RUN: &str = "--air-tun-service-v3";
+pub(super) const LEGACY_V2_RUN: &str = "--air-tun-service-v2";
 pub(super) const LEGACY_RUN: &str = "--air-tun-service";
 pub(super) const INSTALL: &str = "--air-install-tun-service";
 pub(super) const REMOVE: &str = "--air-remove-tun-service";
 pub(super) const REQUEST_REMOVE: &str = "--air-request-remove-tun-service";
 const SERVICE_EXE: &str = "air-tun-service.exe";
 pub(super) const CORE_EXE: &str = "mihomo.exe";
+pub(super) const WINTUN_DLL: &str = "wintun.dll";
+const WINTUN_LICENSE: &str = "Wintun-LICENSE.txt";
 const LOADER: &str = "WebView2Loader.dll";
 // These are the Windows release assets copied into the protected service directory.
-pub(super) const CORE_SHA256: &str = "3c107d54ef1b895e4980b53f517d52f3c1137101fa2637347c9ce343fc50d7b2";
+pub(super) const CORE_SHA256: &str = "e0e3823e739c622297d6862bbe72c14eb9e355c32cfda511357be857a8488261";
+pub(super) const PREVIOUS_CORE_SHA256: &str = "25c44987589bd4cea3aec040cb4071225b3cd90219171f98c98b7ff47e0631fc";
+pub(super) const LEGACY_CORE_SHA256: &str = "3c107d54ef1b895e4980b53f517d52f3c1137101fa2637347c9ce343fc50d7b2";
 const LOADER_SHA256: &str = "8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4d3b123f1e0f1c";
+const WINTUN_SHA256: &str = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
+const WINTUN_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wintun.dll"));
+const WINTUN_LICENSE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/Wintun-LICENSE.txt"));
 
 pub(super) fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain([0]).collect()
@@ -66,6 +79,13 @@ fn bundled_asset(exe: &Path, name: &str, expected: &str) -> AirResult<Vec<u8>> {
         return Err(format!("{name} 校验失败，请使用匹配版本的 Air 安装包"));
     }
     Ok(bytes)
+}
+
+fn check_wintun() -> AirResult<()> {
+    if WINTUN_LICENSE_BYTES.is_empty() || digest(WINTUN_BYTES) != WINTUN_SHA256 {
+        return Err("Wintun 驱动文件缺失或校验失败，请使用完整的 Air 安装包".into());
+    }
+    Ok(())
 }
 
 pub(super) fn valid_sid(sid: &str) -> bool {
@@ -104,15 +124,16 @@ pub(super) fn user_sid() -> Option<String> {
 }
 
 pub fn request_install() -> AirResult<()> {
-    if service_pid().is_some() {
+    if current_service_pid().is_some() {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|_| "无法定位 Air 程序")?;
+    check_wintun()?;
     bundled_asset(&exe, CORE_EXE, CORE_SHA256)?;
     bundled_asset(&exe, LOADER, LOADER_SHA256)?;
     let owner = user_sid().ok_or("无法识别当前 Windows 用户")?;
     elevate(&exe, &format!("{INSTALL} {owner}"))?;
-    if service_pid().is_none() {
+    if current_service_pid().is_none() {
         return Err("虚拟网卡服务安装失败，请重试".into());
     }
     Ok(())
@@ -164,6 +185,7 @@ pub(super) fn install(owner: &str) -> AirResult<()> {
         return Err("虚拟网卡服务缺少有效的 Windows 用户".into());
     }
     let source = std::env::current_exe().map_err(|_| "无法定位 Air 程序")?;
+    check_wintun()?;
     let core = bundled_asset(&source, CORE_EXE, CORE_SHA256)?;
     let loader = bundled_asset(&source, LOADER, LOADER_SHA256)?;
     let executable = fs::read(&source).map_err(|_| "无法读取 Air 服务程序")?;
@@ -195,6 +217,8 @@ pub(super) fn install(owner: &str) -> AirResult<()> {
     };
     write_asset(&directory, CORE_EXE, &core)?;
     write_asset(&directory, LOADER, &loader)?;
+    write_asset(&directory, WINTUN_DLL, WINTUN_BYTES)?;
+    write_asset(&directory, WINTUN_LICENSE, WINTUN_LICENSE_BYTES)?;
     write_asset(&directory, SERVICE_EXE, &executable)?;
     let info = ServiceInfo {
         name: SERVICE_NAME.into(),
@@ -230,7 +254,7 @@ pub(super) fn remove() -> AirResult<()> {
     service.delete().map_err(service_error)?;
     drop(service);
     let directory = installation_directory()?;
-    for name in [SERVICE_EXE, CORE_EXE, LOADER] {
+    for name in [SERVICE_EXE, CORE_EXE, LOADER, WINTUN_DLL, WINTUN_LICENSE] {
         let _ = fs::remove_file(directory.join(name));
     }
     let _ = fs::remove_dir(directory);
@@ -251,7 +275,8 @@ fn stop(service: &windows_service::service::Service) -> AirResult<()> {
 }
 
 fn wait_for(service: &windows_service::service::Service, expected: ServiceState) -> AirResult<()> {
-    let deadline = Instant::now() + Duration::from_secs(12);
+    let timeout = if expected == ServiceState::Running { STARTUP_TIMEOUT } else { Duration::from_secs(12) };
+    let deadline = Instant::now() + timeout;
     loop {
         let state = service.query_status().map_err(service_error)?.current_state;
         if state == expected {

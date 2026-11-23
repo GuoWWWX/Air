@@ -28,7 +28,19 @@ pub(super) fn stage(config: &Value, directory: &Path) -> AirResult<bool> {
     });
     let mut missing = false;
     for (kind, name, bytes) in DATABASES {
-        let required = config["rules"]
+        let policy_keys = config["dns"]["nameserver-policy"]
+            .as_mapping()
+            .into_iter()
+            .flat_map(|map| map.keys())
+            .filter_map(Value::as_str);
+        let fake_ip_filters = config["dns"]["fake-ip-filter"]
+            .as_sequence()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str);
+        let fallback_geoip = kind == "GEOIP"
+            && config["dns"]["fallback-filter"]["geoip"].as_bool() == Some(true);
+        let required = fallback_geoip || config["rules"]
             .as_sequence()
             .into_iter()
             .flatten()
@@ -37,8 +49,10 @@ pub(super) fn stage(config: &Value, directory: &Path) -> AirResult<bool> {
                     .flat_map(|provider| provider["payload"].as_sequence().into_iter().flatten()),
             )
             .filter_map(Value::as_str)
+            .chain(policy_keys)
+            .chain(fake_ip_filters)
             .any(|rule| {
-                rule.split([',', '(', ')'])
+                rule.split([':', ',', '(', ')'])
                     .any(|part| part.trim().eq_ignore_ascii_case(kind))
             });
         if !required && !remote_classical {
@@ -55,6 +69,49 @@ pub(super) fn stage(config: &Value, directory: &Path) -> AirResult<bool> {
         }
     }
     Ok(missing)
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::stage;
+
+    #[test]
+    fn dns_policy_geosite_requires_geosite_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = serde_yaml::to_value(serde_json::json!({
+            "dns": {
+                "nameserver-policy": {
+                    "geosite:cn,private": ["223.5.5.5"]
+                }
+            },
+            "rules": ["MATCH,DIRECT"]
+        }))
+        .unwrap();
+        let _ = stage(&config, dir.path());
+        if !super::DATABASES[0].2.is_empty() {
+            assert!(dir.path().join("GeoSite.dat").is_file());
+        }
+    }
+
+    #[test]
+    fn fallback_filter_geoip_requires_geoip_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = serde_yaml::to_value(serde_json::json!({
+            "dns": {
+                "fallback": ["https://1.1.1.1/dns-query"],
+                "fallback-filter": {
+                    "geoip": true,
+                    "domain": []
+                }
+            },
+            "rules": ["MATCH,DIRECT"]
+        }))
+        .unwrap();
+        let _ = stage(&config, dir.path());
+        if !super::DATABASES[1].2.is_empty() {
+            assert!(dir.path().join("geoip.metadb").is_file());
+        }
+    }
 }
 
 #[cfg(all(test, windows))]

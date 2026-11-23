@@ -1,7 +1,14 @@
-import { invoke, isTauri } from '@tauri-apps/api/core'
+import { diagnostic } from '@/shared/i18n/messages'
+import { invoke as nativeInvoke, isTauri } from '@tauri-apps/api/core'
 import { browserAir } from './browserPreview'
 import type { DnsResult, NetworkSettings } from '@/shared/proxy/network'
 import type { ProxyMode, ProxyPowerState, ProxyTraffic } from '@/shared/proxy/state'
+
+function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  return nativeInvoke<T>(command, args).catch((error: unknown) => {
+    throw new Error(diagnostic(error instanceof Error ? error.message : String(error)))
+  })
+}
 
 export type { ProxyMode, ProxyTraffic } from '@/shared/proxy/state'
 
@@ -143,6 +150,13 @@ export interface ProxyConnection {
   app: string
   appExecutable?: string
   appIconKey?: string
+  host?: string
+  destinationIp?: string
+  network?: string
+  processName?: string
+  processPath?: string
+  start?: string
+  closed?: boolean
   target: string
   rule: string
   path: string[]
@@ -156,6 +170,7 @@ export interface ProxyTelemetry extends ProxyTraffic {
   stale: boolean
   memoryBytes: number | null
   connections: ProxyConnection[]
+  connectionLogs?: ProxyConnection[]
   appIcons?: Record<string, string>
 }
 
@@ -175,13 +190,18 @@ export type ProxyAction =
   | ProxyModeAction
 
 export type RouteTarget =
-  | { kind: 'direct' | 'reject' | 'residential' | 'subscription' }
+  | { kind: 'direct' | 'reject' | 'selected' | 'residential' | 'subscription' }
+  | { kind: 'node'; id: string }
   | { kind: 'group'; sourceId: string; name: string }
+
+export type HostMatcher = 'domain' | 'domainSuffix' | 'ip'
 
 export interface RouteRule {
   enabled: boolean
   matcher: 'domain' | 'domainSuffix' | 'ip' | 'processName' | 'processPath'
   value: string
+  hostMatcher?: HostMatcher
+  hostValue?: string
   target: RouteTarget
 }
 
@@ -274,7 +294,11 @@ const tauriAir = {
   proxyExit: (sessionId: string) => invoke<ProxyExit>('proxy_exit', { sessionId }),
   proxyTelemetry: () => invoke<ProxyTelemetry | null>('proxy_telemetry'),
   proxyControl: (request: ProxyAction) => invoke<ProxyStatus>('proxy_control', { request }),
+  clearConnectionLogs: () => invoke<void>('clear_connection_logs'),
+  closeMatchingConnections: (processName?: string, host?: string) =>
+    invoke<void>('close_matching_connections', { processName: processName ?? null, host: host ?? null }),
   batch: (kernelPath: string, ids: string[]) => invoke<void>('batch_probe', { kernelPath, ids }),
+  cancelBatch: () => invoke<void>('cancel_batch_probe'),
   probe: (kernelPath: string, id: string) => invoke<unknown>('probe_node', { kernelPath, id }),
   nodeMetrics: (ids: string[]) => invoke<NodeMetrics[]>('node_metrics', { ids }),
   background: (kernelPath: string, enabled: boolean) =>
@@ -286,9 +310,9 @@ const tauriAir = {
   saveConfigFile: (contents: string, revision: string) => invoke<string>('save_config_file', { contents, revision }),
   validateConfigFile: (contents: string) => invoke<void>('validate_config_file', { contents }),
   routingSettings: () => invoke<RoutingDocument>('routing_settings'),
-  previewRouting: (config: RoutingConfig) => invoke<string[]>('preview_routing', { config }),
-  saveRouting: (config: RoutingConfig, revision: string) =>
-    invoke<RoutingDocument>('save_routing', { config, revision }),
+  previewRouting: (config: RoutingConfig, target?: ProxyTarget) => invoke<string[]>('preview_routing', { config, target }),
+  saveRouting: (config: RoutingConfig, revision: string, target?: ProxyTarget) =>
+    invoke<RoutingDocument>('save_routing', { config, revision, target }),
 }
 
 export const air: typeof tauriAir = new Proxy(tauriAir, {

@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { Camera, FileUp, Image, Link, Plus, ScanLine } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { CopySubscriptionLink } from '@/shared/ui/CopySubscriptionLink'
@@ -13,15 +14,15 @@ import { SubscriptionDialog } from './SubscriptionDialog'
 type Mode = 'url' | 'file' | 'qr'
 
 const importModes = [
-  { value: 'url', label: 'URL 链接', icon: <Link /> },
-  { value: 'file', label: '本地文件', icon: <FileUp /> },
-  { value: 'qr', label: '二维码', icon: <ScanLine /> },
+  { value: 'url', get label() { return tr('URL 链接') }, icon: <Link /> },
+  { value: 'file', get label() { return tr('本地文件') }, icon: <FileUp /> },
+  { value: 'qr', get label() { return tr('二维码') }, icon: <ScanLine /> },
 ] as const
 
 function qrUrl(value: string) {
   const url = new URL(value.trim())
   if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new Error('二维码中没有 HTTP 或 HTTPS 订阅链接')
+    throw new Error(tr('二维码中没有 HTTP 或 HTTPS 订阅链接'))
   }
   return url.href
 }
@@ -62,9 +63,9 @@ export function SubscriptionImport({
   function acceptQr(value: string) {
     try {
       setQrLink(qrUrl(value))
-      showMessage({ type: 'success', title: '已识别订阅链接' })
+      showMessage({ type: 'success', title: tr('已识别订阅链接') })
     } catch {
-      showMessage({ type: 'error', title: '二维码中没有 HTTP 或 HTTPS 订阅链接' })
+      showMessage({ type: 'error', title: tr('二维码中没有 HTTP 或 HTTPS 订阅链接') })
     }
     setScanning(false)
   }
@@ -84,7 +85,7 @@ export function SubscriptionImport({
         else timer = window.setTimeout(() => void scan(), 230)
       } catch {
         if (!stopped) {
-          showMessage({ type: 'error', title: '读取摄像头画面失败' })
+          showMessage({ type: 'error', title: tr('读取摄像头画面失败') })
           setScanning(false)
         }
       }
@@ -105,7 +106,7 @@ export function SubscriptionImport({
         if (!stopped) void scan()
       } catch {
         if (!stopped) {
-          showMessage({ type: 'error', title: '无法打开摄像头，请检查 Windows 权限，或选择二维码图片' })
+          showMessage({ type: 'error', title: tr('无法打开摄像头，请检查 Windows 权限，或选择二维码图片') })
           setScanning(false)
         }
       }
@@ -129,7 +130,7 @@ export function SubscriptionImport({
       } finally {
         image.close()
       }
-      if (!result) throw new Error('图片中没有识别到二维码')
+      if (!result) throw new Error(tr('图片中没有识别到二维码'))
       acceptQr(result)
     } catch (failure) {
       showMessage({ type: 'error', title: failure instanceof Error ? failure.message : String(failure) })
@@ -145,13 +146,18 @@ export function SubscriptionImport({
       let input: ImportInput
       if (mode === 'file') {
         if (!file) return
-        if (file.size > 8 * 1024 * 1024) throw new Error('订阅文件超过 8 MB')
-        input = { kind: 'file', name, filename: file.name, yaml: await file.text() }
+        if (file.size > 8 * 1024 * 1024) throw new Error(tr('订阅文件超过 8 MB'))
+        input = { kind: 'file', name: '', filename: file.name, yaml: await file.text() }
       } else {
         const raw = (mode === 'qr' ? qrLink : url).trim()
-        const parsed = new URL(raw)
+        let parsed: URL
+        try {
+          parsed = new URL(raw)
+        } catch {
+          throw new Error(tr('请输入有效的 HTTP 或 HTTPS 订阅链接'))
+        }
         if (!['http:', 'https:'].includes(parsed.protocol)) {
-          throw new Error('请输入 HTTP 或 HTTPS 订阅链接')
+          throw new Error(tr('请输入 HTTP 或 HTTPS 订阅链接'))
         }
         input = { kind: 'url', name, url: parsed.href, qr: mode === 'qr' }
       }
@@ -169,7 +175,7 @@ export function SubscriptionImport({
 
   return (
     <SubscriptionDialog
-      title="导入订阅"
+      title={tr("导入订阅")}
       pending={pending}
       onClose={onClose}
       onSubmit={event => void submit(event)}
@@ -181,9 +187,7 @@ export function SubscriptionImport({
               variant="secondary"
               disabled={pending}
               onClick={onClose}
-            >
-              取消
-            </Button>
+            >{tr("取消")}</Button>
             <Button
               type="submit"
               variant="default"
@@ -193,7 +197,7 @@ export function SubscriptionImport({
               }
             >
               <Plus data-icon="inline-start" />
-              {pending ? '准备中…' : '导入订阅'}
+              {pending ? tr('准备中…') : tr('导入订阅')}
             </Button>
           </>
         )
@@ -201,7 +205,7 @@ export function SubscriptionImport({
     >
       <Segmented
         layoutId="subscription-import-mode"
-        ariaLabel="导入方式"
+        ariaLabel={tr("导入方式")}
         value={mode}
         options={importModes}
         size="md"
@@ -214,18 +218,23 @@ export function SubscriptionImport({
 
       {mode === 'url' && (
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="sub-import-url">订阅链接</Label>
-          <div className="flex items-center gap-2">
+          <Label htmlFor="sub-import-url">{tr("订阅链接")}</Label>
+          <div className="relative">
             <Input
               id="sub-import-url"
               required
               autoComplete="off"
               spellCheck={false}
-              placeholder="粘贴机场提供的订阅链接"
+              placeholder={tr("粘贴机场提供的订阅链接")}
               value={url}
               onChange={e => setUrl(e.target.value)}
+              className="pr-9"
             />
-            <CopySubscriptionLink url={url} onError={title => showMessage({ type: 'error', title })} />
+            <CopySubscriptionLink
+              url={url}
+              onError={title => showMessage({ type: 'error', title })}
+              className="absolute top-1/2 right-1 -translate-y-1/2"
+            />
           </div>
         </div>
       )}
@@ -238,7 +247,7 @@ export function SubscriptionImport({
             tabIndex={-1}
             type="file"
             accept=".yaml,.yml"
-            aria-label="本地 YAML 文件"
+            aria-label={tr("本地 YAML 文件")}
             onChange={event => setFile(event.target.files?.[0])}
           />
           <div
@@ -247,25 +256,26 @@ export function SubscriptionImport({
               event.preventDefault()
               setFile(event.dataTransfer.files[0])
             }}
-            className="flex min-h-36 flex-col items-center justify-center gap-2 rounded-[10px] border border-dashed border-border bg-input-bg p-4 text-center transition-colors hover:border-accent-border"
+            className="flex min-h-36 flex-col items-center justify-center gap-2 rounded-[10px] border border-dashed border-border bg-muted/45 p-4 text-center transition-colors hover:border-accent-border dark:bg-input-bg"
           >
             <span className="grid size-10 place-items-center rounded-full bg-accent-soft text-primary">
               <FileUp className="size-5" />
             </span>
-            <strong className="text-xs font-semibold text-foreground">
-              {file?.name ?? '拖入本地订阅文件'}
+            <strong
+              className="max-w-full break-all text-xs font-semibold text-foreground"
+              title={file?.name}
+            >
+              {file?.name ?? tr('拖入本地订阅文件')}
             </strong>
-            <small className="text-[12px] text-muted-foreground">支持 .yml、.yaml（最大 8 MB）</small>
-            <Button type="button" variant="secondary" size="sm" onClick={() => fileInput.current?.click()}>
-              选择文件
-            </Button>
+            <small className="text-[12px] text-muted-foreground">{tr("支持 .yml、.yaml（最大 8 MB）")}</small>
+            <Button type="button" variant="secondary" size="sm" onClick={() => fileInput.current?.click()}>{tr("选择文件")}</Button>
           </div>
         </div>
       )}
 
       {mode === 'qr' && (
         <div className="flex flex-col gap-3">
-          <div className="relative flex min-h-48 flex-col items-center justify-center gap-3 overflow-hidden rounded-[10px] border border-border bg-input-bg p-4 text-center">
+          <div className="relative flex min-h-48 flex-col items-center justify-center gap-3 overflow-hidden rounded-[10px] border border-border bg-muted/45 p-4 text-center dark:bg-input-bg">
             <span className="pointer-events-none absolute top-3 left-3 size-3.5 border-t-2 border-l-2 border-primary/50" />
             <span className="pointer-events-none absolute top-3 right-3 size-3.5 border-t-2 border-r-2 border-primary/50" />
             <span className="pointer-events-none absolute bottom-3 left-3 size-3.5 border-b-2 border-l-2 border-primary/50" />
@@ -276,7 +286,7 @@ export function SubscriptionImport({
               <>
                 <ScanLine className="size-10 text-primary" />
                 <strong className="text-xs font-medium text-foreground">
-                  {qrLink ? '已获取订阅链接' : '将二维码置于取景框内'}
+                  {qrLink ? tr('已获取订阅链接') : tr('将二维码置于取景框内')}
                 </strong>
               </>
             )}
@@ -288,7 +298,7 @@ export function SubscriptionImport({
             tabIndex={-1}
             type="file"
             accept="image/*"
-            aria-label="二维码图片"
+            aria-label={tr("二维码图片")}
             onChange={event => {
               const selected = event.target.files?.[0]
               event.target.value = ''
@@ -303,17 +313,15 @@ export function SubscriptionImport({
               onClick={() => setScanning(value => !value)}
             >
               <Camera data-icon="inline-start" />
-              {scanning ? '关闭摄像头' : '启用摄像头'}
+              {scanning ? tr('关闭摄像头') : tr('启用摄像头')}
             </Button>
             <Button type="button" variant="secondary" onClick={() => imageInput.current?.click()}>
-              <Image data-icon="inline-start" />
-              选择二维码图片
-            </Button>
+              <Image data-icon="inline-start" />{tr("选择二维码图片")}</Button>
           </div>
 
           {qrLink && (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="sub-import-qr-link">识别结果</Label>
+              <Label htmlFor="sub-import-qr-link">{tr("识别结果")}</Label>
               <Input
                 id="sub-import-qr-link"
                 autoComplete="off"
@@ -328,11 +336,11 @@ export function SubscriptionImport({
 
       {(mode === 'url' || (mode === 'qr' && qrLink)) && (
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="sub-import-name">名称（选填）</Label>
+          <Label htmlFor="sub-import-name">{tr("名称（选填）")}</Label>
           <Input
             id="sub-import-name"
             maxLength={80}
-            placeholder="使用订阅提供的名称"
+            placeholder={tr("使用订阅提供的名称")}
             value={name}
             onChange={e => setName(e.target.value)}
           />

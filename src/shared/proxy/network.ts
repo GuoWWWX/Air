@@ -24,6 +24,7 @@ export interface NetworkSettings {
   allowLan: boolean
   systemProxyBypass: string[]
   tcpConcurrent: boolean
+  blockQuic: boolean
   probeUrl: string
   probeStatus: number
   probeIntervalMinutes: number
@@ -41,6 +42,6 @@ export const defaultNetwork: NetworkSettings = {
   respectRules: true, ipv6: true, dnsIpv6: true, useSystemHosts: true,
   hosts: [], directFollowPolicy: false, dnsCacheAlgorithm: 'auto',
   tunStack: 'gvisor', tunMtu: null, strictRoute: true, dnsHijack: true, routeExcludeAddress: [],
-  mixedPort: null, allowLan: false, systemProxyBypass: [], tcpConcurrent: false,
+  mixedPort: null, allowLan: false, systemProxyBypass: [], tcpConcurrent: true, blockQuic: false,
   probeUrl: 'https://www.gstatic.com/generate_204', probeStatus: 204, probeIntervalMinutes: 5,
 }

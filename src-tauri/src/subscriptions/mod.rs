@@ -52,6 +52,8 @@ pub struct Source {
     pub name: String,
     pub nodes: Vec<Node>,
     pub groups: Vec<Group>,
+    pub group_configs: Vec<Value>,
+    pub rule_providers: Mapping,
     pub rules: Vec<String>,
     pub hosts: Mapping,
 }
@@ -184,6 +186,8 @@ pub fn parse(id: String, name: String, yaml: &str) -> AirResult<Source> {
         name,
         nodes,
         groups,
+        group_configs: config["proxy-groups"].as_sequence().cloned().unwrap_or_default(),
+        rule_providers: config["rule-providers"].as_mapping().cloned().unwrap_or_default(),
         hosts,
         rules: config["rules"]
             .as_sequence()
@@ -376,12 +380,12 @@ pub async fn fetch(raw_url: &str, active_proxy: Option<u16>) -> AirResult<Downlo
 }
 
 pub async fn fetch_with_saved_nodes(
-    url: &reqwest::Url, binary: &std::path::Path, directory: &std::path::Path, nodes: &[Node], hosts: &Mapping,
+    url: &reqwest::Url, binary: &std::path::Path, config: &std::path::Path, directory: &std::path::Path, nodes: &[Node], hosts: &Mapping,
 ) -> AirResult<Download> {
     if url.scheme() != "https" || nodes.is_empty() {
         return Err("没有可用于 HTTPS 更新的订阅节点".into());
     }
-    let settings = crate::routing::RoutingFile::new(directory).network()?.settings;
+    let settings = crate::routing::RoutingFile::new(config).network()?.settings;
     let kernel = crate::mihomo::Kernel::start_subscription(binary, directory, crate::chains::node_configs(nodes)?, hosts, &settings).await?;
     let proxy = kernel.diagnostic_proxy()?;
     let mut last_error = "没有可用的订阅节点".to_owned();
@@ -417,6 +421,12 @@ fn connection_error(error: &reqwest::Error) -> &'static str {
     "无法连接服务器"
 }
 
+fn valid_title(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty() && value.chars().count() <= 256 && !value.chars().any(char::is_control))
+        .then(|| value.to_owned())
+}
+
 fn profile_title(bytes: &[u8]) -> Option<String> {
     use base64::{engine::general_purpose::{STANDARD, STANDARD_NO_PAD}, Engine};
     let value = std::str::from_utf8(bytes).ok()?.trim();
@@ -426,13 +436,88 @@ fn profile_title(bytes: &[u8]) -> Option<String> {
     } else {
         value.to_owned()
     };
-    let title = title.trim();
-    (!title.is_empty() && title.chars().count() <= 256 && !title.chars().any(char::is_control))
-        .then(|| title.to_owned())
+    valid_title(&title)
+}
+
+fn disposition_parameter(value: &str) -> Option<String> {
+    let value = value.trim();
+    let Some(quoted) = value.strip_prefix('"') else { return Some(value.to_owned()) };
+    let mut chars = quoted.strip_suffix('"')?.chars();
+    let mut filename = String::with_capacity(quoted.len());
+    while let Some(ch) = chars.next() {
+        filename.push(if ch == '\\' { chars.next()? } else { ch });
+    }
+    Some(filename)
+}
+
+fn extended_filename(value: &str) -> Option<String> {
+    let (charset, rest) = value.split_once('\'')?;
+    let (_, encoded) = rest.split_once('\'')?;
+    let mut bytes = encoded.bytes();
+    let mut decoded = Vec::with_capacity(encoded.len());
+    while let Some(byte) = bytes.next() {
+        let byte = if byte == b'%' {
+            let high = char::from(bytes.next()?).to_digit(16)?;
+            let low = char::from(bytes.next()?).to_digit(16)?;
+            (high * 16 + low) as u8
+        } else {
+            byte
+        };
+        decoded.push(byte);
+    }
+    if charset.eq_ignore_ascii_case("utf-8") {
+        String::from_utf8(decoded).ok()
+    } else if charset.eq_ignore_ascii_case("iso-8859-1") {
+        Some(decoded.into_iter().map(char::from).collect())
+    } else {
+        None
+    }
+}
+
+fn disposition_title(bytes: &[u8]) -> Option<String> {
+    use std::borrow::Cow;
+    let header = match std::str::from_utf8(bytes) {
+        Ok(header) => Cow::Borrowed(header),
+        Err(_) => Cow::Owned(bytes.iter().copied().map(char::from).collect::<String>()),
+    };
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut parts = header.split(|ch| {
+        if escaped {
+            escaped = false;
+            return false;
+        }
+        if ch == '"' { quoted = !quoted; }
+        escaped = quoted && ch == '\\';
+        ch == ';' && !quoted
+    });
+    if parts.next()?.trim().is_empty() { return None; }
+    let mut filename = None;
+    for part in parts {
+        let Some((key, value)) = part.split_once('=') else { continue };
+        let key = key.trim();
+        if key.eq_ignore_ascii_case("filename*") {
+            if let Some(decoded) = disposition_parameter(value).and_then(|value| extended_filename(&value)) {
+                filename = Some(decoded);
+                break;
+            }
+        } else if key.eq_ignore_ascii_case("filename") && filename.is_none() {
+            filename = disposition_parameter(value);
+        }
+    }
+    let filename = filename.as_deref()?.rsplit(['/', '\\']).next()?.trim();
+    let title = match filename.rsplit_once('.') {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") => stem,
+        _ => filename,
+    };
+    if matches!(title.trim(), "." | "..") { return None; }
+    valid_title(title)
 }
 
 async fn read_download(mut response: reqwest::Response) -> AirResult<Download> {
-    let profile_title = response.headers().get("profile-title").and_then(|h| profile_title(h.as_bytes()));
+    let headers = response.headers();
+    let profile_title = headers.get("profile-title").and_then(|h| profile_title(h.as_bytes()))
+        .or_else(|| headers.get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| disposition_title(h.as_bytes())));
     let usage = response
         .headers()
         .get("subscription-userinfo")
@@ -501,12 +586,49 @@ proxy-groups:
         }
     }
 
+    #[test]
+    fn disposition_titles_support_encoded_and_quoted_filenames() {
+        for (header, title) in [
+            (r#"attachment; filename="Fallback.yaml"; filename*=UTF-8'ja'%E6%97%A5%E6%9C%AC%20+%20%E9%A6%99%E6%B8%AF.YML"#, Some("日本 + 香港")),
+            (r#"attachment; filename="Team; A.yaml""#, Some("Team; A")),
+            (r#"INLINE; filename="Tokyo.yaml"; filename*=UTF-8''%E6%9D%B1%E4%BA%AC.yml"#, Some("東京")),
+            (r#"inline; filename="SakuraCat.yaml""#, Some("SakuraCat")),
+            (r#"attachment; filename="SakuraCat.yaml"; filename*=UTF-8''%ZZ"#, Some("SakuraCat")),
+            (r#"attachment; filename="folder/test.yaml""#, Some("test")),
+            (r#"attachment; filename=".yaml""#, None),
+        ] {
+            assert_eq!(disposition_title(header.as_bytes()).as_deref(), title);
+        }
+    }
+
+    #[tokio::test]
+    async fn filename_updates_an_automatic_name_without_overwriting_a_manual_name() {
+        let origin = reply(format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Disposition: attachment; filename=\"SakuraCat\"; filename*=UTF-8''SakuraCat\r\n\r\n{YAML}",
+            YAML.len()
+        )).await;
+        let url = format!("http://127.0.0.1:{origin}/sub");
+        let mut download = fetch(&url, None).await.unwrap();
+        assert_eq!(download.profile_title.as_deref(), Some("SakuraCat"));
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::storage::Store::open(&directory.path().join("subscriptions.db")).unwrap();
+        let title = download.profile_title.take();
+        assert_eq!(store.save_source("example", "", &download, "url", Some(&url)).unwrap(), "127.0.0.1");
+        download.profile_title = title;
+        assert_eq!(store.preview_source_name("example", "", &url, download.profile_title.as_deref()).unwrap(), "SakuraCat");
+        assert_eq!(store.save_source("example", "", &download, "url", Some(&url)).unwrap(), "SakuraCat");
+        store.rename_source("example", "My subscription").unwrap();
+        assert_eq!(store.save_source("example", "", &download, "url", Some(&url)).unwrap(), "My subscription");
+        assert_eq!(store.sources().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn downloads_directly_even_with_an_active_proxy() {
         let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let yaml = YAML;
         let origin = reply(format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\npRoFiLe-TiTle: Family\r\nSubscription-Userinfo: upload=1; download=2; total=3\r\n\r\n{yaml}",
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\npRoFiLe-TiTle: Family\r\nContent-Disposition: attachment; filename=Fallback.yaml\r\nSubscription-Userinfo: upload=1; download=2; total=3\r\n\r\n{yaml}",
             yaml.len()
         )).await;
         let download = fetch(&format!("http://127.0.0.1:{origin}/sub"), Some(proxy.local_addr().unwrap().port())).await.unwrap();

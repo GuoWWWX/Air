@@ -2,8 +2,8 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/air_splash_bg" />
     <item
-        android:width="84dp"
-        android:height="84dp"
+        android:width="72dp"
+        android:height="72dp"
         android:gravity="center"
         android:drawable="@mipmap/ic_air" />
 </layer-list>

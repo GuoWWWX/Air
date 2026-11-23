@@ -82,10 +82,10 @@ impl Store {
         Self::extension_in(&db, id)
     }
 
-    pub(super) fn render_extension(db: &Connection, id: &str, yaml: &str) -> AirResult<()> {
+    pub(super) fn render_extension(&self, db: &Connection, id: &str, yaml: &str) -> AirResult<()> {
         let ext = Self::extension_in(db, id)?;
         if !ext.empty() {
-            let bytes = protect(ext.render(yaml)?.as_bytes(), true)?;
+            let bytes = self.documents.write(&ext.render(yaml)?)?;
             db.execute(
                 "UPDATE subscription_extensions SET rendered=?2 WHERE source_id=?1",
                 params![id, bytes],
@@ -101,7 +101,7 @@ impl Store {
             return Ok(());
         }
         let mut db = self.connection()?;
-        let tx = db.transaction().map_err(|_| "无法保存扩展")?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "无法保存扩展")?;
         if ext.empty() {
             tx.execute(
                 "DELETE FROM subscription_extensions WHERE source_id=?1",
@@ -109,11 +109,7 @@ impl Store {
             )
             .map_err(|_| "无法清除扩展")?;
         } else {
-            let rendered = protect(
-                ext.render(doc.local.as_deref().unwrap_or(&doc.original))?
-                    .as_bytes(),
-                true,
-            )?;
+            let rendered = self.documents.write(&ext.render(doc.local.as_deref().unwrap_or(&doc.original))?)?;
             let def = protect(&serde_json::to_vec(ext).map_err(|_| "扩展格式无效")?, true)?;
             tx.execute(
                 "INSERT OR REPLACE INTO subscription_extensions VALUES(?1,?2,?3)",
@@ -126,7 +122,9 @@ impl Store {
             [id],
         )
         .map_err(|_| "无法暂停自动更新")?;
-        tx.commit().map_err(|_| "无法保存扩展".into())
+        tx.commit().map_err(|_| "无法保存扩展")?;
+        self.documents.after_commit(&mut db);
+        Ok(())
     }
 }
 

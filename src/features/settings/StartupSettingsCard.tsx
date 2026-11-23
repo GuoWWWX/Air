@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { LogIn, Power } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { air, type StartupSettings } from '@/platform/desktop/air'
@@ -7,18 +8,23 @@ import { Separator } from '@/shared/ui/separator'
 import { Switch } from '@/shared/ui/switch'
 
 const options = [
-  { key: 'login', title: '开机自启动', description: '登录 Windows 后自动打开 Air', icon: LogIn },
-  { key: 'proxy', title: '打开 Air 时总是启动代理', description: '关闭此项时，恢复上次退出前的连接状态', icon: Power },
+  { key: 'login', get title() { return tr('开机自启动') }, get description() { return tr('登录 Windows 后自动打开 Air') }, icon: LogIn },
+  { key: 'proxy', get title() { return tr('打开 Air 时总是启动代理') }, get description() { return tr('关闭此项后，下次打开 Air 时代理保持关闭') }, icon: Power },
 ] as const
 
+let cachedStartup: StartupSettings | undefined
+
 export function StartupSettingsCard() {
-  const [settings, setSettings] = useState<StartupSettings>()
+  const [settings, setSettings] = useState<StartupSettings | undefined>(() => cachedStartup)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     let active = true
     void air.startupSettings().then(
-      next => { if (active) setSettings(next) },
+      next => {
+        cachedStartup = next
+        if (active) setSettings(next)
+      },
       error => { if (active) showMessage({ type: 'error', title: String(error) }) },
     )
     return () => { active = false }
@@ -27,7 +33,9 @@ export function StartupSettingsCard() {
   async function change(key: keyof StartupSettings, enabled: boolean) {
     setSaving(true)
     try {
-      setSettings(await air.setStartupSetting(key, enabled))
+      const next = await air.setStartupSetting(key, enabled)
+      cachedStartup = next
+      setSettings(next)
     } catch (error) {
       showMessage({ type: 'error', title: String(error) })
     } finally {
@@ -36,8 +44,8 @@ export function StartupSettingsCard() {
   }
 
   return (
-    <section className="flex flex-col gap-2" aria-label="启动">
-      <h2 className="px-1 text-xs font-semibold tracking-wider text-muted-foreground">启动</h2>
+    <section className="flex flex-col gap-2" aria-label={tr("启动")}>
+      <h2 className="px-1 text-xs font-semibold tracking-wider uppercase text-muted-foreground">{tr("启动")}</h2>
       <Card className="gap-0 overflow-hidden p-0">
         {options.map(({ key, title, description, icon: Icon }, index) => (
           <div key={key}>

@@ -9,7 +9,8 @@ use tokio::{
     time::timeout,
 };
 
-pub const CONCURRENCY: usize = 8;
+pub const FOREGROUND_CONCURRENCY: usize = 32;
+pub const BACKGROUND_CONCURRENCY: usize = 8;
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 pub const TIMEOUT: Duration = Duration::from_secs(PROBE_TIMEOUT.as_secs() + 1);
 pub const BACKGROUND_INTERVAL: Duration = Duration::from_secs(300);
@@ -96,12 +97,14 @@ impl Scheduler {
     pub async fn batch<J, F, R>(
         &self,
         jobs: impl IntoIterator<Item = J>,
+        concurrency: usize,
         run: impl FnMut(J) -> F,
         mut receive: impl FnMut(R),
     ) where
         F: Future<Output = R>,
     {
-        let stream = stream::iter(jobs).map(run).buffer_unordered(self.limit);
+        let limit = concurrency.clamp(1, self.limit);
+        let stream = stream::iter(jobs).map(run).buffer_unordered(limit);
         futures_util::pin_mut!(stream);
         while let Some(result) = stream.next().await {
             receive(result);

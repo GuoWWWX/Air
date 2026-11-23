@@ -1,5 +1,5 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
-import { waitForProxyPowerAnimation } from '@/shared/ui/ProxyPowerButton'
+import { tr } from '@/shared/i18n/messages'
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { air, type ProxyAction, type ProxyExit, type ProxyStatus, type ProxyTelemetry } from '@/platform/desktop/air'
 
 const initial: ProxyStatus = {
@@ -13,6 +13,14 @@ export interface TelemetryHistory extends ProxyTelemetry {
   downloadHistory: number[]
 }
 
+function localizeConnections(connections: ProxyTelemetry['connections']) {
+  return connections.map(connection => {
+    const app = connection.app === '未知应用' ? tr('未知应用') : connection.app
+    const target = connection.target.replace(/^未知目标(?=:|$)/u, () => tr('未知目标'))
+    return app === connection.app && target === connection.target ? connection : { ...connection, app, target }
+  })
+}
+
 function appendTelemetry(current: TelemetryHistory | undefined, sample: ProxyTelemetry): TelemetryHistory {
   const previous = current?.sessionId === sample.sessionId ? current : undefined
   if (previous?.sampledAt === sample.sampledAt) {
@@ -20,6 +28,8 @@ function appendTelemetry(current: TelemetryHistory | undefined, sample: ProxyTel
   }
   return {
     ...sample,
+    connections: localizeConnections(sample.connections),
+    ...(sample.connectionLogs ? { connectionLogs: localizeConnections(sample.connectionLogs) } : {}),
     uploadPeak: Math.max(previous?.uploadPeak ?? 0, sample.uploadRate),
     downloadPeak: Math.max(previous?.downloadPeak ?? 0, sample.downloadRate),
     uploadHistory: [...(previous?.uploadHistory.slice(-16) ?? []), sample.uploadRate],
@@ -65,7 +75,10 @@ function useProxyExit(status: ProxyStatus): ExitLookup {
   }
 }
 
-export function useProxy(onError: (error: unknown) => void) {
+export function useProxy(onError: (error: unknown) => void, options?: { liveTelemetry?: boolean }) {
+  const liveTelemetry = options?.liveTelemetry ?? true
+  const liveTelemetryRef = useRef(liveTelemetry)
+  liveTelemetryRef.current = liveTelemetry
   const [status, setStatus] = useState(initial)
   const exitLookup = useProxyExit(status)
   const [snapshot, setSnapshot] = useState<TelemetryHistory>()
@@ -77,6 +90,8 @@ export function useProxy(onError: (error: unknown) => void) {
   const nodeBusy = useRef(false)
   const revision = useRef(0)
   const queue = useRef<Promise<void>>(Promise.resolve())
+  const refreshStatusRef = useRef<(() => void) | undefined>(undefined)
+  const pollTelemetryRef = useRef<(() => void) | undefined>(undefined)
 
   useEffect(() => {
     mounted.current = true
@@ -88,8 +103,20 @@ export function useProxy(onError: (error: unknown) => void) {
   useEffect(() => {
     let active = true
     let refreshing = false
+    let timer: number | undefined
+    function schedule() {
+      window.clearTimeout(timer)
+      if (active && status.running && !document.hidden) {
+        timer = window.setTimeout(() => void refresh(), liveTelemetryRef.current ? 1800 : 4000)
+      }
+    }
     async function refresh() {
-      if (document.hidden || refreshing || inFlight.current > 0) return
+      if (document.hidden) return
+      if (refreshing || inFlight.current > 0) {
+        schedule()
+        return
+      }
+      window.clearTimeout(timer)
       refreshing = true
       const version = ++revision.current
       try {
@@ -101,15 +128,18 @@ export function useProxy(onError: (error: unknown) => void) {
         if (active && revision.current === version) onError(error)
       } finally {
         refreshing = false
+        schedule()
       }
     }
+    refreshStatusRef.current = () => { void refresh() }
     void refresh()
-    const timer = status.running ? window.setInterval(() => void refresh(), 1800) : undefined
-    document.addEventListener('visibilitychange', refresh)
+    const onVisibility = () => { void refresh() }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       active = false
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', refresh)
+      refreshStatusRef.current = undefined
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [onError, status.running])
 
@@ -123,7 +153,14 @@ export function useProxy(onError: (error: unknown) => void) {
     let timer: number | undefined
     const sessionId = status.sessionId
     async function pollTelemetry() {
-      if (document.hidden || polling) return
+      if (document.hidden) return
+      if (polling) {
+        if (active) {
+          window.clearTimeout(timer)
+          timer = window.setTimeout(() => void pollTelemetry(), liveTelemetryRef.current ? 1000 : 2500)
+        }
+        return
+      }
       polling = true
       window.clearTimeout(timer)
       try {
@@ -135,15 +172,20 @@ export function useProxy(onError: (error: unknown) => void) {
         if (active) setSnapshot(current => current && !current.stale ? { ...current, stale: true } : current)
       } finally {
         polling = false
-        if (active && !document.hidden) timer = window.setTimeout(() => void pollTelemetry(), 1000)
+        if (active && !document.hidden) {
+          timer = window.setTimeout(() => void pollTelemetry(), liveTelemetryRef.current ? 1000 : 2500)
+        }
       }
     }
+    pollTelemetryRef.current = () => { void pollTelemetry() }
     void pollTelemetry()
-    document.addEventListener('visibilitychange', pollTelemetry)
+    const onVisibility = () => { void pollTelemetry() }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       active = false
+      pollTelemetryRef.current = undefined
       window.clearTimeout(timer)
-      document.removeEventListener('visibilitychange', pollTelemetry)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [status.sessionId])
 
@@ -167,12 +209,8 @@ export function useProxy(onError: (error: unknown) => void) {
     }
 
     const task = queue.current.then(async () => {
-      const startedAt = performance.now()
       try {
         const next = await air.proxyControl(action)
-        if (isPower && !document.hidden) {
-          await waitForProxyPowerAnimation(action.action, startedAt)
-        }
         if (!mounted.current) return
         if (revision.current === version) {
           setStatus(next)
@@ -212,5 +250,18 @@ export function useProxy(onError: (error: unknown) => void) {
     revision.current += 1
     setStatus(next)
   }
-  return { status, telemetry, exitLookup, pending, selectingNodeId, control, updateStatus }
+  const refreshNow = useCallback(() => {
+    refreshStatusRef.current?.()
+    pollTelemetryRef.current?.()
+  }, [])
+  const clearLogs = useCallback(async () => {
+    await air.clearConnectionLogs()
+    setSnapshot(current =>
+      current?.connectionLogs
+        ? { ...current, connectionLogs: current.connectionLogs.filter(item => !item.closed) }
+        : current,
+    )
+    pollTelemetryRef.current?.()
+  }, [])
+  return { status, telemetry, exitLookup, pending, selectingNodeId, control, updateStatus, refreshNow, clearLogs }
 }

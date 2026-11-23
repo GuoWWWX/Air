@@ -1,5 +1,6 @@
+import { preferences } from '@/shared/lib/preferences'
+import { tr } from '@/shared/i18n/messages'
 import {
-  Activity,
   ArrowDownUp,
   Bookmark,
   Check,
@@ -16,6 +17,7 @@ import {
   List,
   MoreHorizontal,
   PanelLeftOpen,
+  Pause,
   Pencil,
   Pin,
   Plus,
@@ -25,6 +27,7 @@ import {
   Trash2,
   Waypoints,
   X,
+  Zap,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactElement, type ReactNode } from 'react'
@@ -60,6 +63,7 @@ import { AirCheckbox } from '../../shared/ui/AirCheckbox'
 import { AirSelect } from '../../shared/ui/AirSelect'
 import { Checkbox } from '../../shared/ui/checkbox'
 import { TraceLines } from '../../shared/ui/TraceLines'
+import { PageHeaderIcon } from '@/shared/ui/PageHeaderIcon'
 import { hopRoleLabel } from '../chains/ChainInspector'
 import { CustomGroupDialog, type GroupDialogState } from './CustomGroupDialog'
 import { NodeLatencyButton } from '@/shared/ui/NodeLatencyButton'
@@ -95,42 +99,47 @@ interface Props {
   customOpen?: boolean
   chainOpen?: boolean
   chainSelection?: ChainSelection
+  visibleSubscriptionIds?: string[]
+  totalSubscriptionCount?: number
+  onShowAllSubscriptions?: () => void
+  onManageSubscriptions?: () => void
+  visitKey?: number
   children?: ReactNode
 }
 
 const sortOptions = [
-  { value: 'default', label: '默认顺序' },
-  { value: 'latestMs', label: '最近延迟' },
-  { value: 'averageMs', label: '平均延迟' },
-  { value: 'availability', label: '可用率' },
-  { value: 'name', label: '名称' },
+  { value: 'default', get label() { return tr('默认顺序') } },
+  { value: 'latestMs', get label() { return tr('最近延迟') } },
+  { value: 'averageMs', get label() { return tr('平均延迟') } },
+  { value: 'availability', get label() { return tr('可用率') } },
+  { value: 'name', get label() { return tr('名称') } },
 ] as const
 const subscriptionNoticeName = /^[^\p{L}\p{N}]*(?:剩余流量|套餐到期)(?=[:：\s]|$)/u
 
 const defaultPageSize = 64
 const pageSizes = [defaultPageSize, 96, 128, 192, 256, 384, 512].map(size => ({
   value: String(size),
-  label: `每页 ${size} 条`,
+  label: tr("每页 {0} 条", size),
 }))
 
 const viewModes = [
-  { value: 'cards', label: '卡片', icon: <LayoutGrid /> },
-  { value: 'table', label: '列表', icon: <List /> },
+  { value: 'cards', get label() { return tr('卡片') }, icon: <LayoutGrid /> },
+  { value: 'table', get label() { return tr('列表') }, icon: <List /> },
 ] as const
 
 type CardDensity = 'compact' | 'normal' | 'detailed'
 
 const densityOptions = [
-  { value: 'compact', label: '简洁' },
-  { value: 'normal', label: '标准' },
-  { value: 'detailed', label: '详细' },
+  { value: 'compact', get label() { return tr('简洁') } },
+  { value: 'normal', get label() { return tr('标准') } },
+  { value: 'detailed', get label() { return tr('详细') } },
 ] as const satisfies readonly { value: CardDensity; label: string }[]
 
 function nodeStatusLabel(status: NodeRecord['status']) {
-  if (status === 'available') return '可用'
-  if (status === 'timeout') return '超时'
-  if (status === 'unreachable') return '不可达'
-  return '待测速'
+  if (status === 'available') return tr('可用')
+  if (status === 'timeout') return tr('超时')
+  if (status === 'unreachable') return tr('不可达')
+  return tr('待测速')
 }
 
 function delay(ms: number | null) {
@@ -146,8 +155,8 @@ function span(ms: number | null) {
   const minutes = Math.floor(ms / 60_000)
   const days = Math.floor(minutes / 1440)
   const hours = Math.floor(minutes / 60) % 24
-  if (days) return `${days} 天 ${hours} 时`
-  return hours ? `${hours} 小时` : `${minutes} 分钟`
+  if (days) return tr("{0} 天 {1} 时", days, hours)
+  return hours ? tr("{0} 小时", hours) : tr("{0} 分钟", minutes)
 }
 
 export function NodeLibrary({
@@ -171,23 +180,46 @@ export function NodeLibrary({
   customOpen,
   chainOpen,
   chainSelection,
+  visibleSubscriptionIds,
+  totalSubscriptionCount,
+  onShowAllSubscriptions,
+  onManageSubscriptions,
+  visitKey,
   children,
 }: Props) {
   const outbound = proxy.running && proxy.mode !== 'direct' ? proxy.outbound : null
   const currentNode = outbound?.hops.length === 1 ? outbound.hops[0] : undefined
   const selectedOutboundId = currentNode?.id ?? preferredNodeId
   const nodeActionDisabled = powerPending || Boolean(selectingNodeId)
-  const [mode, setMode] = useState<'cards' | 'table'>('cards')
+  const [mode, setMode] = useState<'cards' | 'table'>(() =>
+    preferences.getItem('air.nodeViewMode') === 'table' ? 'table' : 'cards',
+  )
   const [density, setDensity] = useState<CardDensity>(() => {
-    const saved = localStorage.getItem('air.nodeCardDensity')
+    const saved = preferences.getItem('air.nodeCardDensity')
     return saved === 'compact' || saved === 'detailed' ? saved : 'normal'
   })
   const [groupDialog, setGroupDialog] = useState<GroupDialogState>({ kind: 'none' })
   const [copiedIds, setCopiedIds] = useState<string[]>([])
   const [draggedIds, setDraggedIds] = useState<string[]>([])
-  const [scope, setScope] = useState<NodeScope>({ kind: 'all' })
+  const [scope, setScope] = useState<NodeScope>(() => {
+    try {
+      const parsed: unknown = JSON.parse(preferences.getItem('air.nodeScope') ?? 'null')
+      if (parsed && typeof parsed === 'object') {
+        const item = parsed as Record<string, unknown>
+        if (item.kind === 'all') return { kind: 'all' }
+        if (item.kind === 'source' && typeof item.sourceId === 'string') return { kind: 'source', sourceId: item.sourceId }
+        if (item.kind === 'group' && typeof item.sourceId === 'string' && typeof item.name === 'string') {
+          return { kind: 'group', sourceId: item.sourceId, name: item.name }
+        }
+        if (item.kind === 'customGroup' && typeof item.groupId === 'string') {
+          return { kind: 'customGroup', groupId: item.groupId }
+        }
+      }
+    } catch { /* Ignore invalid saved scope. */ }
+    return { kind: 'all' }
+  })
   const [treeOpen, setTreeOpen] = useState(
-    () => localStorage.getItem('air.nodeTreeCollapsed') !== '1',
+    () => preferences.getItem('air.nodeTreeCollapsed') !== '1',
   )
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -195,18 +227,60 @@ export function NodeLibrary({
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const searchInput = useRef<HTMLInputElement>(null)
   const searchButton = useRef<HTMLButtonElement>(null)
-  const [sort, setSort] = useState<(typeof sortOptions)[number]['value']>('default')
+  const [sort, setSort] = useState<(typeof sortOptions)[number]['value']>(() => {
+    const saved = preferences.getItem('air.nodeSort')
+    return sortOptions.some(option => option.value === saved)
+      ? (saved as (typeof sortOptions)[number]['value'])
+      : 'default'
+  })
   const [selecting, setSelecting] = useState(false)
   const [requestedPage, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(defaultPageSize)
+  const [pageSize, setPageSize] = useState(() => {
+    const saved = Number(preferences.getItem('air.nodePageSize'))
+    return pageSizes.some(item => Number(item.value) === saved) ? saved : defaultPageSize
+  })
+
+  const customSourceIds = useMemo(
+    () => new Set(store.library.sources.filter(isCustomSource).map(source => source.id)),
+    [store.library.sources],
+  )
+  const visibleSubscriptionSet = useMemo(
+    () => (visibleSubscriptionIds ? new Set(visibleSubscriptionIds) : null),
+    [visibleSubscriptionIds],
+  )
+  const isSourceVisible = (sourceId: string) =>
+    !visibleSubscriptionSet || sourceId === 'custom' || customSourceIds.has(sourceId) || visibleSubscriptionSet.has(sourceId)
+
+  const visibleSources = useMemo(
+    () => store.library.sources.filter(
+      source => isCustomSource(source) || !visibleSubscriptionSet || visibleSubscriptionSet.has(source.id),
+    ),
+    [store.library.sources, visibleSubscriptionSet],
+  )
+  const visibleGroups = useMemo(
+    () => store.library.groups.filter(group => isSourceVisible(group.sourceId)),
+    [customSourceIds, store.library.groups, visibleSubscriptionSet],
+  )
+  const visibleNodes = useMemo(
+    () => store.library.nodes.filter(node => isSourceVisible(node.sourceId)),
+    [customSourceIds, store.library.nodes, visibleSubscriptionSet],
+  )
+  const visibleLibrary = useMemo(
+    () => ({ ...store.library, sources: visibleSources, groups: visibleGroups, nodes: visibleNodes }),
+    [store.library, visibleGroups, visibleNodes, visibleSources],
+  )
+  const hiddenSubscriptionCount =
+    visibleSubscriptionIds && totalSubscriptionCount !== undefined
+      ? Math.max(0, totalSubscriptionCount - visibleSubscriptionIds.length)
+      : 0
 
   const activeSource =
     scope.kind === 'source' || scope.kind === 'group'
-      ? store.library.sources.find(item => item.id === scope.sourceId)
+      ? visibleSources.find(item => item.id === scope.sourceId)
       : undefined
   const activeGroup =
     scope.kind === 'group'
-      ? store.library.groups.find(
+      ? visibleGroups.find(
           item => item.sourceId === scope.sourceId && item.name === scope.name,
         )
       : undefined
@@ -216,15 +290,32 @@ export function NodeLibrary({
       : undefined
 
   useEffect(() => {
-    localStorage.setItem('air.nodeTreeCollapsed', treeOpen ? '0' : '1')
+    preferences.setItem('air.nodeViewMode', mode)
+  }, [mode])
+
+  useEffect(() => {
+    preferences.setItem('air.nodeScope', JSON.stringify(scope))
+  }, [scope])
+
+  useEffect(() => {
+    preferences.setItem('air.nodeSort', sort)
+  }, [sort])
+
+  useEffect(() => {
+    preferences.setItem('air.nodePageSize', String(pageSize))
+  }, [pageSize])
+
+  useEffect(() => {
+    preferences.setItem('air.nodeTreeCollapsed', treeOpen ? '0' : '1')
   }, [treeOpen])
 
   useEffect(() => {
-    localStorage.setItem('air.nodeCardDensity', density)
+    preferences.setItem('air.nodeCardDensity', density)
   }, [density])
 
 
   useEffect(() => {
+    if (!store.loaded) return
     if (scope.kind === 'source' && scope.sourceId !== 'custom' && !activeSource) {
       setScope({ kind: 'all' })
     } else if (scope.kind === 'group' && !activeGroup) {
@@ -232,21 +323,17 @@ export function NodeLibrary({
     } else if (scope.kind === 'customGroup' && !activeCustomGroup) {
       setScope({ kind: 'all' })
     }
-  }, [scope, activeSource, activeGroup, activeCustomGroup])
+  }, [store.loaded, scope, activeSource, activeGroup, activeCustomGroup])
 
   const query = search.trim().toLocaleLowerCase()
-  const customSourceIds = useMemo(
-    () => new Set(store.library.sources.filter(isCustomSource).map(source => source.id)),
-    [store.library.sources],
-  )
   const filtered = useMemo(() => {
     const members = activeGroup?.members ?? activeCustomGroup?.members
     if ((scope.kind === 'group' || scope.kind === 'customGroup') && !members) return []
 
     const sourceId = scope.kind === 'source' ? scope.sourceId : activeGroup?.sourceId
     let ordered = sourceId === undefined
-      ? store.library.nodes
-      : store.library.nodes.filter(node => node.sourceId === sourceId)
+      ? visibleNodes
+      : visibleNodes.filter(node => node.sourceId === sourceId)
     if (members) {
       const nodesById = new Map(ordered.map(node => [node.id, node]))
       ordered = [...new Set(members)]
@@ -283,30 +370,31 @@ export function NodeLibrary({
       })
     }
     return result
-  }, [activeCustomGroup, activeGroup, customSourceIds, query, scope, sort, store.library.nodes])
+  }, [activeCustomGroup, activeGroup, customSourceIds, query, scope, sort, visibleNodes])
 
-  const selectedIds = useMemo(() => new Set(store.selected), [store.selected])
-  const activeSelected = selecting ? store.selected : []
-  const validNodeIds = useMemo(() => new Set(store.library.nodes.map(node => node.id)), [store.library.nodes])
+  const validNodeIds = useMemo(() => new Set(visibleNodes.map(node => node.id)), [visibleNodes])
+  const selectedIds = useMemo(() => new Set(store.selected.filter(id => validNodeIds.has(id))), [store.selected, validNodeIds])
+  const activeSelected = selecting ? store.selected.filter(id => validNodeIds.has(id)) : []
   const clipboardIds = copiedIds.filter(id => validNodeIds.has(id))
   const maxPage = Math.max(1, Math.ceil(filtered.length / pageSize))
   const page = Math.min(requestedPage, maxPage)
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
   const checked = selecting ? visible.filter(node => selectedIds.has(node.id)).length : 0
   const batchTesting = Boolean(store.batchPending || store.progress?.running)
+  const showStopMeasure = batchTesting && hoveredTool === 'measure'
   const hasInspector = Boolean(children)
   const dualSidebars = treeOpen && hasInspector
   const scopeTitle =
     scope.kind === 'customGroup'
-      ? activeCustomGroup?.name ?? '自定义分组'
+      ? activeCustomGroup?.name ?? tr('自定义分组')
       : scope.kind === 'group'
         ? activeGroup?.name ?? scope.name
         : scope.kind === 'source'
-          ? activeSource?.name ?? (scope.sourceId === 'custom' ? '自定义节点' : '全部节点')
-          : '全部节点'
+          ? activeSource?.name ?? (scope.sourceId === 'custom' ? tr('自定义节点') : tr('全部节点'))
+          : tr('全部节点')
   const scopeSubtitle =
     scope.kind === 'customGroup'
-      ? '本地自定义'
+      ? tr('本地自定义')
       : scope.kind === 'group'
         ? activeSource?.name
         : undefined
@@ -357,7 +445,7 @@ export function NodeLibrary({
     const valid = ids.filter(id => validNodeIds.has(id))
     if (!valid.length) return
     setCopiedIds(valid)
-    showMessage({ title: `已复制 ${valid.length} 个节点`, description: '可在自定义分组右键粘贴', type: 'success' })
+    showMessage({ title: tr("已复制 {0} 个节点", valid.length), description: tr('可在自定义分组右键粘贴'), type: 'success' })
   }
 
   function startNodeDrag(event: DragEvent, ids: string[]) {
@@ -387,7 +475,7 @@ export function NodeLibrary({
     const valid = ids.filter(id => validNodeIds.has(id))
     if (!valid.length) return
     void store.addNodesToCustomGroup(group.id, valid).then(
-      () => showMessage({ title: `已加入「${group.name}」`, type: 'success' }),
+      () => showMessage({ title: tr("已加入「{0}」", group.name), type: 'success' }),
       onError,
     )
   }
@@ -405,7 +493,7 @@ export function NodeLibrary({
 
   function run(action: () => Promise<unknown>) {
     if (!store.kernelPath) {
-      onError('测速需要 Mihomo 诊断内核。请在下方设置内核路径，保存后再测速。')
+      onError(tr('测速需要 Mihomo 诊断内核。请在下方设置内核路径，保存后再测速。'))
       onSettings()
       return
     }
@@ -423,7 +511,12 @@ export function NodeLibrary({
   useEffect(() => {
     if (!selecting) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && groupDialog.kind === 'none') {
+      if (
+        event.key === 'Escape' &&
+        groupDialog.kind === 'none' &&
+        !event.defaultPrevented &&
+        !document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]')
+      ) {
         exitSelection()
       }
     }
@@ -461,7 +554,7 @@ export function NodeLibrary({
             onClick={event => event.stopPropagation()}
           >
             <Checkbox
-              aria-label={`选中 ${node.name}`}
+              aria-label={tr("选中 {0}", node.name)}
               checked={checked}
               onCheckedChange={next => selectNode(node.id, next)}
             />
@@ -475,7 +568,7 @@ export function NodeLibrary({
       return (
         <button
           type="button"
-          aria-label={pickingForChain ? `将 ${node.name} 加入链路` : `选择 ${node.name} 为出口`}
+          aria-label={pickingForChain ? tr("将 {0} 加入链路", node.name) : tr("选择 {0} 为出口", node.name)}
           aria-pressed={pickingForChain ? undefined : chosen}
           aria-disabled={node.subscriptionNotice || (!pickingForChain && (nodeActionDisabled || chosen))}
           aria-busy={selectingNodeId === node.id || undefined}
@@ -501,19 +594,19 @@ export function NodeLibrary({
   }
 
   function nodeChoiceLabel(node: NodeRecord) {
-    if (selectingNodeId === node.id) return '切换中'
-    if (currentNode?.id === node.id) return '使用中'
-    if (selectedOutboundId === node.id) return '已选'
+    if (selectingNodeId === node.id) return tr('切换中')
+    if (currentNode?.id === node.id) return tr('使用中')
+    if (selectedOutboundId === node.id) return tr('已选')
     return undefined
   }
 
   function nodeChoice(node: NodeRecord) {
     if (node.subscriptionNotice) {
-      return <Badge variant="default" className="h-5.5 shrink-0">订阅提示</Badge>
+      return <Badge variant="default" className="h-5.5 shrink-0">{tr("订阅提示")}</Badge>
     }
     const label = nodeChoiceLabel(node)
     if (label) {
-      return <Badge variant={label === '使用中' ? 'success' : 'accent'} className="h-5.5 shrink-0">{label}</Badge>
+      return <Badge variant={label === tr('使用中') ? 'success' : 'accent'} className="h-5.5 shrink-0">{label}</Badge>
     }
     return (
       <Button
@@ -521,15 +614,13 @@ export function NodeLibrary({
         variant="outline"
         size="sm"
         className="h-5.5 px-1.5"
-        aria-label={`将 ${node.name} 设为当前节点`}
+        aria-label={tr("将 {0} 设为当前节点", node.name)}
         disabled={nodeActionDisabled}
         onClick={event => {
           event.stopPropagation()
           onChooseNode(node.id)
         }}
-      >
-        设为当前
-      </Button>
+      >{tr("设为当前")}</Button>
     )
   }
 
@@ -538,7 +629,7 @@ export function NodeLibrary({
       <Button
         variant="ghost"
         size="icon-sm"
-        aria-label={`编辑 ${node.name}`}
+        aria-label={tr("编辑 {0}", node.name)}
         onClick={event => {
           event.stopPropagation()
           onEdit(node)
@@ -552,7 +643,7 @@ export function NodeLibrary({
 
   function copyText(text: string, label: string) {
     if (!navigator.clipboard) {
-      onError(`当前环境不支持剪贴板，无法复制${label}`)
+      onError(tr("当前环境不支持剪贴板，无法复制{0}", label))
       return
     }
     void navigator.clipboard.writeText(text).catch(onError)
@@ -572,14 +663,14 @@ export function NodeLibrary({
             onClick={() => onChooseNode(node.id)}
           >
             <Check />
-            {nodeChoiceLabel(node) ?? '设为当前节点'}
+            {nodeChoiceLabel(node) ?? tr('设为当前节点')}
           </ContextMenuItem>
           <ContextMenuItem
             disabled={testing}
             onClick={() => run(() => store.measure(node.id))}
           >
-            <Activity />
-            {testing ? '测速中...' : '立即测速'}
+            <Zap />
+            {testing ? tr('测速中...') : tr('立即测速')}
           </ContextMenuItem>
           <ContextMenuItem onClick={() => {
             if (!selecting) {
@@ -590,13 +681,11 @@ export function NodeLibrary({
             }
           }}>
             <CheckSquare />
-            {selecting && isSelected ? '取消勾选' : '勾选节点'}
+            {selecting && isSelected ? tr('取消勾选') : tr('勾选节点')}
           </ContextMenuItem>
           <ContextMenuSub>
             <ContextMenuSubTrigger>
-              <Layers />
-              加入分组
-            </ContextMenuSubTrigger>
+              <Layers />{tr("加入分组")}</ContextMenuSubTrigger>
             <ContextMenuSubContent>
               {store.customGroups.map(group => {
                 const inGroup = group.members.includes(node.id)
@@ -622,9 +711,7 @@ export function NodeLibrary({
               <ContextMenuItem
                 onClick={() => setGroupDialog({ kind: 'create', initialMembers: [node.id] })}
               >
-                <Plus />
-                新建并加入分组…
-              </ContextMenuItem>
+                <Plus />{tr("新建并加入分组…")}</ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>
           {activeCustomGroup && (
@@ -634,56 +721,38 @@ export function NodeLibrary({
               }
             >
               <FolderMinus />
-              <span>
-                从「<FlagText text={activeCustomGroup.name} />」移除
-              </span>
+              <span>{tr("从「")}<FlagText text={activeCustomGroup.name} />{tr("」移除")}</span>
             </ContextMenuItem>
           )}
-          {onAssignChainRole && (
+          {onAssignChainRole && !node.subscriptionNotice && (
             <ContextMenuSub>
               <ContextMenuSubTrigger>
-                <Waypoints />
-                加入链路
-              </ContextMenuSubTrigger>
+                <Waypoints />{tr("加入链路")}</ContextMenuSubTrigger>
               <ContextMenuSubContent>
-                <ContextMenuItem onClick={() => onAssignChainRole(node.id, 'front')}>
-                  设为第 1 跳（前置）
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => onAssignChainRole(node.id, 'transit')}>
-                  插入为中转跳
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => onAssignChainRole(node.id, 'exit')}>
-                  设为最后一跳（出口）
-                </ContextMenuItem>
+                <ContextMenuItem onClick={() => onAssignChainRole(node.id, 'front')}>{tr("设为第 1 跳（前置）")}</ContextMenuItem>
+                <ContextMenuItem onClick={() => onAssignChainRole(node.id, 'transit')}>{tr("插入为中转跳")}</ContextMenuItem>
+                <ContextMenuItem onClick={() => onAssignChainRole(node.id, 'exit')}>{tr("设为最后一跳（出口）")}</ContextMenuItem>
               </ContextMenuSubContent>
             </ContextMenuSub>
           )}
           <ContextMenuSeparator />
           <ContextMenuItem onClick={() => copyNodes(selecting && isSelected ? activeSelected : [node.id])}>
             <Copy />
-            {selecting && isSelected && activeSelected.length > 1 ? `复制已勾选节点（${activeSelected.length}）` : '复制节点'}
+            {selecting && isSelected && activeSelected.length > 1 ? tr("复制已勾选节点（{0}）", activeSelected.length) : tr('复制节点')}
           </ContextMenuItem>
-          <ContextMenuItem onClick={() => copyText(node.name, '节点名称')}>
-            <Copy />
-            复制节点名称
-          </ContextMenuItem>
-          <ContextMenuItem onClick={() => copyText(`${node.server}:${node.port}`, '服务器地址')}>
-            <Copy />
-            复制 server:port
-          </ContextMenuItem>
+          <ContextMenuItem onClick={() => copyText(node.name, tr('节点名称'))}>
+            <Copy />{tr("复制节点名称")}</ContextMenuItem>
+          <ContextMenuItem onClick={() => copyText(`${node.server}:${node.port}`, tr('服务器地址'))}>
+            <Copy />{tr("复制 server:port")}</ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onClick={() => onEdit(node)}>
-            <Pencil />
-            编辑节点
-          </ContextMenuItem>
+            <Pencil />{tr("编辑节点")}</ContextMenuItem>
           {isCustom && onDeleteCustom && (
             <ContextMenuItem
               variant="destructive"
               onClick={() => onDeleteCustom(node)}
             >
-              <Trash2 />
-              删除自定义节点
-            </ContextMenuItem>
+              <Trash2 />{tr("删除自定义节点")}</ContextMenuItem>
           )}
         </ContextMenuContent>
       </ContextMenu>
@@ -718,9 +787,10 @@ export function NodeLibrary({
     <section className="relative flex h-full min-h-0 min-w-0 flex-col gap-3 px-5 py-4">
       <header className="flex min-h-11 shrink-0 items-center justify-between gap-3">
         <div className="flex items-center gap-4 whitespace-nowrap">
-          <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">
-            节点库
-          </h1>
+          <div className="flex items-center gap-2.5">
+            <PageHeaderIcon kind="nodes" animateKey={visitKey} />
+            <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("节点库")}</h1>
+          </div>
           <TraceLines />
         </div>
 
@@ -745,8 +815,8 @@ export function NodeLibrary({
                   <Input
                     ref={searchInput}
                     value={search}
-                    placeholder="搜索名称、来源或协议"
-                    aria-label="搜索节点"
+                    placeholder={tr("搜索名称、来源或协议")}
+                    aria-label={tr("搜索节点")}
                     className={cn(
                       'h-8.5 border-accent-border/80 bg-card pl-8 shadow-xs transition-[border-color,box-shadow]',
                       search ? 'pr-7' : 'pr-2.5',
@@ -756,13 +826,17 @@ export function NodeLibrary({
                       setPage(1)
                     }}
                     onKeyDown={event => {
-                      if (event.key === 'Escape') toggleSearch()
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        toggleSearch()
+                      }
                     }}
                   />
                   {search && (
                     <button
                       type="button"
-                      aria-label="清空搜索"
+                      aria-label={tr("清空搜索")}
                       onClick={() => {
                         setSearch('')
                         setPage(1)
@@ -780,14 +854,14 @@ export function NodeLibrary({
 
           <div
             role="group"
-            aria-label="节点常用操作"
+            aria-label={tr("节点常用操作")}
             className="inline-flex h-8.5 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 shadow-xs"
           >
             <motion.button
               ref={searchButton}
               type="button"
-              aria-label={searchOpen ? '收起搜索' : '搜索节点'}
-              title={searchOpen ? '收起搜索' : '搜索节点'}
+              aria-label={searchOpen ? tr('收起搜索') : tr('搜索节点')}
+              title={searchOpen ? tr('收起搜索') : tr('搜索节点')}
               aria-pressed={searchOpen}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.92 }}
@@ -819,54 +893,94 @@ export function NodeLibrary({
 
             <motion.button
               type="button"
-              disabled={!filtered.length || batchTesting}
+              disabled={!batchTesting && !filtered.length}
               aria-busy={batchTesting}
               aria-label={
                 batchTesting
-                  ? '正在刷新测速结果'
+                  ? store.progress?.total
+                    ? tr('停止测速 ({0}/{1})', store.progress.completed, store.progress.total)
+                    : tr('停止测速')
                   : activeSelected.length
-                    ? `批量测速（已选 ${activeSelected.length} 个）`
-                    : '刷新测速结果'
+                    ? tr("批量测速（已选 {0} 个）", activeSelected.length)
+                    : tr('刷新测速结果')
               }
               title={
                 batchTesting
-                  ? '正在刷新测速结果…'
+                  ? store.progress?.total
+                    ? tr('停止测速 ({0}/{1})', store.progress.completed, store.progress.total)
+                    : tr('停止测速')
                   : activeSelected.length
-                    ? `批量测速（已选 ${activeSelected.length} 个）`
-                    : '刷新测速结果'
+                    ? tr("批量测速（已选 {0} 个）", activeSelected.length)
+                    : tr('刷新测速结果')
               }
-              whileHover={!filtered.length || batchTesting ? undefined : { scale: 1.05 }}
-              whileTap={!filtered.length || batchTesting ? undefined : { scale: 0.92 }}
+              whileHover={!batchTesting && !filtered.length ? undefined : { scale: 1.05 }}
+              whileTap={!batchTesting && !filtered.length ? undefined : { scale: 0.92 }}
               transition={{ type: 'spring', stiffness: 520, damping: 28 }}
               onMouseEnter={() => setHoveredTool('measure')}
               onMouseLeave={() => setHoveredTool(prev => (prev === 'measure' ? null : prev))}
-              onClick={() =>
+              onClick={() => {
+                if (batchTesting) {
+                  void store.cancelBatch().catch(onError)
+                  return
+                }
+                setHoveredTool(null)
                 run(() =>
                   store.batch(
                     activeSelected.length ? activeSelected : filtered.map(node => node.id),
                   ),
                 )
-              }
+              }}
               className={cn(
                 toolButtonClass,
-                'text-secondary-foreground hover:bg-accent-soft/80 hover:text-primary disabled:pointer-events-none disabled:opacity-40',
+                batchTesting
+                  ? showStopMeasure
+                    ? 'bg-danger-soft text-destructive hover:bg-danger-soft hover:text-destructive'
+                    : 'bg-accent-soft/75 text-primary'
+                  : 'text-secondary-foreground hover:bg-accent-soft/80 hover:text-primary disabled:pointer-events-none disabled:opacity-40',
               )}
             >
-              {batchTesting ? (
-                <RefreshCw className="animate-spin text-primary" />
-              ) : (
-                <motion.span
-                  className="grid place-items-center"
-                  animate={
-                    hoveredTool === 'measure'
-                      ? { scale: [1, 1.2, 1.06] }
-                      : { scale: 1 }
-                  }
-                  transition={{ duration: 0.34, ease: 'easeOut' }}
-                >
-                  <RefreshCw />
-                </motion.span>
-              )}
+              <AnimatePresence mode="wait" initial={false}>
+                {batchTesting ? (
+                  showStopMeasure ? (
+                    <motion.span
+                      key="pause"
+                      initial={{ opacity: 0, scale: 0.72 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.72 }}
+                      transition={{ duration: 0.14 }}
+                      className="grid place-items-center"
+                    >
+                      <Pause />
+                    </motion.span>
+                  ) : (
+                    <motion.span
+                      key="spinning"
+                      initial={{ opacity: 0, scale: 0.72 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.72 }}
+                      transition={{ duration: 0.14 }}
+                      className="grid place-items-center"
+                    >
+                      <RefreshCw className="animate-spin text-primary" />
+                    </motion.span>
+                  )
+                ) : (
+                  <motion.span
+                    key="idle"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={
+                      hoveredTool === 'measure'
+                        ? { opacity: 1, scale: [1, 1.2, 1.06] }
+                        : { opacity: 1, scale: 1 }
+                    }
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    transition={{ duration: 0.2, ease: 'easeOut' }}
+                    className="grid place-items-center"
+                  >
+                    <Zap />
+                  </motion.span>
+                )}
+              </AnimatePresence>
             </motion.button>
 
             <Separator orientation="vertical" className="mx-0.5 h-4 bg-border" />
@@ -876,8 +990,8 @@ export function NodeLibrary({
                 render={
                   <motion.button
                     type="button"
-                    aria-label="新建节点或分组"
-                    title="新建节点、分组或导入订阅"
+                    aria-label={tr("新建节点或分组")}
+                    title={tr("新建节点、分组或导入订阅")}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.92 }}
                     transition={{ type: 'spring', stiffness: 520, damping: 28 }}
@@ -907,19 +1021,15 @@ export function NodeLibrary({
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={addNode}>
                   <Server />
-                  {activeCustomGroup ? '在此分组新建节点' : '添加自定义节点'}
+                  {activeCustomGroup ? tr('在此分组新建节点') : tr('添加自定义节点')}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => setGroupDialog({ kind: 'create', initialMembers: activeSelected })}
                 >
-                  <Layers />
-                  新建自定义分组
-                </DropdownMenuItem>
+                  <Layers />{tr("新建自定义分组")}</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={onImport}>
-                  <CloudDownload />
-                  导入订阅
-                </DropdownMenuItem>
+                  <CloudDownload />{tr("导入订阅")}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
 
@@ -927,8 +1037,8 @@ export function NodeLibrary({
 
             <motion.button
               type="button"
-              aria-label={chainOpen ? '收起链路配置' : '链路配置'}
-              title={chainOpen ? '收起链路配置' : '配置多跳链路'}
+              aria-label={chainOpen ? tr('收起链路配置') : tr('链路配置')}
+              title={chainOpen ? tr('收起链路配置') : tr('配置多跳链路')}
               aria-pressed={Boolean(chainOpen)}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.92 }}
@@ -979,7 +1089,7 @@ export function NodeLibrary({
           {treeOpen && (
             <NodeTreePanel key="node-source-tree" hasInspector={hasInspector}>
               <NodeSourceTree
-                library={store.library}
+                library={visibleLibrary}
                 customGroups={store.customGroups}
                 scope={scope}
                 onSelectScope={next => {
@@ -1026,8 +1136,8 @@ export function NodeLibrary({
                 {!treeOpen && (
                   <motion.button
                     type="button"
-                    aria-label="展开分组树"
-                    title="展开订阅与分组"
+                    aria-label={tr("展开分组树")}
+                    title={tr("展开订阅与分组")}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.92 }}
                     transition={{ type: 'spring', stiffness: 520, damping: 28 }}
@@ -1051,13 +1161,13 @@ export function NodeLibrary({
                   </motion.button>
                 )}
 
-                <div className="flex items-baseline gap-2">
+                <div className="flex min-w-0 items-baseline gap-2">
                   {scopeSubtitle && (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="max-w-40 shrink-0 truncate text-xs text-muted-foreground" title={scopeSubtitle}>
                       <FlagText text={scopeSubtitle} /> /
                     </span>
                   )}
-                  <h2 className="text-[15px] font-semibold text-foreground">
+                  <h2 className="min-w-0 truncate text-[15px] font-semibold text-foreground" title={scopeTitle}>
                     <FlagText text={scopeTitle} />
                   </h2>
                   <span className="mono text-xs text-muted-foreground">{filtered.length}</span>
@@ -1070,9 +1180,7 @@ export function NodeLibrary({
                         setPage(1)
                       }}
                       className="h-6 px-1.5 text-xs text-primary hover:text-primary"
-                    >
-                      显示全部
-                    </Button>
+                    >{tr("显示全部")}</Button>
                   )}
                 </div>
 
@@ -1086,11 +1194,9 @@ export function NodeLibrary({
                       size="sm"
                       onClick={exitSelection}
                     >
-                      <X data-icon="inline-start" />
-                      退出选择
-                    </Button>
+                      <X data-icon="inline-start" />{tr("退出选择")}</Button>
                     <AirCheckbox
-                      label="全选"
+                      label={tr("全选")}
                       checked={
                         checked > 0 && checked < visible.length
                           ? 'indeterminate'
@@ -1099,11 +1205,9 @@ export function NodeLibrary({
                       disabled={!visible.length}
                       onChange={selectPage}
                     >
-                      <span className="text-xs font-medium text-muted-foreground">全选</span>
+                      <span className="text-xs font-medium text-muted-foreground">{tr("全选")}</span>
                     </AirCheckbox>
-                    <Badge variant="accent" className="mono">
-                      已选 {activeSelected.length} 个
-                    </Badge>
+                    <Badge variant="accent" className="mono">{tr('已选 {0}', activeSelected.length)}</Badge>
                     <Button
                       type="button"
                       variant="subtle"
@@ -1112,9 +1216,7 @@ export function NodeLibrary({
                       onClick={() =>
                         setGroupDialog({ kind: 'assign', nodeIds: activeSelected })
                       }
-                    >
-                      加入分组
-                    </Button>
+                    >{tr("加入分组")}</Button>
                   </>
                 ) : (
                   <Button
@@ -1127,16 +1229,14 @@ export function NodeLibrary({
                       setSelecting(true)
                     }}
                   >
-                    <CheckSquare data-icon="inline-start" />
-                    多选
-                  </Button>
+                    <CheckSquare data-icon="inline-start" />{tr("多选")}</Button>
                 )}
               </div>
 
               <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
                 <AirSelect
                   variant="ghost"
-                  label="排序"
+                  label={tr("排序")}
                   value={sort}
                   options={sortOptions}
                   leading={<ArrowDownUp />}
@@ -1152,7 +1252,7 @@ export function NodeLibrary({
                     <Separator orientation="vertical" className="mx-0.5 hidden h-3.5 @[380px]:block" />
                     <Segmented
                       layoutId="node-library-card-density"
-                      ariaLabel="卡片布局密度"
+                      ariaLabel={tr("卡片布局密度")}
                       value={density}
                       options={densityOptions}
                       onChange={setDensity}
@@ -1164,7 +1264,7 @@ export function NodeLibrary({
 
                 <Segmented
                   layoutId="node-library-view-mode"
-                  ariaLabel="视图"
+                  ariaLabel={tr("视图")}
                   value={mode}
                   options={viewModes}
                   onChange={setMode}
@@ -1172,11 +1272,31 @@ export function NodeLibrary({
               </div>
             </div>
 
+            {hiddenSubscriptionCount > 0 && (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[8px] border border-accent-border/75 bg-accent-soft/55 px-3 py-1.5 text-xs">
+                <span className="text-foreground">
+                  {tr('已按订阅页勾选筛选：隐藏了 {0} 个未勾选订阅', hiddenSubscriptionCount)}
+                </span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {onManageSubscriptions && (
+                    <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs text-primary" onClick={onManageSubscriptions}>
+                      {tr('去订阅页调整')}
+                    </Button>
+                  )}
+                  {onShowAllSubscriptions && (
+                    <Button type="button" variant="subtle" size="sm" className="h-6 px-2 text-xs" onClick={onShowAllSubscriptions}>
+                      {tr('显示全部订阅')}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {chainOpen && chainSelection && (
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[8px] border border-accent-border/45 bg-accent-soft/55 px-3 py-1.5 text-xs">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Waypoints className="size-3.5 shrink-0 text-primary" />
-                  <span className="font-medium text-foreground">链路选点：</span>
+                  <span className="font-medium text-foreground">{tr("链路选点：")}</span>
                   {chainSelection.hops.map((hopId, index) => {
                     const active = chainSelection.activeHopIndex === index
                     const role = hopRoleLabel(index, chainSelection.hops.length)
@@ -1194,8 +1314,7 @@ export function NodeLibrary({
                               : 'border-dashed border-primary/40 bg-card/85 text-primary hover:bg-card',
                         )}
                       >
-                        <span>
-                          第 {index + 1} 跳 · {role}
+                        <span>{tr('第 {0} 跳 · {1}', index + 1, role)}
                         </span>
                         {hopId && !active && (
                           <span
@@ -1211,8 +1330,8 @@ export function NodeLibrary({
                 </div>
                 <span className="text-[12px] text-muted-foreground">
                   {chainSelection.activeHopIndex !== null
-                    ? `直接点击下方节点填入第 ${chainSelection.activeHopIndex + 1} 跳`
-                    : '点击左侧胶囊或右侧跳位卡片切换选点目标'}
+                    ? tr("直接点击下方节点填入第 {0} 跳", chainSelection.activeHopIndex + 1)
+                    : tr('点击左侧胶囊或右侧跳位卡片切换选点目标')}
                 </span>
               </div>
             )}
@@ -1229,18 +1348,60 @@ export function NodeLibrary({
                       <Layers className="size-5" />
                     </div>
                     <strong className="text-sm font-semibold text-foreground">
-                      {store.library.nodes.length ? '没有匹配的节点' : '还没有节点'}
+                      {!store.library.nodes.length
+                        ? tr('还没有节点')
+                        : !visibleNodes.length && hiddenSubscriptionCount > 0
+                          ? tr('未勾选任何订阅')
+                          : tr('没有匹配的节点')}
                     </strong>
-                    {!store.library.nodes.length && (
-                      <div className="flex items-center gap-2">
+                    {!visibleNodes.length && hiddenSubscriptionCount > 0 && store.library.nodes.length > 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        {tr('请先在订阅页勾选要展示的订阅，或恢复显示全部订阅')}
+                      </span>
+                    )}
+                    {!store.library.nodes.length ? (
+                      <div className="flex flex-wrap items-center justify-center gap-2">
                         <Button variant="default" onClick={onImport}>
-                          <Plus data-icon="inline-start" />
-                          导入订阅
-                        </Button>
+                          <Plus data-icon="inline-start" />{tr("导入订阅")}</Button>
                         <Button variant="secondary" onClick={addNode}>
-                          <Plus data-icon="inline-start" />
-                          添加自定义节点
-                        </Button>
+                          <Plus data-icon="inline-start" />{tr("添加自定义节点")}</Button>
+                      </div>
+                    ) : !visibleNodes.length && hiddenSubscriptionCount > 0 ? (
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        {onShowAllSubscriptions && (
+                          <Button variant="default" onClick={onShowAllSubscriptions}>
+                            {tr('显示全部订阅')}
+                          </Button>
+                        )}
+                        {onManageSubscriptions && (
+                          <Button variant="secondary" onClick={onManageSubscriptions}>
+                            {tr('去订阅页勾选')}
+                          </Button>
+                        )}
+                        <Button variant="outline" onClick={addNode}>
+                          <Plus data-icon="inline-start" />{tr("添加自定义节点")}</Button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        {query && (
+                          <Button variant="secondary" onClick={() => { setSearch(''); setPage(1) }}>
+                            {tr('清空搜索')}
+                          </Button>
+                        )}
+                        {scope.kind === 'customGroup' && !query && (
+                          <Button variant="default" onClick={addNode}>
+                            <Plus data-icon="inline-start" />{tr('添加节点')}</Button>
+                        )}
+                        {scope.kind !== 'all' && (
+                          <Button variant="outline" onClick={() => { setScope({ kind: 'all' }); setPage(1) }}>
+                            {tr('查看全部节点')}
+                          </Button>
+                        )}
+                        {hiddenSubscriptionCount > 0 && onShowAllSubscriptions && (
+                          <Button variant="outline" onClick={onShowAllSubscriptions}>
+                            {tr('显示全部订阅')}
+                          </Button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1287,7 +1448,7 @@ export function NodeLibrary({
                                   : undefined
                           }
                           className={cn(
-                            'relative min-w-0 overflow-hidden transition-[transform,border-color,background-color,box-shadow,outline-color] duration-150',
+                            'relative min-w-0 overflow-hidden [contain:layout_style] transition-[transform,border-color,background-color,box-shadow,outline-color] duration-150',
                             density === 'compact' ? 'gap-1.5 px-2.5 py-2' : 'gap-2.5 p-3.5',
                             cardClickable && 'cursor-pointer active:translate-y-0 active:scale-[0.988]',
                             isMultiSelected
@@ -1309,7 +1470,7 @@ export function NodeLibrary({
                             <Pin
                               data-slot="node-outbound-marker"
                               aria-hidden="true"
-                              className="pointer-events-none absolute top-1.5 right-2 size-[17px] rotate-45 fill-destructive stroke-destructive [&_path:first-child]:stroke-muted-foreground"
+                              className="pointer-events-none absolute top-1.5 right-2 size-[17px] rotate-45 fill-[#dc2626] stroke-[#dc2626] dark:fill-[#ef4444] dark:stroke-[#ef4444] [&_path:first-child]:stroke-muted-foreground"
                             />
                           ) : isSelecting && (
                             <span
@@ -1328,8 +1489,8 @@ export function NodeLibrary({
                                 className={cn('shrink-0', density === 'compact' && 'h-5 px-1')}
                               >
                                 {density === 'compact'
-                                  ? `${hopIndex + 1}跳`
-                                  : `第 ${hopIndex + 1} 跳 · ${hopRoleLabel(hopIndex, chainSelection.hops.length)}`}
+                                  ? tr("{0}跳", hopIndex + 1)
+                                  : tr("第 {0} 跳 · {1}", hopIndex + 1, hopRoleLabel(hopIndex, chainSelection.hops.length))}
                               </Badge>
                             )}
                           </div>
@@ -1339,15 +1500,17 @@ export function NodeLibrary({
                               <div className="flex min-w-0 items-center">
                                 <Badge
                                   variant="mono"
-                                  className="h-5 max-w-full truncate px-1.5 leading-none"
-                                  title={formatProtocol(node.protocol)}
+                                  className="h-5 max-w-full overflow-hidden px-1.5 leading-none"
+                                  title={node.subscriptionNotice ? tr('订阅提示') : formatProtocol(node.protocol)}
                                 >
-                                  {node.subscriptionNotice ? '订阅提示' : formatProtocol(node.protocol)}
+                                  <span className="min-w-0 truncate">
+                                    {node.subscriptionNotice ? tr('订阅提示') : formatProtocol(node.protocol)}
+                                  </span>
                                 </Badge>
                               </div>
                               <div className="flex items-center justify-between gap-1.5 pt-0.5">
                                 <div
-                                  title={`24h 可用率：${ratio(node.availability)}`}
+                                  title={tr("24h 可用率：{0}", ratio(node.availability))}
                                   className="flex min-w-0 items-baseline gap-1 text-[12px]"
                                 >
                                   <span className="shrink-0 text-muted-foreground">24h</span>
@@ -1371,7 +1534,7 @@ export function NodeLibrary({
                               <span className="truncate">
                                 <FlagText text={node.source} />
                               </span>
-                              <Badge variant="mono">{node.subscriptionNotice ? '订阅提示' : formatProtocol(node.protocol)}</Badge>
+                              <Badge variant="mono">{node.subscriptionNotice ? tr('订阅提示') : formatProtocol(node.protocol)}</Badge>
                             </div>
 
                             <div className="mt-auto flex flex-col gap-2.5">
@@ -1412,9 +1575,7 @@ export function NodeLibrary({
 
                               <div className="grid grid-cols-[repeat(3,minmax(0,1fr))_72px] items-start gap-1.5 pt-0.5">
                                 <div className="flex min-w-0 flex-col items-center gap-1 text-center">
-                                  <span className="max-w-full truncate text-[12px] text-muted-foreground">
-                                    24h 可用
-                                  </span>
+                                  <span className="max-w-full truncate text-[12px] text-muted-foreground">{tr("24h 可用")}</span>
                                   <strong
                                     className={cn(
                                       'mono flex h-6 items-center justify-center tabular-nums whitespace-nowrap text-xs font-semibold',
@@ -1427,25 +1588,19 @@ export function NodeLibrary({
                                   </strong>
                                 </div>
                                 <div className="flex min-w-0 flex-col items-center gap-1 text-center">
-                                  <span className="max-w-full truncate text-[12px] text-muted-foreground">
-                                    连续可用
-                                  </span>
+                                  <span className="max-w-full truncate text-[12px] text-muted-foreground">{tr("连续可用")}</span>
                                   <strong className="mono max-w-full truncate text-xs leading-6 font-semibold text-foreground" title={span(node.continuousMs)}>
                                     {span(node.continuousMs)}
                                   </strong>
                                 </div>
                                 <div className="flex min-w-0 flex-col items-center gap-1 text-center">
-                                  <span className="max-w-full truncate text-[12px] text-muted-foreground">
-                                    平均延迟
-                                  </span>
+                                  <span className="max-w-full truncate text-[12px] text-muted-foreground">{tr("平均延迟")}</span>
                                   <strong className="mono max-w-full truncate text-xs leading-6 font-semibold text-foreground" title={delay(node.averageMs)}>
                                     {delay(node.averageMs)}
                                   </strong>
                                 </div>
                                 <div className="flex min-w-0 flex-col items-center gap-1 text-center">
-                                  <span className="text-[12px] text-muted-foreground">
-                                    最近延迟
-                                  </span>
+                                  <span className="max-w-full truncate text-[12px] text-muted-foreground" title={tr("最近延迟")}>{tr("最近延迟")}</span>
                                   {latest(node)}
                                 </div>
                               </div>
@@ -1457,24 +1612,22 @@ export function NodeLibrary({
                   })}
                 </div>
               ) : (
-                <Table aria-label="节点列表">
+                <Table aria-label={tr("节点列表")}>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="px-2.5">{sortHead('name', '节点')}</TableHead>
-                      <TableHead className="px-2.5">来源 / 协议</TableHead>
-                      <TableHead className="w-19 px-2.5">出站</TableHead>
+                      <TableHead className="px-2.5">{sortHead('name', tr('节点'))}</TableHead>
+                      <TableHead className="px-2.5">{tr("来源 / 协议")}</TableHead>
+                      <TableHead className="w-19 px-2.5">{tr("出站")}</TableHead>
                       <TableHead className={cn('px-2.5', dualSidebars && 'hidden 2xl:table-cell')}>
-                        {sortHead('availability', '24h 可用')}
+                        {sortHead('availability', tr('24h 可用'))}
                       </TableHead>
-                      <TableHead className={cn('px-2.5', hasInspector || treeOpen ? 'hidden 2xl:table-cell' : 'hidden xl:table-cell')}>
-                        连续可用
-                      </TableHead>
+                      <TableHead className={cn('px-2.5', hasInspector || treeOpen ? 'hidden 2xl:table-cell' : 'hidden xl:table-cell')}>{tr("连续可用")}</TableHead>
                       <TableHead className={cn('px-2.5', dualSidebars && 'hidden 2xl:table-cell')}>
-                        {sortHead('averageMs', '平均延迟')}
+                        {sortHead('averageMs', tr('平均延迟'))}
                       </TableHead>
-                      <TableHead className="px-2.5 text-right">{sortHead('latestMs', '最近延迟', true)}</TableHead>
+                      <TableHead className="px-2.5 text-right">{sortHead('latestMs', tr('最近延迟'), true)}</TableHead>
                       <TableHead className="w-9 px-2">
-                        <span className="sr-only">编辑</span>
+                        <span className="sr-only">{tr("编辑")}</span>
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1494,19 +1647,17 @@ export function NodeLibrary({
                           onClick={
                             selecting
                               ? () => selectNode(node.id, !selectedIds.has(node.id))
-                              : pickingForChain
+                              : pickingForChain && !node.subscriptionNotice
                                 ? () => chainSelection?.onAssignNode(node.id)
                                 : undefined
                           }
-                          className={selecting || pickingForChain ? 'cursor-pointer' : undefined}
+                          className={selecting || (pickingForChain && !node.subscriptionNotice) ? 'cursor-pointer' : undefined}
                         >
                           <TableCell className="max-w-[260px] px-2.5">
                             <div className="flex min-w-0 items-center gap-1.5" title={node.name}>
                               <div className="min-w-0 flex-1">{nodeName(node)}</div>
                               {hopIndex !== -1 && chainSelection && (
-                                <Badge variant={isLastHop ? 'success' : 'accent'} className="shrink-0">
-                                  第 {hopIndex + 1} 跳
-                                </Badge>
+                                <Badge variant={isLastHop ? 'success' : 'accent'} className="shrink-0">{tr('第 {0} 跳', hopIndex + 1)}</Badge>
                               )}
                             </div>
                           </TableCell>
@@ -1540,17 +1691,25 @@ export function NodeLibrary({
 
               <ContextMenuContent>
                 <ContextMenuItem
-                  disabled={!filtered.length || batchTesting}
-                  onClick={() =>
+                  disabled={!batchTesting && !filtered.length}
+                  onClick={() => {
+                    if (batchTesting) {
+                      void store.cancelBatch().catch(onError)
+                      return
+                    }
                     run(() =>
                       store.batch(
                         activeSelected.length ? activeSelected : filtered.map(node => node.id),
                       ),
                     )
-                  }
+                  }}
                 >
-                  <Activity />
-                  {activeSelected.length ? `批量测速（已选 ${activeSelected.length}）` : '测速全部节点'}
+                  {batchTesting ? <Pause /> : <Zap />}
+                  {batchTesting
+                    ? tr('停止测速')
+                    : activeSelected.length
+                      ? tr("批量测速（已选 {0}）", activeSelected.length)
+                      : tr('测速全部节点')}
                 </ContextMenuItem>
                 <ContextMenuItem
                   disabled={!visible.length}
@@ -1564,45 +1723,34 @@ export function NodeLibrary({
                   }}
                 >
                   <CheckSquare />
-                  {selecting && visible.length > 0 && checked === visible.length ? '取消全选当前页' : '全选当前页'}
+                  {selecting && visible.length > 0 && checked === visible.length ? tr('取消全选当前页') : tr('全选当前页')}
                 </ContextMenuItem>
                 {selecting && activeSelected.length > 0 && (
                   <ContextMenuItem onClick={() => store.setSelected([])}>
-                    <X />
-                    清空已选（{activeSelected.length}）
+                    <X />{tr('清空已选（{0}）', activeSelected.length)}
                   </ContextMenuItem>
                 )}
                 <ContextMenuSeparator />
                 {activeCustomGroup && (
                   <ContextMenuItem disabled={!clipboardIds.length} onClick={() => addToGroup(activeCustomGroup, clipboardIds)}>
-                    <ClipboardPaste />
-                    粘贴节点
-                  </ContextMenuItem>
+                    <ClipboardPaste />{tr("粘贴节点")}</ContextMenuItem>
                 )}
                 <ContextMenuItem onClick={addNode}>
                   <Plus />
-                  {activeCustomGroup ? '在此分组新建节点' : '添加自定义节点'}
+                  {activeCustomGroup ? tr('在此分组新建节点') : tr('添加自定义节点')}
                 </ContextMenuItem>
                 <ContextMenuItem
                   onClick={() => setGroupDialog({ kind: 'create', initialMembers: activeSelected })}
                 >
-                  <Layers />
-                  新建自定义分组
-                </ContextMenuItem>
+                  <Layers />{tr("新建自定义分组")}</ContextMenuItem>
                 <ContextMenuSub>
                   <ContextMenuSubTrigger>
-                    <LayoutGrid />
-                    视图与密度
-                  </ContextMenuSubTrigger>
+                    <LayoutGrid />{tr("视图与密度")}</ContextMenuSubTrigger>
                   <ContextMenuSubContent>
                     <ContextMenuItem onClick={() => setMode('cards')}>
-                      {mode === 'cards' ? <Check className="text-primary" /> : <LayoutGrid />}
-                      卡片视图
-                    </ContextMenuItem>
+                      {mode === 'cards' ? <Check className="text-primary" /> : <LayoutGrid />}{tr("卡片视图")}</ContextMenuItem>
                     <ContextMenuItem onClick={() => setMode('table')}>
-                      {mode === 'table' ? <Check className="text-primary" /> : <List />}
-                      列表视图
-                    </ContextMenuItem>
+                      {mode === 'table' ? <Check className="text-primary" /> : <List />}{tr("列表视图")}</ContextMenuItem>
                     <ContextMenuSeparator />
                     {densityOptions.map(option => (
                       <ContextMenuItem
@@ -1617,8 +1765,7 @@ export function NodeLibrary({
                         ) : (
                           <LayoutGrid />
                         )}
-                        {option.label}卡片
-                      </ContextMenuItem>
+                        {option.label}{tr("卡片")}</ContextMenuItem>
                     ))}
                   </ContextMenuSubContent>
                 </ContextMenuSub>
@@ -1629,21 +1776,18 @@ export function NodeLibrary({
                     await store.batch(filtered.map(node => node.id))
                   }
                 })}>
-                  <RefreshCw />
-                  刷新列表和测速结果
-                </ContextMenuItem>
+                  <RefreshCw />{tr("刷新列表和测速结果")}</ContextMenuItem>
               </ContextMenuContent>
             </ContextMenu>
 
             <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border pt-2.5 text-xs text-muted-foreground @[440px]:justify-between">
-              <span className="mono hidden whitespace-nowrap @[440px]:inline">
-                显示 {filtered.length ? (page - 1) * pageSize + 1 : 0}–
+              <span className="mono hidden whitespace-nowrap @[440px]:inline">{tr("显示 ")}{filtered.length ? (page - 1) * pageSize + 1 : 0}–
                 {Math.min(page * pageSize, filtered.length)} / {filtered.length}
               </span>
               <div className="flex items-center gap-2">
                 <div className="w-28">
                   <AirSelect
-                    label="每页条数"
+                    label={tr("每页条数")}
                     value={String(pageSize)}
                     options={pageSizes}
                     side="top"
@@ -1660,7 +1804,7 @@ export function NodeLibrary({
                   <Button
                     variant="secondary"
                     size="icon-sm"
-                    aria-label="上一页"
+                    aria-label={tr("上一页")}
                     disabled={page === 1}
                     onClick={() => setPage(page - 1)}
                   >
@@ -1675,7 +1819,7 @@ export function NodeLibrary({
                   <Button
                     variant="secondary"
                     size="icon-sm"
-                    aria-label="下一页"
+                    aria-label={tr("下一页")}
                     disabled={page >= maxPage}
                     onClick={() => setPage(page + 1)}
                   >

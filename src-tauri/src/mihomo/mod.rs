@@ -32,6 +32,8 @@ pub struct Kernel {
     _job: std::os::windows::io::OwnedHandle,
     #[cfg(windows)]
     tun_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    #[cfg(windows)]
+    lan_discovery: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 struct MixedPortReservation {
@@ -43,12 +45,13 @@ struct MixedPortReservation {
 impl Kernel {
     pub async fn start(
         binary: &Path,
+        config_dir: &Path,
         app_dir: &Path,
         nodes: Vec<Value>,
         hosts: &Mapping,
         exit: Option<&str>,
     ) -> AirResult<Self> {
-        let network = crate::routing::RoutingFile::new(app_dir).network()?.settings;
+        let network = crate::routing::RoutingFile::new(config_dir).network()?.settings;
         if exit.is_none() && !nodes.is_empty() {
             return Self::start_probes(binary, app_dir, nodes, hosts, &network, Self::probe_interface().as_deref()).await;
         }
@@ -117,6 +120,8 @@ impl Kernel {
         let reservation = reserve_mixed_port(requested_port, allow_lan)?;
         let port = reservation.port;
         config["mixed-port"] = port.into();
+        #[cfg(windows)]
+        let tun_enabled = config["tun"]["enable"].as_bool().unwrap_or(false);
         let mut kernel = Self::launch(
             binary,
             app_dir,
@@ -126,9 +131,70 @@ impl Kernel {
             "runtime-",
         )
         .await?;
+        if let Err(error) = kernel.wait_for_proxy_port(port).await {
+            let _ = kernel.stop().await;
+            return Err(error);
+        }
+        #[cfg(windows)]
+        kernel.monitor_tun_lan_discovery(tun_enabled);
+        Ok((kernel, port))
+    }
+
+    #[cfg(windows)]
+    pub(crate) async fn prepare_tun(binary: &Path, app_dir: &Path, mut config: Value) -> AirResult<Self> {
+        config["mixed-port"] = 0.into();
+        config["allow-lan"] = false.into();
+        config["bind-address"] = "127.0.0.1".into();
+        config["tun"]["enable"] = false.into();
+        Self::launch(binary, app_dir, config, None, None, "runtime-").await
+    }
+
+    #[cfg(windows)]
+    pub(crate) async fn activate_tun(&mut self, settings: &NetworkSettings, requested_port: Option<u16>) -> AirResult<u16> {
+        self.activate_listeners(requested_port, settings.allow_lan, settings.tun(true)).await
+    }
+
+    #[cfg(windows)]
+    async fn activate_listeners(&mut self, requested_port: Option<u16>, allow_lan: bool, tun: serde_json::Value) -> AirResult<u16> {
+        let reservation = reserve_mixed_port(requested_port, allow_lan)?;
+        let port = reservation.port;
+        drop(reservation);
+        self.patch_config(&serde_json::json!({
+            "mixed-port": port,
+            "allow-lan": allow_lan,
+            "bind-address": if allow_lan { "0.0.0.0" } else { "127.0.0.1" },
+            "tun": tun,
+        })).await?;
+        if self.config().await?["mixed-port"].as_u64() != Some(u64::from(port)) {
+            return Err(mixed_port_unavailable(port));
+        }
+        self.wait_for_proxy_port(port).await?;
+        self.monitor_tun_lan_discovery(tun["enable"].as_bool() == Some(true));
+        Ok(port)
+    }
+
+    #[cfg(windows)]
+    pub(crate) async fn park_tun(&mut self) -> AirResult<()> {
+        self.patch_config(&serde_json::json!({ "mixed-port": 0, "tun": { "enable": false } })).await?;
+        let config = self.config().await?;
+        if config["mixed-port"].as_u64() != Some(0) || config["tun"]["enable"].as_bool() != Some(false) {
+            return Err("Mihomo 未关闭代理监听".into());
+        }
+        self.lan_discovery.take();
+        self.close_all_connections().await
+    }
+
+    #[cfg(windows)]
+    fn monitor_tun_lan_discovery(&mut self, enabled: bool) {
+        if crate::proxy::windows::is_admin() {
+            self.lan_discovery = Some(crate::proxy::lan_discovery::monitor(enabled));
+        }
+    }
+
+    async fn wait_for_proxy_port(&mut self, port: u16) -> AirResult<()> {
         // The control API can start responding before the mixed listener is ready.
         let ready = tokio::time::timeout(Duration::from_secs(3), async {
-            while kernel.running() {
+            while self.running() {
                 if tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
                     .await
                     .is_ok()
@@ -143,7 +209,7 @@ impl Kernel {
         if !matches!(ready, Ok(true)) {
             return Err("内核未能打开本地代理端口".into());
         }
-        Ok((kernel, port))
+        Ok(())
     }
 
     async fn launch(
@@ -201,7 +267,7 @@ impl Kernel {
         command.creation_flags(0x08000000);
         let child = command.spawn().map_err(|_| "无法启动 Mihomo 内核")?;
         #[cfg(windows)]
-        let (child, tun_error) = {
+        let (mut child, tun_error) = {
             use tokio::io::{AsyncBufReadExt, BufReader};
             let mut child = child;
             let latest = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -220,7 +286,13 @@ impl Kernel {
             (child, latest)
         };
         #[cfg(windows)]
-        let job = crate::proxy::windows::own_process(child.raw_handle().ok_or("无法读取 Mihomo 进程")?)?;
+        let job = match crate::proxy::windows::own_process(child.raw_handle().ok_or("无法读取 Mihomo 进程")?) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error);
+            }
+        };
         let mut kernel = Self {
             probe_url: NetworkSettings::default().probe_url,
             probe_status: 204,
@@ -234,6 +306,8 @@ impl Kernel {
             _job: job,
             #[cfg(windows)]
             tun_error,
+            #[cfg(windows)]
+            lan_discovery: None,
         };
         let version = kernel.api.join("version").map_err(|_| "内核控制地址无效")?;
         let ready = tokio::time::timeout(Duration::from_secs(6), async {
@@ -258,14 +332,17 @@ impl Kernel {
             }
         })
         .await
-        .map_err(|_| {
-            if missing_geodata {
+        .unwrap_or_else(|_| {
+            Err(if missing_geodata {
                 "等待 Mihomo 地理规则库下载超时，请使用包含离线规则库的 Air 安装包"
             } else {
                 "Mihomo 的本地控制接口未在启动时限内就绪"
-            }
-        })?;
-        ready?;
+            }.into())
+        });
+        if let Err(error) = ready {
+            let _ = kernel.stop().await;
+            return Err(error);
+        }
         Ok(kernel)
     }
 
@@ -278,17 +355,30 @@ impl Kernel {
         self.child.raw_handle()
     }
 
+    #[cfg(windows)]
+    pub(crate) async fn wait_for_exit(&mut self) {
+        let _ = self.child.wait().await;
+    }
+
     pub async fn stop(&mut self) -> AirResult<()> {
         self.child
             .kill()
             .await
-            .map_err(|_| "无法停止 Mihomo 内核".into())
+            .map_err(|_| "无法停止 Mihomo 内核".to_owned())?;
+        #[cfg(windows)]
+        self.lan_discovery.take();
+        Ok(())
     }
 
     pub(crate) async fn patch_config(&self, value: &serde_json::Value) -> AirResult<()> {
         #[cfg(windows)]
         if value.get("tun").is_some() { self.tun_error.lock().unwrap().take(); }
-        self.control(reqwest::Method::PATCH, "configs", value).await
+        self.control(reqwest::Method::PATCH, "configs", value).await?;
+        #[cfg(windows)]
+        if let (Some(routes), Some(enabled)) = (&self.lan_discovery, value["tun"]["enable"].as_bool()) {
+            routes.send_replace(enabled);
+        }
+        Ok(())
     }
 
     pub(crate) async fn reload_config(&self, config: &Value) -> AirResult<()> {
@@ -301,7 +391,12 @@ impl Kernel {
             "configs",
             &serde_json::json!({ "payload": payload }),
         )
-        .await
+        .await?;
+        #[cfg(windows)]
+        if let Some(routes) = &self.lan_discovery {
+            routes.send_replace(config["tun"]["enable"].as_bool().unwrap_or(false));
+        }
+        Ok(())
     }
 
     pub(crate) async fn select_global(&self, name: &str) -> AirResult<()> {
@@ -311,6 +406,41 @@ impl Kernel {
             &serde_json::json!({ "name": name }),
         )
         .await
+    }
+
+    pub(crate) async fn close_connection(&self, id: &str) -> AirResult<()> {
+        let mut url = self.api.join("connections").map_err(|_| "内核控制地址无效")?;
+        url.path_segments_mut()
+            .map_err(|_| "内核控制地址无效")?
+            .push(id);
+        let response = self
+            .client
+            .delete(url)
+            .bearer_auth(&self.secret)
+            .send()
+            .await
+            .map_err(|_| "Mihomo 控制接口无响应")?;
+        if response.status().is_success() || response.status().as_u16() == 404 {
+            Ok(())
+        } else {
+            Err(format!("关闭连接失败（HTTP {}）", response.status().as_u16()))
+        }
+    }
+
+    pub(crate) async fn close_all_connections(&self) -> AirResult<()> {
+        let url = self.api.join("connections").map_err(|_| "内核控制地址无效")?;
+        let response = self
+            .client
+            .delete(url)
+            .bearer_auth(&self.secret)
+            .send()
+            .await
+            .map_err(|_| "Mihomo 控制接口无响应")?;
+        if response.status().is_success() || response.status().as_u16() == 404 {
+            Ok(())
+        } else {
+            Err(format!("关闭全部连接失败（HTTP {}）", response.status().as_u16()))
+        }
     }
 
     pub(crate) async fn config(&self) -> AirResult<serde_json::Value> {
@@ -533,7 +663,6 @@ pub(crate) struct Connection {
 pub(crate) struct ConnectionMetadata {
     #[serde(rename = "type")]
     inbound_type: String,
-    #[cfg(all(windows, feature = "desktop"))]
     network: String,
     #[cfg(all(windows, feature = "desktop"))]
     #[serde(rename = "sourceIP")]
@@ -562,6 +691,33 @@ impl ConnectionMetadata {
             .find(|name| !name.is_empty())
             .unwrap_or("未知应用")
             .to_owned()
+    }
+
+    pub fn host(&self) -> Option<String> {
+        let host = self.host.trim();
+        (!host.is_empty()).then(|| host.to_owned())
+    }
+
+    pub fn destination_ip(&self) -> Option<String> {
+        self.destination_ip
+            .as_deref()
+            .map(str::trim)
+            .filter(|ip| !ip.is_empty())
+            .map(str::to_owned)
+    }
+
+    pub fn network(&self) -> Option<String> {
+        let net = self.network.trim();
+        (!net.is_empty()).then(|| net.to_owned())
+    }
+
+    pub fn process_name(&self) -> Option<String> {
+        [&self.process, &self.process_path]
+            .into_iter()
+            .filter_map(|path| path.rsplit(['/', '\\']).next())
+            .map(str::trim)
+            .find(|name| !name.is_empty())
+            .map(str::to_owned)
     }
 
     #[cfg(all(windows, feature = "desktop"))]
@@ -611,6 +767,34 @@ fn json_port(port: &Option<serde_json::Value>) -> Option<u16> {
 impl Drop for Kernel {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod standby_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires the bundled Windows Mihomo executable"]
+    async fn standby_reuses_the_kernel_without_leaving_a_proxy_listener() {
+        let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache/air/windows-x64/mihomo.exe");
+        let workspace = tempfile::tempdir().unwrap();
+        let config = serde_yaml::from_str(
+            "mode: direct\ntun: {enable: true, device: Air-TUN}\nallow-lan: true\nmixed-port: 7890\n",
+        ).unwrap();
+        let mut kernel = Kernel::prepare_tun(&binary, workspace.path(), config).await.unwrap();
+        let pid = kernel.child.id();
+        for _ in 0..2 {
+            let idle = kernel.config().await.unwrap();
+            assert_eq!(idle["mixed-port"], 0);
+            assert_eq!(idle["tun"]["enable"], false);
+            let port = kernel.activate_listeners(None, false, serde_json::json!({ "enable": false })).await.unwrap();
+            assert!(tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.is_ok());
+            kernel.park_tun().await.unwrap();
+            assert!(tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.is_err());
+            assert_eq!(kernel.child.id(), pid);
+        }
+        kernel.stop().await.unwrap();
     }
 }
 

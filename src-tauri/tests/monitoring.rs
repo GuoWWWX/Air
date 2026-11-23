@@ -1,6 +1,6 @@
 use air::{
     chains::probe_revisions,
-    monitoring::{Probe, Scheduler, BACKGROUND_INTERVAL, CONCURRENCY, TIMEOUT},
+    monitoring::{Probe, Scheduler, BACKGROUND_CONCURRENCY, BACKGROUND_INTERVAL, FOREGROUND_CONCURRENCY, TIMEOUT},
     storage::Store,
     subscriptions::parse,
 };
@@ -109,7 +109,7 @@ impl Drop for InFlight<'_> {
 
 #[tokio::test(start_paused = true)]
 async fn three_hundred_timeouts_release_every_slot() {
-    let scheduler = Scheduler::new(CONCURRENCY, TIMEOUT);
+    let scheduler = Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT);
     let active = Arc::new(Active::default());
     let start = Instant::now();
     let mut results = Vec::new();
@@ -118,6 +118,7 @@ async fn three_hundred_timeouts_release_every_slot() {
     scheduler
         .batch(
             0..300,
+            FOREGROUND_CONCURRENCY,
             |index| {
                 let active = active.clone();
                 scheduler.probe(
@@ -138,17 +139,17 @@ async fn three_hundred_timeouts_release_every_slot() {
 
     let elapsed = start.elapsed();
     let peak = active.peak.load(SeqCst);
-    assert_eq!(peak, CONCURRENCY);
+    assert_eq!(peak, FOREGROUND_CONCURRENCY);
     assert_eq!(active.current.load(SeqCst), 0);
     assert_eq!(results, vec![Probe::Timeout; 300]);
     assert_eq!(first, Some(TIMEOUT));
-    assert_eq!(elapsed, TIMEOUT * 300_u32.div_ceil(CONCURRENCY as u32));
+    assert_eq!(elapsed, TIMEOUT * 300_u32.div_ceil(FOREGROUND_CONCURRENCY as u32));
     println!("all timeout: completed=300 timeout=300 peak={peak} first={:?} elapsed={elapsed:?} (simulated clock)", first.unwrap());
 }
 
 #[tokio::test(start_paused = true)]
 async fn mixed_results_progress_and_preserve_the_global_limit() {
-    let scheduler = Scheduler::new(CONCURRENCY, TIMEOUT);
+    let scheduler = Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT);
     let active = Arc::new(Active::default());
     let start = Instant::now();
     let mut first = None;
@@ -157,6 +158,7 @@ async fn mixed_results_progress_and_preserve_the_global_limit() {
     scheduler
         .batch(
             0..300,
+            BACKGROUND_CONCURRENCY,
             |index| {
                 let active = active.clone();
                 scheduler.probe(
@@ -191,10 +193,10 @@ async fn mixed_results_progress_and_preserve_the_global_limit() {
 
     let peak = active.peak.load(SeqCst);
     assert_eq!(counts, [180, 60, 60]);
-    assert_eq!(peak, CONCURRENCY);
+    assert_eq!(peak, BACKGROUND_CONCURRENCY);
     assert_eq!(active.current.load(SeqCst), 0);
     assert_eq!(first, Some(Duration::from_millis(80)));
-    assert!(start.elapsed() < TIMEOUT * (60_u32.div_ceil(CONCURRENCY as u32) + 1));
+    assert!(start.elapsed() < TIMEOUT * (60_u32.div_ceil(BACKGROUND_CONCURRENCY as u32) + 1));
     println!("mixed: completed=300 available=180 timeout=60 failed=60 peak={peak} first={:?} elapsed={:?} (simulated clock)", first.unwrap(), start.elapsed());
 }
 
@@ -227,7 +229,7 @@ async fn cancelling_automatic_measurement_releases_the_slot_for_manual_measureme
 
 #[tokio::test(start_paused = true)]
 async fn concurrent_single_and_batch_probes_share_the_same_sample() {
-    let scheduler = Scheduler::new(CONCURRENCY, TIMEOUT);
+    let scheduler = Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT);
     let requests = Arc::new(AtomicUsize::new(0));
     let records = Arc::new(AtomicUsize::new(0));
     let run = || {
@@ -249,7 +251,7 @@ async fn concurrent_single_and_batch_probes_share_the_same_sample() {
     let (single, background) = tokio::join!(run(), async {
         let mut output = Vec::new();
         scheduler
-            .batch([()], |_| run(), |result| output.push(result))
+            .batch([()], BACKGROUND_CONCURRENCY, |_| run(), |result| output.push(result))
             .await;
         output
     });

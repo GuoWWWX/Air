@@ -15,6 +15,7 @@ import type {
   ProxyConnection,
   ProxyExit,
   ProxyStatus,
+  ProxyTarget,
   ProxyTelemetry,
   RoutingConfig,
   RoutingDocument,
@@ -988,6 +989,10 @@ export const browserAir = {
   },
 
   proxyTelemetry: async (): Promise<ProxyTelemetry | null> => sampleBrowserTelemetry(),
+  clearConnectionLogs: async (): Promise<void> => {
+    telemetryState.closedLogs = []
+  },
+  closeMatchingConnections: async (): Promise<void> => undefined,
 
   proxyControl: async (request: ProxyAction): Promise<ProxyStatus> => {
     await sleep(request.action === 'start' ? 150 : 80)
@@ -1031,9 +1036,10 @@ export const browserAir = {
   batch: async (_kernelPath: string, ids: string[]): Promise<void> => {
     if (progress.running) return
     const targetIds = ids.length ? ids : state.nodes.map(item => item.record.id)
+    const runBatchId = progress.batchId + 1
     progress = {
       running: true,
-      batchId: progress.batchId + 1,
+      batchId: runBatchId,
       activeIds: targetIds.slice(0, 3),
       completedIds: [],
       total: targetIds.length,
@@ -1044,9 +1050,11 @@ export const browserAir = {
       error: null,
     }
     for (let i = 0; i < targetIds.length; i += 2) {
+      if (!progress.running || progress.batchId !== runBatchId) return
       const chunk = targetIds.slice(i, i + 2)
       progress = { ...progress, activeIds: chunk }
       await sleep(280)
+      if (!progress.running || progress.batchId !== runBatchId) return
       for (const id of chunk) {
         const entry = state.nodes.find(item => item.record.id === id)
         if (entry) sampleNodeLatency(entry)
@@ -1059,11 +1067,16 @@ export const browserAir = {
         available: Math.min(targetIds.length, i + chunk.length),
       }
     }
+    if (!progress.running || progress.batchId !== runBatchId) return
     progress = {
       ...progress,
       running: false,
       activeIds: [],
     }
+  },
+
+  cancelBatch: async (): Promise<void> => {
+    progress = { ...progress, running: false, activeIds: [] }
   },
 
   probe: async (_kernelPath: string, id: string): Promise<void> => {
@@ -1120,7 +1133,21 @@ export const browserAir = {
     return { path: routingDoc.path, routing: config.parse(contents).routing, revision }
   },
 
-  previewRouting: async (config: RoutingConfig): Promise<string[]> => {
+  previewRouting: async (config: RoutingConfig, selected?: ProxyTarget): Promise<string[]> => {
+    const formatTarget = (target: RoutingConfig['fallback']) =>
+      target.kind === 'direct'
+        ? 'DIRECT'
+        : target.kind === 'reject'
+          ? 'REJECT'
+          : target.kind === 'selected'
+            ? 'GLOBAL'
+            : target.kind === 'node'
+              ? state.nodes.find(n => n.record.id === target.id)?.record.name ?? target.id
+              : target.kind === 'residential'
+                ? 'air-residential-exit'
+                : target.kind === 'group'
+                  ? target.name
+                  : '订阅默认出口'
     const lines = config.rules
       .filter(rule => rule.enabled && rule.value.trim())
       .map(rule => {
@@ -1134,31 +1161,47 @@ export const browserAir = {
                 : rule.matcher === 'processName'
                   ? 'PROCESS-NAME'
                   : 'PROCESS-PATH'
-        const target =
-          rule.target.kind === 'direct'
-            ? 'DIRECT'
-            : rule.target.kind === 'reject'
-              ? 'REJECT'
-            : rule.target.kind === 'residential'
-              ? 'air-residential-exit'
-              : rule.target.kind === 'group'
-                ? rule.target.name
-                : 'MATCH'
+        const target = formatTarget(rule.target)
+        const hostVal = rule.hostValue?.trim()
+        if (rule.hostMatcher && hostVal) {
+          const hostPrefix =
+            rule.hostMatcher === 'domain'
+              ? 'DOMAIN'
+              : rule.hostMatcher === 'domainSuffix'
+                ? 'DOMAIN-SUFFIX'
+                : 'IP-CIDR'
+          const hostClause = rule.hostMatcher === 'ip' ? `${hostPrefix},${hostVal},no-resolve` : `${hostPrefix},${hostVal}`
+          return `AND,((${prefix},${rule.value.trim()}),(${hostClause})),${target}`
+        }
         return `${prefix},${rule.value.trim()},${target}`
       })
-    lines.push(
-      `MATCH,${
-        config.fallback.kind === 'direct'
-          ? 'DIRECT'
-          : config.fallback.kind === 'reject'
-            ? 'REJECT'
-          : config.fallback.kind === 'residential'
-            ? 'air-residential-exit'
-            : config.fallback.kind === 'group'
-              ? config.fallback.name
-              : '订阅默认出口'
-      }`,
-    )
+    const exit = selected?.kind === 'node' ? selected.id : selected?.kind === 'chain' ? selected.hops.at(-1) : undefined
+    const sourceId = exit ? state.nodes.find(node => node.record.id === exit)?.record.sourceId : config.subscriptionId
+    const yaml = sourceId && state.yamls[sourceId]
+    const profile = yaml ? (await import('yaml')).parse(yaml.local ?? yaml.original) : undefined
+    const inherited: string[] = Array.isArray(profile?.rules) ? profile.rules.filter((rule: unknown) => typeof rule === 'string') : []
+    const end = inherited.findIndex(line => /^MATCH\s*,/i.test(line.trim()))
+    const formatPolicy = (line: string) => {
+      if (!exit) return line
+      const fields = line.split(',').map(field => field.trim())
+      let index = fields.length - 1
+      while (index > 0 && ['no-resolve', 'src'].includes(fields[index])) index--
+      const group = state.groups.find(group => group.sourceId === sourceId && group.name === fields[index])
+      if (group?.strategy === 'select') {
+        const [first] = group.memberNames ?? group.members
+        fields[index] = ['DIRECT', 'REJECT', 'REJECT-DROP'].includes(first) ? first : 'GLOBAL'
+      }
+      return fields.join(',')
+    }
+    if (exit) lines.push('GEOIP,private,DIRECT,no-resolve', 'GEOSITE,private,DIRECT')
+    if (exit || config.inheritRules) {
+      lines.push(...(end < 0 ? inherited : inherited.slice(0, end)).map(formatPolicy))
+    }
+    if (exit && !inherited.length) lines.push('GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve')
+    const fallback = exit ? (selected?.kind === 'chain' ? 'air-residential-exit' : 'GLOBAL') : formatTarget(config.fallback)
+    const terminal = end >= 0 && (exit || config.fallback.kind === 'subscription') ? formatPolicy(inherited[end]) : `MATCH,${fallback}`
+    lines.push(terminal)
+    if (exit && !/^MATCH,(DIRECT|REJECT|REJECT-DROP)$/i.test(terminal)) lines.push('MATCH,REJECT')
     return lines
   },
 
@@ -1172,6 +1215,11 @@ const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-chrome',
       app: 'chrome.exe',
+      processName: 'chrome.exe',
+      host: 'chatgpt.com',
+      network: 'tcp',
+      start: new Date(now - 25_000).toISOString(),
+      closed: false,
       target: 'chatgpt.com:443',
       rule: 'PROCESS-NAME · 链式出口',
       path: ['默认多跳链路'],
@@ -1181,6 +1229,11 @@ const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-code',
       app: 'Code.exe',
+      processName: 'Code.exe',
+      host: 'copilot-proxy.githubusercontent.com',
+      network: 'tcp',
+      start: new Date(now - 65_000).toISOString(),
+      closed: false,
       target: 'copilot-proxy.githubusercontent.com:443',
       rule: 'DOMAIN-SUFFIX · githubusercontent.com',
       path: ['亚太日常 · 香港 BGP 01'],
@@ -1190,6 +1243,11 @@ const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-tg',
       app: 'Telegram.exe',
+      processName: 'Telegram.exe',
+      destinationIp: '149.154.167.91',
+      network: 'tcp',
+      start: new Date(now - 120_000).toISOString(),
+      closed: false,
       target: '149.154.167.91:443',
       rule: 'PROCESS-NAME · 链式出口',
       path: ['默认多跳链路'],
@@ -1199,6 +1257,11 @@ const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-git',
       app: 'git.exe',
+      processName: 'git.exe',
+      host: 'github.com',
+      network: 'tcp',
+      start: new Date(now - 180_000).toISOString(),
+      closed: false,
       target: 'github.com:443',
       rule: 'DOMAIN-SUFFIX · github.com',
       path: ['香港节点 · 香港 IEPL 07'],
@@ -1214,6 +1277,7 @@ const telemetryState = {
   uploadTotal: 0,
   downloadTotal: 0,
   connections: demoConnections,
+  closedLogs: [] as ProxyConnection[],
 }
 
 function stepBrowserTraffic() {
@@ -1241,6 +1305,10 @@ function sampleBrowserTelemetry(): ProxyTelemetry | null {
   if (!proxyState.sessionId) return null
   stepBrowserTraffic()
   const hops = proxyState.outbound?.hops.map(hop => hop.name) ?? []
+  const mappedConnections = telemetryState.connections.map((item, index) => ({
+    ...item,
+    path: proxyState.mode === 'direct' ? ['DIRECT'] : hops.length && (index === 0 || index === 2) ? hops : item.path,
+  }))
 
   return {
     sessionId: proxyState.sessionId,
@@ -1251,10 +1319,8 @@ function sampleBrowserTelemetry(): ProxyTelemetry | null {
     uploadTotal: telemetryState.uploadTotal,
     downloadTotal: telemetryState.downloadTotal,
     memoryBytes: 38 * 1024 * 1024 + randomInt(120, 960) * 1024,
-    connections: telemetryState.connections.map((item, index) => ({
-      ...item,
-      path: proxyState.mode === 'direct' ? ['DIRECT'] : hops.length && (index === 0 || index === 2) ? hops : item.path,
-    })),
+    connections: mappedConnections,
+    connectionLogs: [...mappedConnections, ...telemetryState.closedLogs],
   }
 }
 

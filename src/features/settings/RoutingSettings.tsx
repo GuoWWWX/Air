@@ -1,3 +1,5 @@
+import { tr } from '@/shared/i18n/messages'
+import { displayPath } from '@/shared/lib/displayPath'
 import {
   ArrowDown,
   ArrowLeft,
@@ -18,7 +20,10 @@ import { showMessage } from '@/shared/ui/message'
 import { Separator } from '@/shared/ui/separator'
 import {
   air,
+  type HostMatcher,
   type Library,
+  type NodeRecord,
+  type ProxyTarget,
   type RouteRule,
   type RouteTarget,
   type RoutingConfig,
@@ -26,20 +31,23 @@ import {
 } from '@/platform/desktop/air'
 import { AirCheckbox } from '../../shared/ui/AirCheckbox'
 import { AirSelect } from '../../shared/ui/AirSelect'
+import { PageHeaderIcon } from '@/shared/ui/PageHeaderIcon'
 
 interface Props {
   sources: Library['sources']
   groups: Library['groups']
+  nodes: NodeRecord[]
+  target: ProxyTarget
   bindApplication: boolean
   onBack: () => void
 }
 
 const matcherOptions = [
-  { value: 'domain', label: '完整域名', example: 'intranet.example.com' },
-  { value: 'domainSuffix', label: '域名及子域名', example: 'example.com' },
-  { value: 'ip', label: 'IP 或网段', example: '10.0.0.0/8' },
-  { value: 'processName', label: '程序文件名', example: 'chrome.exe' },
-  { value: 'processPath', label: '程序路径', example: 'C:\\Program Files\\Example\\example.exe' },
+  { value: 'domain', get label() { return tr('完整域名') }, example: 'intranet.example.com' },
+  { value: 'domainSuffix', get label() { return tr('域名及子域名') }, example: 'example.com' },
+  { value: 'ip', get label() { return tr('IP 或网段') }, example: '10.0.0.0/8' },
+  { value: 'processName', get label() { return tr('程序文件名') }, example: 'chrome.exe' },
+  { value: 'processPath', get label() { return tr('程序路径') }, example: 'C:\\Program Files\\Example\\example.exe' },
 ] as const
 
 function newRule(application = false): RouteRule {
@@ -52,37 +60,54 @@ function newRule(application = false): RouteRule {
 }
 
 function targetKey(target: RouteTarget) {
-  return target.kind === 'group' ? JSON.stringify([target.sourceId, target.name]) : target.kind
+  if (target.kind === 'group') return JSON.stringify([target.sourceId, target.name])
+  if (target.kind === 'node') return `node:${target.id}`
+  return target.kind
 }
 
 function TargetField({
   label,
   target,
   groups,
+  nodes,
   fallback = false,
+  allowSubscription = false,
   onChange,
 }: {
   label: string
   target: RouteTarget
   groups: Library['groups']
+  nodes: NodeRecord[]
   fallback?: boolean
+  allowSubscription?: boolean
   onChange: (target: RouteTarget) => void
 }) {
   const choices: { target: RouteTarget; label: string; disabled?: boolean }[] = [
-    { target: { kind: 'direct' }, label: '直连' },
-    { target: { kind: 'reject' }, label: '拒绝连接' },
-    { target: { kind: 'residential' }, label: '链式出口' },
+    { target: { kind: 'direct' }, label: tr('直连') },
+    { target: { kind: 'reject' }, label: tr('拒绝连接') },
+    { target: { kind: 'selected' }, label: tr('当前代理出口') },
+    { target: { kind: 'residential' }, label: tr('链式出口') },
     ...groups.map(group => ({
       target: { kind: 'group' as const, sourceId: group.sourceId, name: group.name },
-      label: group.name,
+      label: `${group.name} (${nodes.find(n => n.sourceId === group.sourceId)?.source ?? group.sourceId})`,
     })),
+    ...nodes
+      .filter(node => !node.subscriptionNotice)
+      .map(node => ({
+        target: { kind: 'node' as const, id: node.id },
+        label: `${node.name} (${node.source})`,
+      })),
   ]
-  if (fallback) {
-    choices.splice(3, 0, { target: { kind: 'subscription' }, label: '沿用订阅默认出口' })
+  if (fallback && allowSubscription) {
+    choices.splice(4, 0, { target: { kind: 'subscription' }, label: tr('沿用订阅默认出口') })
   }
   const value = targetKey(target)
-  if (target.kind === 'group' && !choices.some(choice => targetKey(choice.target) === value)) {
-    choices.push({ target, label: `${target.name}（来源不可用）`, disabled: true })
+  if (target.kind === 'subscription' && !allowSubscription) {
+    choices.push({ target, label: tr('沿用订阅默认出口（未选订阅）'), disabled: true })
+  } else if (target.kind === 'group' && !choices.some(choice => targetKey(choice.target) === value)) {
+    choices.push({ target, label: tr("{0}（来源不可用）", target.name), disabled: true })
+  } else if (target.kind === 'node' && !choices.some(choice => targetKey(choice.target) === value)) {
+    choices.push({ target, label: tr('指定节点（不可用）'), disabled: true })
   }
 
   return (
@@ -105,32 +130,54 @@ function TargetField({
   )
 }
 
-export function RoutingSettings({ sources, groups, bindApplication, onBack }: Props) {
-  const [draft, setDraft] = useState<RoutingConfig>()
-  const [path, setPath] = useState('')
-  const [revision, setRevision] = useState('')
+let cachedRoutingDoc: RoutingDocument | undefined
+
+export function RoutingSettings({ sources, groups, nodes, target, bindApplication, onBack }: Props) {
+  const [draft, setDraft] = useState<RoutingConfig | undefined>(() =>
+    cachedRoutingDoc
+      ? (bindApplication
+          ? { ...cachedRoutingDoc.routing, rules: [...cachedRoutingDoc.routing.rules, newRule(true)] }
+          : cachedRoutingDoc.routing)
+      : undefined,
+  )
+  const [path, setPath] = useState(() => (cachedRoutingDoc ? displayPath(cachedRoutingDoc.path) : ''))
+  const [revision, setRevision] = useState(() => cachedRoutingDoc?.revision ?? '')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<string[]>()
   const dragIndex = useRef<number | undefined>(undefined)
+  const draftRef = useRef(draft)
+  const revisionRef = useRef(revision)
+  const pathRef = useRef(path)
+  const baselineDraftJsonRef = useRef<string | undefined>(draft ? JSON.stringify(draft) : undefined)
+  const wasBoundRef = useRef(bindApplication)
+  draftRef.current = draft
+  revisionRef.current = revision
+  pathRef.current = path
 
   const subscriptionSources = sources.filter(
     source => source.id !== 'custom' && source.details?.kind !== 'custom',
   )
-  const activeGroups = groups.filter(group => group.sourceId === draft?.subscriptionId)
+  const automatic = target.kind !== 'routing'
+  const exitId = target.kind === 'node' ? target.id : target.kind === 'chain' ? target.hops.at(-1) : undefined
+  const exitSource = nodes.find(node => node.id === exitId)?.sourceId
+  const sourceName = subscriptionSources.find(source => source.id === exitSource)?.name
+  useEffect(() => { setPreview(undefined) }, [automatic, exitId])
   const sourceMissing =
     Boolean(draft?.subscriptionId) &&
     !subscriptionSources.some(source => source.id === draft?.subscriptionId)
   const sourceOptions = [
-    { value: 'none', label: '无', disabled: false },
+    { value: 'none', label: tr('无'), disabled: false },
     ...subscriptionSources.map(source => ({ value: source.id, label: source.name, disabled: false })),
   ]
   if (sourceMissing && draft?.subscriptionId) {
-    sourceOptions.push({ value: draft.subscriptionId, label: '订阅已不存在', disabled: true })
+    sourceOptions.push({ value: draft.subscriptionId, label: tr('订阅已不存在'), disabled: true })
   }
 
   function accept(document: RoutingDocument) {
+    cachedRoutingDoc = document
+    baselineDraftJsonRef.current = JSON.stringify(document.routing)
     setDraft(document.routing)
-    setPath(document.path)
+    setPath(displayPath(document.path))
     setRevision(document.revision)
     setPreview(undefined)
   }
@@ -141,11 +188,12 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
       const document = await air.routingSettings()
       accept(document)
       if (bind) {
-        setDraft({ ...document.routing, rules: [...document.routing.rules, newRule(true)] })
+        const boundDraft = { ...document.routing, rules: [...document.routing.rules, newRule(true)] }
+        setDraft(boundDraft)
       } else {
-        await air.previewRouting(document.routing)
+        await air.previewRouting(document.routing, target)
       }
-      if (manual) showMessage({ type: 'success', title: '分流规则已重新读取' })
+      if (manual) showMessage({ type: 'success', title: tr('分流规则已重新读取') })
     } catch (error) {
       showMessage({ type: 'error', title: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -154,8 +202,33 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
   }
 
   useEffect(() => {
-    void air.routingPath().then(setPath).catch(error => showMessage({ type: 'error', title: error instanceof Error ? error.message : String(error) }))
-    void reload(bindApplication)
+    const justBound = !wasBoundRef.current && bindApplication
+    wasBoundRef.current = bindApplication
+    if (!cachedRoutingDoc) {
+      void air.routingPath().then(nextPath => setPath(displayPath(nextPath))).catch(error => showMessage({ type: 'error', title: error instanceof Error ? error.message : String(error) }))
+      void reload(bindApplication)
+      return
+    }
+    let active = true
+    void air.routingSettings().then(
+      document => {
+        cachedRoutingDoc = document
+        if (!active) return
+        const nextPath = displayPath(document.path)
+        const untouched = !draftRef.current || JSON.stringify(draftRef.current) === baselineDraftJsonRef.current
+        if (untouched && (document.revision !== revisionRef.current || justBound)) {
+          accept(document)
+          if (bindApplication) {
+            const boundDraft = { ...document.routing, rules: [...document.routing.rules, newRule(true)] }
+            setDraft(boundDraft)
+          }
+          return
+        }
+        if (nextPath !== pathRef.current) setPath(nextPath)
+      },
+      () => undefined,
+    )
+    return () => { active = false }
   }, [bindApplication])
 
   function update(change: (current: RoutingConfig) => RoutingConfig) {
@@ -188,16 +261,26 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
     })
   }
 
+  const dirty = Boolean(
+    draft && baselineDraftJsonRef.current && JSON.stringify(draft) !== baselineDraftJsonRef.current,
+  )
+
   async function apply(save: boolean) {
     if (!draft) return
+    if (save && !automatic && !draft.subscriptionId && draft.fallback.kind === 'subscription') {
+      showMessage({
+        type: 'error',
+        title: tr('未选择订阅规则来源时，默认出口不能为「沿用订阅默认出口」'),
+      })
+      return
+    }
     setBusy(true)
     try {
       if (save) {
-        accept(await air.saveRouting(draft, revision))
-        showMessage({ type: 'success', title: '分流规则已保存' })
+        accept(await air.saveRouting(draft, revision, target))
+        showMessage({ type: 'success', title: tr('分流规则已保存') })
       } else {
-        setPreview(await air.previewRouting(draft))
-        showMessage({ type: 'success', title: '规则预览已生成' })
+        setPreview(await air.previewRouting(draft, target))
       }
     } catch (error) {
       showMessage({ type: 'error', title: error instanceof Error ? error.message : String(error) })
@@ -209,9 +292,9 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
   async function copyPath() {
     try {
       await navigator.clipboard.writeText(path)
-      showMessage({ type: 'success', title: '配置文件路径已复制' })
+      showMessage({ type: 'success', title: tr('配置文件路径已复制') })
     } catch {
-      showMessage({ type: 'warning', title: '可以选中上方的路径并复制' })
+      showMessage({ type: 'warning', title: tr('可以选中上方的路径并复制') })
     }
   }
 
@@ -226,29 +309,28 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
             onClick={onBack}
           >
             <ArrowLeft data-icon="inline-start" />
-            {bindApplication ? '返回链路' : '返回设置'}
+            {bindApplication ? tr('返回链路') : tr('返回设置')}
           </Button>
-          <h1 className="text-[24px] font-bold tracking-tight text-foreground">分流规则</h1>
+          <div className="flex items-center gap-2.5">
+            <PageHeaderIcon kind="routing" size="subpage" />
+            <h1 className="text-[24px] font-bold tracking-tight text-foreground">{tr("分流规则")}</h1>
+          </div>
         </header>
 
         <Card className="gap-3 p-4">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-foreground">全局配置文件</h2>
+            <h2 className="text-sm font-semibold text-foreground">{tr("全局配置文件")}</h2>
           </div>
           {path && (
-            <code className="block break-all rounded-[7px] border border-border-subtle bg-input-bg px-3 py-2 text-xs text-muted-foreground">
+            <code className="block break-all rounded-[7px] border border-border bg-muted/55 px-3 py-2 text-xs text-muted-foreground dark:bg-input-bg">
               {path}
             </code>
           )}
           <div className="flex items-center gap-2">
             <Button type="button" variant="secondary" size="sm" disabled={!path} onClick={() => void copyPath()}>
-              <Copy data-icon="inline-start" />
-              复制路径
-            </Button>
+              <Copy data-icon="inline-start" />{tr("复制路径")}</Button>
             <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => void reload(false, true)}>
-              <RefreshCw data-icon="inline-start" />
-              重新读取
-            </Button>
+              <RefreshCw data-icon="inline-start" />{tr("重新读取")}</Button>
           </div>
         </Card>
 
@@ -262,48 +344,62 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
               }}
             >
               <fieldset disabled={busy} className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {automatic ? (
                   <div className="flex flex-col gap-1.5">
-                    <Label>订阅规则来源</Label>
-                    <AirSelect
-                      label="订阅规则来源"
-                      value={draft.subscriptionId ?? 'none'}
-                      options={sourceOptions}
-                      onChange={next =>
-                        update(current => ({
-                          ...current,
-                          subscriptionId: next === 'none' ? null : next,
-                          inheritRules: next !== 'none',
-                        }))
-                      }
-                    />
+                    <Label>{tr("订阅规则来源")}</Label>
+                    <span className="text-sm">{sourceName ?? tr("无")}</span>
+                    <p className="text-xs text-muted-foreground">{tr('先匹配自定义规则，再匹配当前节点所属订阅的规则。')}</p>
                   </div>
-                  <TargetField
-                    label="默认出口"
-                    target={draft.fallback}
-                    groups={activeGroups}
-                    fallback
-                    onChange={fallback => update(current => ({ ...current, fallback }))}
-                  />
-                </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <div className="flex flex-col gap-1.5">
+                        <Label>{tr("订阅规则来源")}</Label>
+                        <AirSelect
+                          label={tr("订阅规则来源")}
+                          value={draft.subscriptionId ?? 'none'}
+                          options={sourceOptions}
+                          onChange={next =>
+                            update(current => ({
+                              ...current,
+                              subscriptionId: next === 'none' ? null : next,
+                              inheritRules: next !== 'none',
+                              fallback:
+                                next === 'none' && current.fallback.kind === 'subscription'
+                                  ? { kind: 'selected' }
+                                  : current.fallback,
+                            }))
+                          }
+                        />
+                      </div>
+                      <TargetField
+                        label={tr("默认出口")}
+                        target={draft.fallback}
+                        groups={groups}
+                        nodes={nodes}
+                        fallback
+                        allowSubscription={Boolean(draft.subscriptionId && !sourceMissing)}
+                        onChange={fallback => update(current => ({ ...current, fallback }))}
+                      />
+                    </div>
 
-                <AirCheckbox
-                  label="在自定义规则之后匹配该订阅的规则"
-                  checked={draft.inheritRules}
-                  disabled={!draft.subscriptionId}
-                  onChange={inheritRules => update(current => ({ ...current, inheritRules }))}
-                >
-                  <span className="text-xs text-foreground">在自定义规则之后匹配该订阅的规则</span>
-                </AirCheckbox>
+                    <AirCheckbox
+                      label={tr("在自定义规则之后匹配该订阅的规则")}
+                      checked={draft.inheritRules}
+                      disabled={!draft.subscriptionId}
+                      onChange={inheritRules => update(current => ({ ...current, inheritRules }))}
+                    >
+                      <span className="text-xs text-foreground">{tr("在自定义规则之后匹配该订阅的规则")}</span>
+                    </AirCheckbox>
+                  </>
+                )}
 
                 <Separator />
 
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex flex-col gap-0.5">
-                    <h2 className="text-sm font-semibold text-foreground">自定义规则</h2>
-                    <span className="text-[12px] text-muted-foreground">
-                      从上到下匹配，先匹配的规则优先
-                    </span>
+                    <h2 className="text-sm font-semibold text-foreground">{tr("自定义规则")}</h2>
+                    <span className="text-[12px] text-muted-foreground">{tr("从上到下匹配，先匹配的规则优先")}</span>
                   </div>
                   <Button
                     type="button"
@@ -313,9 +409,7 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                       update(current => ({ ...current, rules: [...current.rules, newRule()] }))
                     }
                   >
-                    <Plus data-icon="inline-start" />
-                    添加规则
-                  </Button>
+                    <Plus data-icon="inline-start" />{tr("添加规则")}</Button>
                 </div>
 
                 <div className="flex flex-col gap-2.5">
@@ -328,7 +422,11 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                         if (dragIndex.current !== undefined) reorder(dragIndex.current, index)
                         dragIndex.current = undefined
                       }}
-                      className="flex flex-col gap-2.5 rounded-[9px] border border-border bg-muted/30 p-3"
+                      className={
+                        rule.enabled
+                          ? 'flex flex-col gap-2.5 rounded-[9px] border border-border bg-muted/55 p-3 transition-opacity dark:bg-background/60'
+                          : 'flex flex-col gap-2.5 rounded-[9px] border border-border-subtle bg-muted/30 p-3 opacity-70 transition-opacity'
+                      }
                     >
                       <div className="flex items-center gap-2">
                         <span
@@ -345,7 +443,7 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                           <GripVertical className="size-4" aria-hidden="true" />
                         </span>
                         <AirCheckbox
-                          label={`规则 ${index + 1}`}
+                          label={tr("规则 {0}", index + 1)}
                           checked={rule.enabled}
                           onChange={enabled => changeRule(index, { enabled })}
                         >
@@ -353,13 +451,19 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                             #{index + 1}
                           </Badge>
                         </AirCheckbox>
+                        {(rule.matcher === 'processName' || rule.matcher === 'processPath') && rule.hostMatcher && (
+                          <Badge variant="accent">{tr('复合规则')}</Badge>
+                        )}
+                        {!rule.enabled && (
+                          <Badge variant="default">{tr('已停用')}</Badge>
+                        )}
 
                         <div className="ml-auto flex items-center gap-1">
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon-sm"
-                            aria-label="上移"
+                            aria-label={tr("上移")}
                             disabled={index === 0}
                             onClick={() => reorder(index, index - 1)}
                           >
@@ -369,7 +473,7 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                             type="button"
                             variant="ghost"
                             size="icon-sm"
-                            aria-label="下移"
+                            aria-label={tr("下移")}
                             disabled={index === draft.rules.length - 1}
                             onClick={() => reorder(index, index + 1)}
                           >
@@ -379,7 +483,7 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                             type="button"
                             variant="ghost"
                             size="icon-sm"
-                            aria-label="删除规则"
+                            aria-label={tr("删除规则")}
                             onClick={() =>
                               update(current => ({
                                 ...current,
@@ -393,18 +497,25 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1.45fr_1fr]">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)_minmax(0,1fr)]">
                         <div className="flex flex-col gap-1.5">
-                          <Label>匹配方式</Label>
+                          <Label>{tr("匹配方式")}</Label>
                           <AirSelect
-                            label="匹配方式"
+                            label={tr("匹配方式")}
                             value={rule.matcher}
                             options={matcherOptions}
-                            onChange={matcher => changeRule(index, { matcher })}
+                            onChange={matcher =>
+                              changeRule(index, {
+                                matcher,
+                                ...(matcher !== 'processName' && matcher !== 'processPath'
+                                  ? { hostMatcher: undefined, hostValue: undefined }
+                                  : {}),
+                              })
+                            }
                           />
                         </div>
                         <div className="flex flex-col gap-1.5">
-                          <Label>匹配值</Label>
+                          <Label>{tr("匹配值")}</Label>
                           <Input
                             required={rule.enabled}
                             spellCheck={false}
@@ -416,23 +527,58 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
                           />
                         </div>
                         <TargetField
-                          label="出站方式"
+                          label={tr("出站方式")}
                           target={rule.target}
-                          groups={activeGroups}
+                          groups={groups}
+                          nodes={nodes}
                           onChange={target => changeRule(index, { target })}
                         />
                       </div>
+                      {(rule.matcher === 'processName' || rule.matcher === 'processPath') && (
+                        <div className="grid grid-cols-1 gap-2 border-t border-border-subtle pt-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
+                          <div className="flex flex-col gap-1.5">
+                            <Label>{tr("限定目标（可选，按域名分流）")}</Label>
+                            <AirSelect
+                              label={tr("限定目标方式")}
+                              value={rule.hostMatcher ?? 'none'}
+                              options={[
+                                { value: 'none', label: tr('不限（整个软件）') },
+                                { value: 'domainSuffix', label: tr('域名及子域名') },
+                                { value: 'domain', label: tr('完整域名') },
+                                { value: 'ip', label: tr('IP 或网段') },
+                              ]}
+                              onChange={next =>
+                                changeRule(
+                                  index,
+                                  next === 'none'
+                                    ? { hostMatcher: undefined, hostValue: undefined }
+                                    : { hostMatcher: next as HostMatcher, hostValue: rule.hostValue ?? '' },
+                                )
+                              }
+                            />
+                          </div>
+                          {rule.hostMatcher && (
+                            <div className="flex flex-col gap-1.5">
+                              <Label>{tr("限定域名或 IP")}</Label>
+                              <Input
+                                required={rule.enabled}
+                                spellCheck={false}
+                                value={rule.hostValue ?? ''}
+                                placeholder={rule.hostMatcher === 'ip' ? '10.0.0.0/8' : 'example.com'}
+                                onChange={e => changeRule(index, { hostValue: e.target.value })}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
 
-                <div className="flex items-center justify-end gap-2 pt-1">
-                  <Button type="button" variant="secondary" onClick={() => void apply(false)}>
-                    预览规则
-                  </Button>
-                  <Button type="submit" variant="default">
-                    保存
-                  </Button>
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                  {dirty && <Badge variant="warning" className="mr-auto">{tr('有未保存修改')}</Badge>}
+                  <Button type="button" variant="secondary" onClick={() => void apply(false)}>{tr("预览规则")}</Button>
+                  <Button type="submit" variant="default">{tr("保存")}</Button>
                 </div>
               </fieldset>
             </form>
@@ -441,7 +587,7 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
 
         {preview && (
           <Card className="gap-2.5 p-4">
-            <h2 className="text-sm font-semibold text-foreground">Mihomo 规则顺序</h2>
+            <h2 className="text-sm font-semibold text-foreground">{tr("Mihomo 规则顺序")}</h2>
             <ol className="flex flex-col gap-1 pl-5 text-xs text-foreground">
               {preview.map((line, index) => (
                 <li key={index} className="break-all">
@@ -452,9 +598,7 @@ export function RoutingSettings({ sources, groups, bindApplication, onBack }: Pr
           </Card>
         )}
 
-        <p className="text-center text-[12px] text-muted-foreground">
-          规则可保存和预览。系统流量接管待接入。
-        </p>
+        <p className="text-center text-[12px] text-muted-foreground">{tr("规则保存并启用后生效；新建连接将按以上顺序从上到下匹配出口。")}</p>
       </div>
     </section>
   )

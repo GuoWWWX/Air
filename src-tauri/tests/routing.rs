@@ -1,7 +1,8 @@
 use air::{
-    routing::{Matcher, RoutingConfig, RoutingFile, Rule, Target},
+    routing::{HostMatcher, Matcher, RoutingConfig, RoutingFile, Rule, Target},
     subscriptions::parse,
 };
+use std::collections::HashSet;
 
 #[test]
 fn deleting_the_routing_source_detaches_inheritance_and_rejects_only_its_outbounds() {
@@ -38,6 +39,8 @@ fn rule(matcher: Matcher, value: &str, target: Target) -> Rule {
         enabled: true,
         matcher,
         value: value.into(),
+        host_matcher: None,
+        host_value: None,
         target,
     }
 }
@@ -160,4 +163,72 @@ routing:
     let root: serde_yaml::Value =
         serde_yaml::from_str(&fs::read_to_string(file.path()).unwrap()).unwrap();
     assert_eq!(root["appearance"]["theme"].as_str(), Some("dark"));
+}
+
+#[test]
+fn composite_process_host_rules_and_node_targets_compile_and_detach() {
+    let subscription = parse(
+        "sub".into(),
+        "Sub".into(),
+        "proxies:\n  - {name: HK, type: http, server: 127.0.0.1, port: 8080}\n",
+    )
+    .unwrap();
+    let node_id = subscription.nodes[0].id.clone();
+    let mut config = RoutingConfig {
+        subscription_id: None,
+        inherit_rules: false,
+        fallback: Target::Selected,
+        rules: vec![
+            Rule {
+                enabled: true,
+                matcher: Matcher::ProcessName,
+                value: "chrome.exe".into(),
+                host_matcher: Some(HostMatcher::DomainSuffix),
+                host_value: Some("Github.COM".into()),
+                target: Target::Node { id: node_id.clone() },
+            },
+            Rule {
+                enabled: true,
+                matcher: Matcher::ProcessName,
+                value: "chrome.exe".into(),
+                host_matcher: Some(HostMatcher::Ip),
+                host_value: Some("10.0.0.1".into()),
+                target: Target::Direct,
+            },
+            rule(Matcher::ProcessName, "chrome.exe", Target::Selected),
+        ],
+    };
+    let compiled = config.compile(&[subscription]).unwrap();
+    assert_eq!(
+        compiled,
+        [
+            format!("AND,((PROCESS-NAME,chrome.exe),(DOMAIN-SUFFIX,github.com)),air-{node_id}"),
+            "AND,((PROCESS-NAME,chrome.exe),(IP-CIDR,10.0.0.1/32,no-resolve)),DIRECT".into(),
+            "PROCESS-NAME,chrome.exe,GLOBAL".into(),
+            "MATCH,GLOBAL".into(),
+        ]
+    );
+    assert!(config.detach_nodes(&HashSet::from([node_id])));
+    assert!(matches!(config.rules[0].target, Target::Reject));
+}
+
+#[test]
+fn composite_host_rule_requires_process_matcher_and_complete_host() {
+    let bad_domain_with_host = Rule {
+        host_matcher: Some(HostMatcher::Domain),
+        host_value: Some("a.com".into()),
+        ..rule(Matcher::Domain, "b.com", Target::Direct)
+    };
+    let bad_half_host = Rule {
+        host_matcher: Some(HostMatcher::Domain),
+        host_value: None,
+        ..rule(Matcher::ProcessName, "chrome.exe", Target::Direct)
+    };
+    for bad in [bad_domain_with_host, bad_half_host] {
+        let cfg = RoutingConfig {
+            rules: vec![bad],
+            ..RoutingConfig::default()
+        };
+        assert!(cfg.compile(&[]).is_err());
+    }
 }

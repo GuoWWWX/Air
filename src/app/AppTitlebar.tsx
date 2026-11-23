@@ -1,7 +1,7 @@
+import { tr } from '@/shared/i18n/messages'
 import { isTauri } from '@tauri-apps/api/core'
-import airLogo from '@/assets/air-m1.svg?no-inline'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Copy, Minus, Square, X } from 'lucide-react'
+import { Copy, Minus, Network, Plug, Square, X } from 'lucide-react'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { cn } from '@/shared/lib/utils'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/shared/ui/dropdown-menu'
@@ -14,7 +14,6 @@ import type { ProxyModeAction, ProxyStatus, ProxyTraffic } from '@/platform/desk
 import { captureModeLabel, proxyModes, proxyPowerTone } from '@/shared/proxy/modes'
 import { TunServiceButton } from '../features/proxy/TunServiceButton'
 
-const modes = proxyModes.map(({ value, label }) => ({ value, label }))
 
 export function AppTitlebar({
   onError,
@@ -39,6 +38,7 @@ export function AppTitlebar({
   onTunSetup: () => void
   onToggle: () => void
 }) {
+  const modes = proxyModes.map(({ value, label }) => ({ value, label }))
   const [maximized, setMaximized] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -66,8 +66,8 @@ export function AppTitlebar({
     return () => window.removeEventListener('resize', refresh)
   }, [refresh])
 
-  const maximizeLabel = maximized ? '还原窗口' : '最大化'
-  const nodeName = outboundName ?? (onClearNode ? '节点已失效' : undefined)
+  const maximizeLabel = maximized ? tr('还原窗口') : tr('最大化')
+  const nodeName = outboundName ?? (onClearNode ? tr('节点已失效') : undefined)
   const nodeLabel = nodeName && (
     <span className="block min-w-0 truncate">
       <FlagText text={nodeName} />
@@ -76,33 +76,24 @@ export function AppTitlebar({
 
   return (
     <header className="flex h-10.5 shrink-0 items-center border-b border-border bg-shell pl-3.5 select-none">
-      <div className="flex items-center gap-2 self-stretch" data-tauri-drag-region>
-        <img src={airLogo} alt="" draggable={false} className="pointer-events-none size-6 shrink-0" />
-        <strong className="pointer-events-none text-[15px] font-bold tracking-tight text-foreground">
-          Air
-        </strong>
-      </div>
-
       {nodeName && (
         <div
           role="status"
-          aria-label={`当前节点：${nodeName}`}
+          aria-label={tr("当前节点：{0}", nodeName)}
           title={nodeName}
-          className="ml-3 flex min-w-0 max-w-72 items-center gap-2 border-l border-border pl-3 text-xs font-medium text-secondary-foreground"
+          className="flex min-w-0 max-w-72 items-center gap-2 text-xs font-medium text-secondary-foreground"
         >
           {onClearNode ? (
             <DropdownMenu>
               <DropdownMenuTrigger
-                aria-label={`当前节点：${nodeName}`}
+                aria-label={tr("当前节点：{0}", nodeName)}
                 className="min-w-0 rounded-sm text-left outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60"
               >
                 {nodeLabel}
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
                 <DropdownMenuItem onClick={onClearNode}>
-                  <X />
-                  清除选择
-                </DropdownMenuItem>
+                  <X />{tr("清除选择")}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           ) : nodeLabel}
@@ -113,10 +104,10 @@ export function AppTitlebar({
       <div className="min-w-4 flex-1 self-stretch" data-tauri-drag-region />
 
       <div className="flex items-center gap-2 whitespace-nowrap">
-        <div className="hidden items-center sm:flex">
+        <div className="hidden items-center xl:flex">
           <Segmented
             layoutId="titlebar-proxy-mode"
-            ariaLabel="出站模式"
+            ariaLabel={tr("出站模式")}
             size="xs"
             value={status.mode}
             options={modes}
@@ -125,50 +116,61 @@ export function AppTitlebar({
           />
         </div>
 
-        <Separator orientation="vertical" className="hidden h-3.5 sm:block" />
+        <Separator orientation="vertical" className="hidden h-3.5 xl:block" />
 
-        <label
-          title={`系统代理 · ${captureModeLabel(status.running, status.systemProxy)}`}
-          className={cn(
-            'inline-flex h-7 cursor-pointer items-center gap-2 rounded-[7px] border px-2.5 text-[12px] font-medium transition-colors select-none',
-            status.systemProxy
-              ? 'border-accent-border/75 bg-accent-soft/80 text-primary'
-              : 'border-border/80 bg-muted/45 text-muted-foreground hover:border-border hover:bg-muted/80 hover:text-foreground',
-          )}
-        >
-          <span>系统代理</span>
-          <Switch
-            size="sm"
-            aria-label="系统代理"
-            disabled={Boolean(pending)}
-            checked={status.systemProxy}
-            onCheckedChange={enabled => onControl({ action: 'systemProxy', enabled })}
-          />
-        </label>
-
-        <div className="flex items-center gap-0.5">
-          <label
-            title={`虚拟网卡 · ${captureModeLabel(status.running, status.tun)}`}
-            className={cn(
-              'inline-flex h-7 cursor-pointer items-center gap-2 rounded-[7px] border px-2.5 text-[12px] font-medium transition-colors select-none',
-              status.tun
-                ? 'border-accent-border/75 bg-accent-soft/80 text-primary'
-                : 'border-border/80 bg-muted/45 text-muted-foreground hover:border-border hover:bg-muted/80 hover:text-foreground',
+        {(
+          [
+            {
+              action: 'systemProxy' as const,
+              label: tr('系统代理'),
+              titleKey: '系统代理 · {0}',
+              checked: status.systemProxy,
+              tone: 'primary' as const,
+              icon: Plug,
+              activeClass:
+                'border-[#2f63e8]/45 bg-[#2f63e8]/[0.1] text-[#214ecc] shadow-[0_1px_6px_-2px_rgba(47,99,232,0.28)] dark:border-[#608eff]/40 dark:bg-[#3b6ae8]/18 dark:text-[#a3b8ff]',
+            },
+            {
+              action: 'tun' as const,
+              label: tr('虚拟网卡'),
+              titleKey: '虚拟网卡 · {0}',
+              checked: status.tun,
+              tone: 'success' as const,
+              icon: Network,
+              activeClass:
+                'border-[#008b78]/45 bg-[#008b78]/[0.1] text-[#007363] shadow-[0_1px_6px_-2px_rgba(0,139,120,0.28)] dark:border-[#34d399]/35 dark:bg-[#0ea58a]/18 dark:text-[#6ee7b7]',
+            },
+          ] as const
+        ).map(({ action, label, titleKey, checked, tone, icon: Icon, activeClass }) => (
+          <div key={action} className="flex items-center gap-0.5">
+            <label
+              title={tr(titleKey, captureModeLabel(status.running, checked))}
+              className={cn(
+                'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-[7px] border px-2 text-[12px] font-medium transition-[transform,color,background-color,border-color,box-shadow] duration-200 select-none active:scale-[0.97]',
+                checked
+                  ? activeClass
+                  : 'border-border/80 bg-muted/45 text-muted-foreground hover:border-border hover:bg-muted/80 hover:text-foreground',
+              )}
+            >
+              <Icon className="size-3.5 shrink-0" />
+              <span>{label}</span>
+              {status.running && checked && (
+                <span aria-hidden="true" className="size-1.5 rounded-full bg-current motion-safe:animate-pulse" />
+              )}
+              <Switch
+                size="sm"
+                tone={tone}
+                aria-label={label}
+                disabled={Boolean(pending)}
+                checked={checked}
+                onCheckedChange={enabled => onControl({ action, enabled })}
+              />
+            </label>
+            {action === 'tun' && status.tunServiceReady === false && (
+              <TunServiceButton onClick={onTunSetup} disabled={Boolean(pending)} />
             )}
-          >
-            <span>虚拟网卡</span>
-            <Switch
-              size="sm"
-              aria-label="虚拟网卡"
-              disabled={Boolean(pending)}
-              checked={status.tun}
-              onCheckedChange={enabled => onControl({ action: 'tun', enabled })}
-            />
-          </label>
-          {status.tunServiceReady === false && (
-            <TunServiceButton onClick={onTunSetup} disabled={Boolean(pending)} />
-          )}
-        </div>
+          </div>
+        ))}
 
         <ProxyPowerButton
           phase={pending === 'start' ? 'starting' : pending === 'stop' ? 'stopping' : status.running ? 'running' : 'idle'}
@@ -178,12 +180,12 @@ export function AppTitlebar({
         />
       </div>
 
-      <Separator orientation="vertical" className="ml-2.5 mr-0.5 h-3.5 opacity-70" />
+      <Separator orientation="vertical" className="ml-2.5 mr-0.5 h-3.5 shrink-0 opacity-70" />
 
-      <div className="flex h-full items-stretch" role="group" aria-label="窗口控制">
+      <div className="flex h-full shrink-0 items-stretch" role="group" aria-label={tr("窗口控制")}>
         <button
           type="button"
-          aria-label="最小化"
+          aria-label={tr("最小化")}
           onClick={() => void run('minimize')}
           className="grid w-10.5 place-items-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
@@ -199,8 +201,8 @@ export function AppTitlebar({
         </button>
         <button
           type="button"
-          aria-label="隐藏到托盘"
-          title="隐藏到托盘"
+          aria-label={tr("隐藏到托盘")}
+          title={tr("隐藏到托盘")}
           onClick={() => void run('close')}
           className="grid w-10.5 place-items-center text-muted-foreground transition-colors hover:bg-[#c42b1c] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >

@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { AnimatePresence, motion } from 'motion/react'
 import { cn } from '@/shared/lib/utils'
 
@@ -44,10 +45,10 @@ export function NodeLatencyButton({ node, compact = false, testing, onMeasure, d
     ms !== null
       ? `${ms} ms`
       : node.status === 'timeout'
-        ? '超时'
+        ? tr('超时')
         : node.status === 'unreachable'
-          ? '失败'
-          : '测延迟'
+          ? tr('失败')
+          : tr('测延迟')
 
   let toneClass = 'bg-accent-soft text-primary hover:bg-primary/15'
   if (testing) {
@@ -69,8 +70,8 @@ export function NodeLatencyButton({ node, compact = false, testing, onMeasure, d
       data-testing={testing || undefined}
       disabled={testing || disabled}
       aria-busy={testing || undefined}
-      title={testing ? '正在测速…' : '点击重新测速'}
-      aria-label={testing ? `${node.name}，正在测速` : `${node.name}，${label}，点击测速`}
+      title={testing ? tr('正在测速…') : tr('点击重新测速')}
+      aria-label={testing ? tr("{0}，正在测速", node.name) : tr("{0}，{1}，点击测速", node.name, label)}
       onClick={event => {
         event.stopPropagation()
         onMeasure()

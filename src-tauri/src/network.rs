@@ -5,6 +5,58 @@ use serde_json::{json, Value as Json};
 use serde_yaml::Value;
 use std::net::{IpAddr, SocketAddr};
 
+pub const QUIC_BLOCK_RULE: &str =
+    "AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((GEOSITE,cn))),(NOT,((GEOIP,CN,no-resolve)))),REJECT";
+
+const DEFAULT_BOOTSTRAP_DNS: [&str; 3] = ["223.5.5.5", "119.29.29.29", "1.1.1.1"];
+
+const DEFAULT_FAKE_IP_FILTER: [&str; 25] = [
+    "+.lan",
+    "+.local",
+    "+.localdomain",
+    "geosite:private",
+    "geosite:connectivity-check",
+    "+.msftconnecttest.com",
+    "+.msftncsi.com",
+    "localhost.ptlogin2.qq.com",
+    "localhost.sec.qq.com",
+    "localhost.work.weixin.qq.com",
+    "time.*.com",
+    "ntp.*.com",
+    "+.ntp.org.cn",
+    "stun.*.*",
+    "stun.*.*.*",
+    "+.stun.*.*",
+    "+.stun.*.*.*",
+    "+.srv.nintendo.net",
+    "+.stun.playstation.net",
+    "xbox.*.microsoft.com",
+    "xnotify.xboxlive.com",
+    "+.battlenet.com.cn",
+    "+.wotgame.cn",
+    "+.wggames.cn",
+    "+.wowsgame.cn",
+];
+
+fn resolver_uses_hostname(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed == "system"
+        || trimmed.parse::<IpAddr>().is_ok()
+        || trimmed.parse::<SocketAddr>().is_ok()
+    {
+        return false;
+    }
+    Url::parse(trimmed)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().is_err())
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct NetworkSettings {
@@ -33,6 +85,8 @@ pub struct NetworkSettings {
     pub allow_lan: bool,
     pub system_proxy_bypass: Vec<String>,
     pub tcp_concurrent: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub block_quic: bool,
     pub probe_url: String,
     pub probe_status: u16,
     pub probe_interval_minutes: u16,
@@ -78,7 +132,8 @@ impl Default for NetworkSettings {
             mixed_port: None,
             allow_lan: false,
             system_proxy_bypass: vec![],
-            tcp_concurrent: false,
+            tcp_concurrent: true,
+            block_quic: false,
             probe_url: "https://www.gstatic.com/generate_204".into(),
             probe_status: 204,
             probe_interval_minutes: 5,
@@ -217,6 +272,17 @@ impl NetworkSettings {
     pub(crate) fn apply_dns(&self, config: &mut Value) -> AirResult<()> {
         config["ipv6"] = self.ipv6.into();
         config["tcp-concurrent"] = self.tcp_concurrent.into();
+        let default_overseas_dns = self.respect_rules
+            && self.direct_nameserver.is_empty()
+            && self.nameserver.len() == 2
+            && self.nameserver[0] == "https://1.1.1.1/dns-query"
+            && self.nameserver[1] == "https://8.8.8.8/dns-query";
+        let domestic_dns = [
+            "https://223.5.5.5/dns-query",
+            "https://120.53.53.53/dns-query",
+            "223.5.5.5",
+            "119.29.29.29",
+        ];
         let mut dns = json!({
             "enable": true, "nameserver": self.nameserver, "ipv6": self.ipv6 && self.dns_ipv6,
             "use-system-hosts": self.use_system_hosts, "respect-rules": self.respect_rules,
@@ -227,7 +293,7 @@ impl NetworkSettings {
         if config["hosts"].as_mapping().is_some_and(|hosts| !hosts.is_empty()) {
             dns["use-hosts"] = true.into();
         }
-        if !self.direct_nameserver.is_empty() {
+        if !self.direct_nameserver.is_empty() || default_overseas_dns {
             dns["direct-nameserver-follow-policy"] = self.direct_follow_policy.into();
         }
         if self.dns_cache_algorithm != "auto" {
@@ -244,15 +310,38 @@ impl NetworkSettings {
                 dns[key] = json!(list);
             }
         }
+        if self.default_nameserver.is_empty()
+            && self
+                .nameserver
+                .iter()
+                .chain(&self.direct_nameserver)
+                .chain(&self.proxy_server_nameserver)
+                .chain(&self.fallback)
+                .chain(self.domain_dns.iter().map(|entry| &entry.server))
+                .any(|server| resolver_uses_hostname(server))
+        {
+            dns["default-nameserver"] = json!(DEFAULT_BOOTSTRAP_DNS);
+        }
+        if default_overseas_dns {
+            dns["direct-nameserver"] = json!(domestic_dns);
+        }
+        if self.enhanced_mode == "fake-ip" && self.fake_ip_filter.is_empty() {
+            dns["fake-ip-filter"] = json!(DEFAULT_FAKE_IP_FILTER);
+        }
         if self.enhanced_mode != "auto" {
             dns["enhanced-mode"] = json!(self.enhanced_mode);
         }
         if !self.fallback.is_empty() {
-            dns["fallback-filter"] = json!({ "geoip": false, "domain": self.fallback_domains });
+            dns["fallback-filter"] = json!({ "geoip": self.fallback_domains.is_empty(), "domain": self.fallback_domains });
         }
         config["dns"] = serde_yaml::to_value(dns).expect("DNS fields serialize to YAML");
-        if !self.domain_dns.is_empty() {
+        if default_overseas_dns || !self.domain_dns.is_empty() {
             let mut policy = serde_yaml::Mapping::new();
+            if default_overseas_dns {
+                let list = serde_yaml::to_value(domestic_dns)
+                    .expect("domestic DNS list serializes to YAML");
+                policy.insert("geosite:cn,private".into(), list);
+            }
             for entry in &self.domain_dns {
                 policy.insert(entry.domain.clone().into(), entry.server.clone().into());
             }
@@ -268,6 +357,7 @@ impl NetworkSettings {
         let mut tun = json!({
             "enable": enabled, "device": "Air-TUN", "stack": self.tun_stack, "auto-route": true,
             "auto-detect-interface": true, "strict-route": self.strict_route,
+            "endpoint-independent-nat": true,
             "route-exclude-address": self.route_exclude_address,
             "dns-hijack": if self.dns_hijack { vec!["any:53", "tcp://any:53"] } else { vec![] },
             "inet6-address": if ipv6 { vec!["fdfe:dcba:9876::1/126"] } else { vec![] },
@@ -414,12 +504,16 @@ mod tests {
         settings.apply_proxy(&mut yaml, true, Some("198.19.80.1/20")).unwrap();
         #[cfg(windows)]
         assert_eq!(yaml["dns"]["fake-ip-range"].as_str(), Some("198.19.80.1/20"));
-        assert!(yaml["dns"]["default-nameserver"].is_null());
+        assert_eq!(
+            yaml["dns"]["default-nameserver"].as_sequence().unwrap(),
+            &vec![Value::from("223.5.5.5"), Value::from("119.29.29.29"), Value::from("1.1.1.1")]
+        );
         assert!(yaml["dns"]["direct-nameserver"].is_null());
         assert_eq!(yaml["dns"]["nameserver"].as_sequence().unwrap().len(), 2);
         assert_eq!(yaml["dns"]["ipv6"].as_bool(), Some(false));
         assert_eq!(yaml["tun"]["dns-hijack"].as_sequence().unwrap().len(), 0);
         assert_eq!(yaml["tun"]["stack"], "mixed");
+        assert_eq!(yaml["tun"]["endpoint-independent-nat"].as_bool(), Some(true));
         assert_eq!(yaml["tun"]["route-exclude-address"][0], "10.0.0.0/8");
         assert_eq!(yaml["tun"]["strict-route"].as_bool(), Some(true));
         assert_eq!(yaml["tun"]["mtu"].as_u64(), Some(1400));
@@ -429,5 +523,57 @@ mod tests {
             .unwrap()
             .iter()
             .all(|ip| ip != "0.0.0.0/0"));
+    }
+
+    #[test]
+    fn ip_only_dns_keeps_default_nameserver_unset_and_fallback_enables_geoip_filter() {
+        let settings = NetworkSettings {
+            nameserver: vec!["https://223.5.5.5/dns-query".into()],
+            proxy_server_nameserver: vec!["223.5.5.5".into()],
+            fallback: vec!["https://1.1.1.1/dns-query".into()],
+            fallback_domains: vec![],
+            ..NetworkSettings::default()
+        };
+        settings.validate().unwrap();
+        let mut yaml = Value::Mapping(Default::default());
+        settings.apply_dns(&mut yaml).unwrap();
+        assert!(yaml["dns"]["default-nameserver"].is_null());
+        assert_eq!(yaml["dns"]["fallback-filter"]["geoip"].as_bool(), Some(true));
+
+        let domain_fallback = NetworkSettings {
+            fallback_domains: vec!["+.google.com".into()],
+            ..settings
+        };
+        let mut yaml2 = Value::Mapping(Default::default());
+        domain_fallback.apply_dns(&mut yaml2).unwrap();
+        assert_eq!(yaml2["dns"]["fallback-filter"]["geoip"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn default_network_populates_domestic_dns_policy() {
+        let settings = NetworkSettings::default();
+        let mut yaml = Value::Mapping(Default::default());
+        settings.apply_dns(&mut yaml).unwrap();
+        let direct = yaml["dns"]["direct-nameserver"].as_sequence().unwrap();
+        assert!(!direct.is_empty());
+        let policy = yaml["dns"]["nameserver-policy"]["geosite:cn,private"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(policy, direct);
+    }
+
+    #[test]
+    fn fake_ip_default_filter_and_block_quic_default() {
+        let parsed: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert!(!parsed.block_quic);
+        let settings = NetworkSettings {
+            enhanced_mode: "fake-ip".into(),
+            ..NetworkSettings::default()
+        };
+        let mut yaml = Value::Mapping(Default::default());
+        settings.apply_dns(&mut yaml).unwrap();
+        let filters = yaml["dns"]["fake-ip-filter"].as_sequence().unwrap();
+        assert!(filters.iter().any(|item| item == "geosite:private"));
+        assert!(filters.iter().any(|item| item == "stun.*.*"));
     }
 }

@@ -1,3 +1,4 @@
+import { preferences } from '@/shared/lib/preferences'
 import { useMemo, useState } from 'react'
 
 const key = 'air.subscription-order.v1'
@@ -5,7 +6,7 @@ const key = 'air.subscription-order.v1'
 export function useSubscriptionOrder<T extends { id: string }>(sources: T[]) {
   const [order, setOrder] = useState<string[]>(() => {
     try {
-      const saved: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
+      const saved: unknown = JSON.parse(preferences.getItem(key) ?? '[]')
       return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : []
     } catch { return [] }
   })
@@ -19,7 +20,7 @@ export function useSubscriptionOrder<T extends { id: string }>(sources: T[]) {
     if (index < 0 || index + offset < 0 || index + offset >= next.length) return
     next.splice(index, 1)
     next.splice(index + offset, 0, id)
-    localStorage.setItem(key, JSON.stringify(next))
+    preferences.setItem(key, JSON.stringify(next))
     setOrder(next)
   }
   return { sorted, move }

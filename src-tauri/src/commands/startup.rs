@@ -1,5 +1,5 @@
 use super::{default_kernel_path, App, ProxyStatus, StartTarget};
-use air::AirResult;
+use air::{proxy::Runtime, AirResult};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::{atomic::Ordering, Arc}};
 use tauri::{AppHandle, State};
@@ -100,13 +100,37 @@ pub async fn set_startup_setting(state: State<'_, Arc<App>>, app: AppHandle, set
 #[tauri::command]
 pub async fn start_proxy_on_launch(state: State<'_, Arc<App>>, app: AppHandle, kernel_override: Option<PathBuf>, target: StartTarget) -> AirResult<Option<ProxyStatus>> {
     let mut runtime = state.proxy.lock().await;
+    #[cfg(windows)]
+    let prepare = state.launch_pending.load(Ordering::Relaxed).then(|| target.clone());
+    let status = launch_proxy(&state, &mut runtime, kernel_override, target).await?;
+    if let Some(status) = &status {
+        crate::tray::sync(&app, status);
+    }
+    #[cfg(windows)]
+    if let Some(target) = prepare.filter(|_| status.is_none() && runtime.can_prepare_tun()) {
+        let state = Arc::clone(state.inner());
+        drop(runtime);
+        tauri::async_runtime::spawn(async move {
+            let mut runtime = state.proxy.lock().await;
+            if !runtime.can_prepare_tun() {
+                return;
+            }
+            if let Ok(config) = state.proxy_config(runtime.mode(), &target).await {
+                let _ = runtime.prepare_tun(config).await;
+            }
+        });
+    }
+    Ok(status)
+}
+
+async fn launch_proxy(state: &App, runtime: &mut Runtime, kernel_override: Option<PathBuf>, target: StartTarget) -> AirResult<Option<ProxyStatus>> {
     // Only a new application process may autoconnect. Restoring a tray window or
     // reloading its WebView must respect an explicit manual stop.
     if !state.launch_pending.swap(false, Ordering::Relaxed) {
         return Ok(None);
     }
     let mut settings = state.store.startup_proxy()?;
-    if !settings.running && !settings.always_start { return Ok(None); }
+    if !settings.always_start { return Ok(None); }
     let target = if settings.running { settings.target.take().unwrap_or(target) } else { target };
     let binary = kernel_override.or_else(default_kernel_path).ok_or("请先在设置里选择本机的 Mihomo 内核")?;
     let config = state.proxy_config(settings.mode, &target).await?;
@@ -115,7 +139,6 @@ pub async fn start_proxy_on_launch(state: State<'_, Arc<App>>, app: AppHandle, k
     settings.running = status.running;
     settings.target = Some(target);
     state.store.save_startup_proxy(&settings)?;
-    crate::tray::sync(&app, &status);
     Ok(Some(status))
 }
 
@@ -125,24 +148,49 @@ mod tests {
     use air::proxy::Mode;
 
     #[tokio::test]
-    async fn reopens_stopped_mode_and_preserves_node_and_manual_stop() {
+    async fn disabled_autostart_keeps_proxy_stopped_after_a_running_session() {
         let dir = tempfile::tempdir().unwrap();
         let app = App::open(dir.path().to_owned()).unwrap();
         let mut session = app.store.startup_proxy().unwrap();
         assert!(!session.always_start && !session.running);
         session.mode = Mode::Global;
         session.tun = true;
+        session.running = true;
         session.target = Some(StartTarget::Node { id: "chosen".into() });
         app.store.save_startup_proxy(&session).unwrap();
         drop(app);
 
         let app = App::open(dir.path().to_owned()).unwrap();
-        let status = app.proxy.lock().await.status().await.unwrap();
+        let mut runtime = app.proxy.lock().await;
+        let attempted = launch_proxy(
+            &app,
+            &mut runtime,
+            Some(dir.path().join("must-not-launch.exe")),
+            StartTarget::Routing,
+        ).await.unwrap();
+        assert!(attempted.is_none());
+        let status = runtime.status().await.unwrap();
         assert_eq!(status.mode, Mode::Global);
         assert_eq!(status.tun, cfg!(windows));
         let saved = app.store.startup_proxy().unwrap();
-        assert!(!status.running && !saved.running && !saved.always_start);
+        assert!(!status.running && !saved.always_start);
         assert!(matches!(saved.target, Some(StartTarget::Node { id }) if id == "chosen"));
+    }
+
+    #[tokio::test]
+    async fn enabled_autostart_attempts_to_start_even_after_a_stopped_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::open(dir.path().to_owned()).unwrap();
+        let mut settings = app.store.startup_proxy().unwrap();
+        settings.always_start = true;
+        settings.mode = Mode::Direct;
+        app.store.save_startup_proxy(&settings).unwrap();
+        let mut runtime = app.proxy.lock().await;
+        runtime.set_mode(Mode::Direct).await.unwrap();
+
+        let missing = Some(dir.path().join("missing.exe"));
+        assert!(launch_proxy(&app, &mut runtime, missing.clone(), StartTarget::Routing).await.is_err());
+        assert!(launch_proxy(&app, &mut runtime, missing, StartTarget::Routing).await.unwrap().is_none());
     }
 
     #[test]

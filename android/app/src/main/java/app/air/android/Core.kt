@@ -11,42 +11,142 @@ import java.io.FileOutputStream
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 internal object Core {
     val worker = Executors.newSingleThreadExecutor()
-    private var profile: JSONObject? = null
+    private val probeGeneration = AtomicLong(0)
+    private val activeProbeQueue = AtomicReference<LinkedBlockingQueue<Pair<String, Int>>?>(null)
+    private data class Profile(val plan: JSONObject, val config: JSONObject) {
+        val mode = config.getString("mode")
+        val selected = plan.optJSONObject("select") ?: JSONObject()
+    }
+    private var profile: Profile? = null
+    private var stoppedProfile: Profile? = null
+
+    fun prepare(context: Context, plan: JSONObject) {
+        if (profile != null) return
+        val next = Profile(plan, configFor(plan))
+        if (stoppedProfile?.let { sameConfig(it, next) } == true) return
+        stoppedProfile = null
+        configure(context, next, startListeners = false)
+        stoppedProfile = next
+    }
 
     fun apply(context: Context, plan: JSONObject) {
-        if (profile?.toString() == plan.toString()) return
+        if (profile?.plan?.toString() == plan.toString()) return
         val previous = profile
+        val next = Profile(plan, configFor(plan))
+        val stopped = stoppedProfile
+        stoppedProfile = null
+        if (context is AirVpnService && stopped != null && sameConfig(stopped, next)) {
+            val resumed = runCatching {
+                updateOutbound(stopped, next)
+                configureMixedListener(next.config.getInt("mixed-port"), next.config.getBoolean("allow-lan"))
+                check(action("startListener") == true)
+            }
+            if (resumed.isSuccess) {
+                profile = next
+                return
+            }
+        }
+        applyFull(context, next, previous)
+    }
+
+    private fun applyFull(context: Context, next: Profile, previous: Profile?) {
         try {
-            configure(context, plan)
-            profile = plan
+            configure(context, next)
+            profile = next
         } catch (error: Exception) {
-            if (previous != null) {
-                runCatching { configure(context, previous) }
-            } else {
+            if (previous == null || runCatching { configure(context, previous) }.isFailure) {
+                profile = null
                 stopListening()
             }
             throw error
         }
     }
 
+    fun hasActiveProfile() = profile != null
+
     fun applyLive(context: Context, plan: JSONObject) {
         val previous = checkNotNull(profile) { "Mihomo 尚未启动" }
-        val next = JSONObject(plan.toString())
-        val activeConfig = previous.getJSONObject("config")
-        val config = next.getJSONObject("config")
+        val activeConfig = previous.plan.getJSONObject("config")
+        val config = plan.getJSONObject("config")
         for (key in listOf("ipv6", "dns", "tcp-concurrent", "mixed-port", "allow-lan", "bind-address")) {
             if (activeConfig.has(key)) config.put(key, activeConfig.get(key)) else config.remove(key)
         }
         // Network preferences apply on restart. The new outbound's subscription records apply now.
-        next.put("localHosts", previous.optJSONObject("localHosts") ?: activeConfig.optJSONObject("hosts") ?: JSONObject())
+        plan.put("localHosts", previous.plan.optJSONObject("localHosts") ?: activeConfig.optJSONObject("hosts") ?: JSONObject())
         for (key in listOf("ipv6", "tunnel")) {
-            if (previous.has(key)) next.put(key, previous.get(key)) else next.remove(key)
+            if (previous.plan.has(key)) plan.put(key, previous.plan.get(key)) else plan.remove(key)
         }
-        apply(context, next)
+        val next = Profile(plan, configFor(plan))
+        val modeChanged = previous.mode != next.mode
+        val outboundChanged = previous.selected.optString("GLOBAL") != next.selected.optString("GLOBAL")
+        if (sameConfig(previous, next) && runCatching { updateOutbound(previous, next) }.isSuccess) {
+            profile = next
+            if (modeChanged) {
+                runCatching { action("closeAllConnections") }
+            } else if (outboundChanged) {
+                closeProxiedConnections()
+            }
+            return
+        }
+        applyFull(context, next, previous)
+        if (modeChanged) {
+            runCatching { action("closeAllConnections") }
+        } else if (outboundChanged) {
+            closeProxiedConnections()
+        }
+    }
+
+    fun connectionRows(): JSONArray {
+        val data = when (val raw = action("getConnections")) {
+            is JSONObject -> raw
+            is String -> JSONObject(raw)
+            else -> JSONObject()
+        }
+        return data.optJSONArray("connections") ?: JSONArray()
+    }
+
+    private fun closeProxiedConnections() {
+        runCatching {
+            val connections = connectionRows()
+            for (index in 0 until connections.length()) {
+                val conn = connections.optJSONObject(index) ?: continue
+                if (conn.optJSONObject("metadata")?.optString("type").equals("inner", ignoreCase = true)) continue
+                val leaf = conn.optJSONArray("chains")?.optString(0).orEmpty()
+                if (!leaf.equals("DIRECT", ignoreCase = true)) {
+                    val id = conn.optString("id")
+                    if (id.isNotEmpty()) runCatching { action("closeConnection", id) }
+                }
+            }
+        }
+    }
+
+    // Effective hosts are part of this comparison. Another subscription can use
+    // the same server name with different addresses and needs a real reload.
+    private fun sameConfig(previous: Profile, next: Profile): Boolean =
+        previous.config.length() == next.config.length() &&
+            previous.config.keys().asSequence().all { key ->
+                key == "mode" || previous.config.opt(key)?.toString() == next.config.opt(key)?.toString()
+            } &&
+            previous.selected.keys().asSequence().toSet() == next.selected.keys().asSequence().toSet()
+
+    private fun updateOutbound(previous: Profile, next: Profile) {
+        for (group in next.selected.keys()) {
+            val target = next.selected.getString(group)
+            if (target == previous.selected.getString(group)) continue
+            val change = JSONObject().put("group-name", group).put("proxy-name", target)
+            action("changeProxy", change.toString())
+        }
+        if (previous.mode != next.mode) {
+            val result = action("updateConfig", JSONObject().put("mode", next.mode).toString()).toString()
+            check(result.isEmpty()) { result }
+        }
     }
 
     fun validate(context: Context, plan: JSONObject) {
@@ -61,15 +161,26 @@ internal object Core {
         }
     }
 
-    private fun configure(context: Context, plan: JSONObject) {
+    private fun configure(context: Context, next: Profile, startListeners: Boolean = true) {
         val directory = if (context is AirVpnService || context is MainActivity) "mihomo" else "monitor-mihomo"
         val home = File(context.noBackupFilesDir, directory).apply { mkdirs() }
         seedGeodata(context, home)
         load(context)
-        val yaml = encode(configFor(plan))
+        // Mihomo applies its own listeners while loading a file, even before startListener.
+        val config = if (startListeners) next.config else JSONObject(next.config.toString())
+            .put("mixed-port", 0).put("allow-lan", false)
+        val yaml = encode(config)
         writeAtomic(AtomicFile(File(home, "config.yaml")), yaml.toByteArray(Charsets.UTF_8))
         val init = JSONObject().put("home-dir", home.absolutePath).put("version", Build.VERSION.SDK_INT)
-        val setup = JSONObject().put("selected-map", plan.optJSONObject("select") ?: JSONObject())
+        val setup = JSONObject().put("selected-map", next.selected)
+        if (!startListeners) {
+            // quickSetup enables listeners. Prepare the same configuration with them closed.
+            check(action("stopListener") == true) { "无法关闭 Mihomo 监听" }
+            check(action("initClash", init.toString()) == true) { "无法初始化 Mihomo" }
+            val problem = action("setupConfig", setup.toString()).toString()
+            check(problem.isBlank()) { "Mihomo 配置失败：${problem.take(260)}" }
+            return
+        }
         val ready = CompletableFuture<String?>()
         Clash.quickSetup(init.toString(), setup.toString()) { ready.complete(it) }
         val message = ready.get(20, TimeUnit.SECONDS)
@@ -92,7 +203,23 @@ internal object Core {
         Clash.assertReady()
     }
 
-    fun activeConfig(): JSONObject? = profile?.let { configFor(it) }
+    fun activeConfig(): JSONObject? {
+        val current = profile ?: return null
+        val config = JSONObject(current.config.toString())
+        val groups = config.optJSONArray("proxy-groups") ?: return config
+        for (index in 0 until groups.length()) {
+            val group = groups.getJSONObject(index)
+            val selected = current.selected.optString(group.getString("name"))
+            if (selected.isEmpty()) continue
+            val members = group.getJSONArray("proxies")
+            val ordered = JSONArray().put(selected)
+            for (member in 0 until members.length()) {
+                if (members.getString(member) != selected) ordered.put(members.getString(member))
+            }
+            group.put("proxies", ordered)
+        }
+        return config
+    }
 
     private fun configFor(plan: JSONObject): JSONObject {
         val config = JSONObject(plan.getJSONObject("config").toString())
@@ -149,48 +276,137 @@ internal object Core {
         return result
     }
 
-    fun probe(context: Context, plan: JSONObject, aliases: JSONArray, url: String, expected: Int): JSONObject {
-        require(aliases.length() in 1..6)
+    fun currentProbeGeneration() = probeGeneration.get()
+
+    private fun probeCancelled(generation: Long?) =
+        generation != null && generation != currentProbeGeneration()
+
+    fun cancelProbe() {
+        probeGeneration.incrementAndGet()
+        activeProbeQueue.get()?.offer(PROBE_CANCEL_SENTINEL to -1)
+    }
+
+    fun probe(
+        context: Context, plan: JSONObject, aliases: JSONArray, url: String, expected: Int,
+        generation: Long? = null, onResult: (String, Int) -> Unit = { _, _ -> },
+    ): JSONObject {
+        require(aliases.length() in 1..72)
         require(url.startsWith("https://") || url.startsWith("http://")) { "测速地址需使用 HTTP 或 HTTPS" }
         require(expected in 100..599) { "测速状态码无效" }
-        val byProxy = plan.optJSONObject("hostScopes")?.getJSONObject("byProxy")
+        val byProxy = plan.optJSONObject("hostScopes")?.optJSONObject("byProxy")
         val batches = (0 until aliases.length()).map { aliases.getString(it) }.groupBy { byProxy?.optInt(it, 0) ?: 0 }
         val delays = JSONObject()
         for ((scope, names) in batches) {
+            if (probeCancelled(generation)) break
             val testPlan = JSONObject(plan.toString())
             testPlan.optJSONObject("hostScopes")?.put("active", scope)
             val sourceTargets = plan.optJSONObject("probeTargets")
             val targets = names.associateWith { name ->
                 val source = sourceTargets?.optJSONObject(name)
-                ProbeTarget.select(url, expected, source?.getString("url"), source?.getString("expected"))
+                val sourceUrl = if (source != null && source.has("url")) source.getString("url") else null
+                val sourceStatus = if (source != null && source.has("expected")) source.getString("expected") else null
+                ProbeTarget.select(url, expected, sourceUrl, sourceStatus)
             }
-            for ((name, delay) in probeBatch(context, testPlan, targets)) delays.put(name, delay)
+            for ((name, delay) in probeBatch(context, testPlan, targets, url, expected, generation, onResult)) {
+                delays.put(name, delay)
+            }
         }
         return delays
     }
 
-    private fun probeBatch(context: Context, testPlan: JSONObject, targets: Map<String, ProbeTarget>): Map<String, Int> {
-        val config = testPlan.getJSONObject("config").put("mixed-port", 0).put("allow-lan", false).put("unified-delay", true)
-        val groups = config.optJSONArray("proxy-groups") ?: JSONArray().also { config.put("proxy-groups", it) }
-        val groupNames = mutableMapOf<Pair<String, String>, String>()
-        for ((name, target) in targets) {
-            for (url in listOfNotNull(target.url, target.alternate)) {
-                val group = "Air-Diagnostic-${groupNames.size}"
-                groupNames[name to url] = group
-                groups.put(JSONObject().put("name", group).put("type", "select").put("proxies", JSONArray().put(name))
-                    .put("url", url).put("expected-status", target.expected))
+    private fun probeBatch(
+        context: Context,
+        testPlan: JSONObject,
+        targets: Map<String, ProbeTarget>,
+        url: String,
+        expected: Int,
+        generation: Long?,
+        onResult: (String, Int) -> Unit,
+    ): Map<String, Int> {
+        if (probeCancelled(generation)) return emptyMap()
+        val config = testPlan.getJSONObject("config")
+            .put("mode", "rule")
+            .put("mixed-port", 0)
+            .put("allow-lan", false)
+            .put("unified-delay", true)
+            .put("find-process-mode", "off")
+            .put("rules", JSONArray().put("MATCH,DIRECT"))
+        config.remove("rule-providers")
+        config.remove("sniffer")
+        val dns = config.optJSONObject("dns") ?: JSONObject().also { config.put("dns", it) }
+        dns.put("enable", true).put("respect-rules", false).put("enhanced-mode", "redir-host")
+        if ((dns.optJSONArray("default-nameserver")?.length() ?: 0) == 0) {
+            dns.put("default-nameserver", JSONArray(listOf("223.5.5.5", "119.29.29.29", "1.1.1.1")))
+        }
+        testPlan.put("select", JSONObject())
+        testPlan.remove("outboundLabel")
+
+        val sourceTargets = testPlan.optJSONObject("probeTargets")
+        val diagnosticGroups = JSONArray()
+        val groupMap = mutableMapOf<Pair<String, String>, String>()
+        fun ensureGroupsFor(proxyName: String) {
+            val source = sourceTargets?.optJSONObject(proxyName)
+            val sourceUrl = if (source != null && source.has("url")) source.getString("url") else null
+            val sourceStatus = if (source != null && source.has("expected")) source.getString("expected") else null
+            val target = ProbeTarget.select(url, expected, sourceUrl, sourceStatus)
+            val urls = listOfNotNull(target.url, target.alternate)
+            urls.forEachIndexed { idx, probeUrl ->
+                if (groupMap.containsKey(proxyName to probeUrl)) return@forEachIndexed
+                val groupName = "Air-Diag-$proxyName-$idx"
+                groupMap[proxyName to probeUrl] = groupName
+                diagnosticGroups.put(
+                    JSONObject()
+                        .put("name", groupName)
+                        .put("type", "select")
+                        .put("proxies", JSONArray().put(proxyName))
+                        .put("url", probeUrl)
+                        .put("expected-status", target.expected),
+                )
             }
         }
-        return withProfile(context, testPlan) {
-            measureDelays(targets) { name, url, timeout ->
-                val group = groupNames.getValue(name to url)
-                val params = JSONObject().put("group-names", JSONArray().put(group)).put("test-url", url).put("timeout", timeout)
-                response("testGroups", params.toString()).thenApply { reply ->
-                    val rows = JSONArray(reply.getString("data"))
-                    (0 until rows.length()).map { rows.getJSONObject(it) }.firstOrNull { it.optString("name") == name }
-                        ?.optInt("value", -1) ?: -1
+        val proxies = config.optJSONArray("proxies")
+        if (proxies != null) {
+            for (index in 0 until proxies.length()) {
+                val proxyName = proxies.getJSONObject(index).optString("name")
+                if (proxyName.isNotEmpty()) ensureGroupsFor(proxyName)
+            }
+        }
+        for (alias in targets.keys) {
+            ensureGroupsFor(alias)
+        }
+        config.put("proxy-groups", diagnosticGroups)
+
+        apply(context, testPlan)
+        if (probeCancelled(generation)) return emptyMap()
+        val queue = LinkedBlockingQueue<Pair<String, Int>>()
+        if (generation != null) activeProbeQueue.set(queue)
+        return try {
+            measureDelays(
+                targets = targets,
+                cancelled = { probeCancelled(generation) },
+                completed = queue,
+                onResult = onResult,
+            ) { name, probeUrl, timeout ->
+                if (probeCancelled(generation)) {
+                    CompletableFuture.completedFuture(-1)
+                } else {
+                    val group = groupMap.getValue(name to probeUrl)
+                    val params = JSONObject()
+                        .put("group-names", JSONArray().put(group))
+                        .put("test-url", probeUrl)
+                        .put("timeout", timeout)
+                    response("testGroups", params.toString()).thenApply { reply ->
+                        val rows = JSONArray(reply.getString("data"))
+                        (0 until rows.length()).map { rows.getJSONObject(it) }
+                            .firstOrNull { it.optString("name") == name }
+                            ?.optInt("value", -1) ?: -1
+                    }
                 }
             }
+        } finally {
+            activeProbeQueue.compareAndSet(queue, null)
+            // Finish cancellation on this worker before another plan starts using the core.
+            if (probeCancelled(generation)) runCatching { action("closeAllConnections") }
         }
     }
 
@@ -200,17 +416,32 @@ internal object Core {
         try {
             return run()
         } finally {
-            if (previous == null) stopListening() else apply(context, previous)
+            if (previous == null) stopListening() else apply(context, previous.plan)
         }
     }
 
     fun traffic(): JSONObject = if (Clash.isLoaded()) JSONObject(Clash.getTraffic()) else JSONObject()
     fun totals(): JSONObject = if (Clash.isLoaded()) JSONObject(Clash.getTotalTraffic()) else JSONObject()
 
+    private fun configureMixedListener(port: Int, allowLan: Boolean) {
+        val update = JSONObject().put("mixed-port", port).put("allow-lan", allowLan)
+        val problem = action("updateConfig", update.toString()).toString()
+        check(problem.isBlank()) { problem }
+    }
+
+    fun closeMixedListener() {
+        if ((profile?.config?.optInt("mixed-port") ?: 0) > 0) {
+            runCatching { configureMixedListener(0, false) }
+        }
+    }
+
     fun stopListening() {
+        stoppedProfile = null
         if (Clash.isLoaded()) {
             runCatching { action("closeAllConnections") }
-            runCatching { action("stopListener") }
+            if (runCatching { action("stopListener") == true }.getOrDefault(false)) {
+                stoppedProfile = profile
+            }
         }
         profile = null
     }

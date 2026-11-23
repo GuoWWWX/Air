@@ -12,22 +12,19 @@ import org.json.JSONObject
 import java.io.File
 
 internal object AirLibrary {
-    private fun library(context: Context) = File(context.noBackupFilesDir, "library.json")
+    private fun library(context: Context) = ConfigFiles(configDirectory(context), File(context.noBackupFilesDir, "library.json"))
     private fun results(context: Context) = File(context.noBackupFilesDir, "monitor-results.json")
 
-    fun read(context: Context): JSONObject = readJson(library(context))
+    fun read(context: Context): JSONObject = library(context).read()
     fun monitorResults(context: Context): JSONObject = readJson(results(context))
 
+    fun saveOutbound(context: Context, mode: String, choice: JSONObject?) =
+        library(context).saveOutbound(mode, choice)
+
     fun save(context: Context, value: JSONObject) {
-        val target = AtomicFile(library(context))
-        val previous = read(context)
-        writeAtomic(target, value.toString().toByteArray(Charsets.UTF_8))
-        try {
-            schedule(context, value.optJSONObject("monitorPlan"))
-            SubscriptionUpdates.schedule(context, value)
-        } catch (error: Exception) {
-            writeAtomic(target, previous.toString().toByteArray(Charsets.UTF_8))
-            throw error
+        library(context).save(value) { saved ->
+            schedule(context, saved.optJSONObject("monitorPlan"))
+            SubscriptionUpdates.schedule(context, saved)
         }
     }
 
@@ -118,7 +115,7 @@ class AirMonitorService : JobService() {
             if (retained.length() > 0) samples.put(id, retained)
         }
         var available = 0
-        for (chunk in batch.chunked(6)) {
+        for (chunk in batch.chunked(12)) {
             if (active !== params) return
             val aliases = JSONArray(chunk.map { targets.getString(it) })
             val measured = Core.probe(this, plan, aliases, url, status)

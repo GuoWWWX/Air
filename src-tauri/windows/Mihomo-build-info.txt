@@ -1,6 +1,8 @@
-Mihomo Meta v1.19.32 windows amd64 with go1.26.8 Wed Sep 30 17:00:11 UTC 2026
+Mihomo Meta v1.19.32-air.2 windows amd64 with go1.26.8 2026-09-30T17:00:11Z
 Use tags: with_gvisor
 Upstream: https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.32
 Commit: 88dcbf7f1614a67c3b36b848ee3592dfa92ada36
 Build target: windows/amd64 (GOAMD64=v2)
-mihomo.exe SHA-256: 3c107d54ef1b895e4980b53f517d52f3c1137101fa2637347c9ce343fc50d7b2
+Build script: scripts/build-windows-mihomo.ps1
+Windows patch: open the existing Air-TUN adapter by name and verify its GUID. Retain the wrapped already-exists fallback for adapter creation.
+mihomo.exe SHA-256: e0e3823e739c622297d6862bbe72c14eb9e355c32cfda511357be857a8488261

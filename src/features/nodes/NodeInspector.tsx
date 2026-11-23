@@ -1,3 +1,4 @@
+import { tr } from '@/shared/i18n/messages'
 import { FileCode2, Network, RotateCcw, X } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import { formatProtocol } from '@/shared/lib/utils'
@@ -36,7 +37,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
     try {
       if (reset) await air.resetNode(node.id)
       else await air.editNode({ id: node.id, name, server, port: Number(port) })
-      showMessage({ type: 'success', title: reset ? '已恢复订阅值' : '节点覆写已保存' })
+      showMessage({ type: 'success', title: reset ? tr('已恢复订阅值') : tr('节点覆写已保存') })
       onSaved()
     } catch (error) {
       onError(error)
@@ -54,7 +55,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
       Number(port) < 1 ||
       Number(port) > 65535
     ) {
-      onError('请输入节点名称、服务器地址和有效端口')
+      onError(tr('请输入节点名称、服务器地址和有效端口'))
       return
     }
     void save()
@@ -70,14 +71,14 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
       }
     >
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">编辑节点</h2>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="关闭编辑节点" onClick={onClose}>
+        <h2 className="text-sm font-semibold text-foreground">{tr("编辑节点")}</h2>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label={tr("关闭编辑节点")} onClick={onClose}>
           <X />
         </Button>
       </div>
 
       <div className="air-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-4 py-3.5">
-        <div className="flex items-center gap-2.5 rounded-[9px] border border-border-subtle bg-muted/45 p-3">
+        <div className="flex items-center gap-2.5 rounded-[9px] border border-border bg-muted/55 p-3 dark:bg-background/60">
           <span className="grid size-8 shrink-0 place-items-center rounded-[7px] bg-accent-soft text-primary">
             <Network className="size-4" />
           </span>
@@ -89,11 +90,11 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
               <FlagText text={`${node.source} · ${formatProtocol(node.protocol)}`} />
             </span>
           </div>
-          <Badge variant="accent">本地覆写</Badge>
+          <Badge variant="accent">{tr("本地覆写")}</Badge>
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="node-edit-name">显示名称</Label>
+          <Label htmlFor="node-edit-name">{tr("显示名称")}</Label>
           <Input
             id="node-edit-name"
             required
@@ -105,7 +106,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
 
         <div className="grid grid-cols-[minmax(0,1fr)_88px] gap-2">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="node-edit-server">服务器地址</Label>
+            <Label htmlFor="node-edit-server">{tr("服务器地址")}</Label>
             <Input
               id="node-edit-server"
               required
@@ -116,7 +117,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="node-edit-port">端口</Label>
+            <Label htmlFor="node-edit-port">{tr("端口")}</Label>
             <Input
               id="node-edit-port"
               required
@@ -130,27 +131,19 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
 
         <Separator />
 
-        <div className="flex items-center justify-between gap-2 rounded-[8px] border border-border-subtle bg-muted/30 px-3 py-2">
-          <span className="text-xs text-muted-foreground">协议参数</span>
+        <div className="flex items-center justify-between gap-2 rounded-[8px] border border-border bg-muted/55 px-3 py-2 dark:bg-background/60">
+          <span className="text-xs text-muted-foreground">{tr("协议参数")}</span>
           <Button type="button" variant="secondary" size="sm" onClick={() => onYaml(node.sourceId)}>
-            <FileCode2 data-icon="inline-start" />
-            编辑 YAML
-          </Button>
+            <FileCode2 data-icon="inline-start" />{tr("编辑 YAML")}</Button>
         </div>
 
-        <p className="text-[12px] text-muted-foreground">
-          订阅刷新后，将保留此处保存的有效修改。
-        </p>
+        <p className="text-[12px] text-muted-foreground">{tr("订阅刷新后，将保留此处保存的有效修改。")}</p>
       </div>
 
-      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border px-4 py-3">
-        <Button type="button" variant="secondary" disabled={busy} onClick={() => void save(true)}>
-          <RotateCcw data-icon="inline-start" />
-          恢复订阅值
-        </Button>
-        <Button type="submit" variant="default" disabled={busy}>
-          保存覆写
-        </Button>
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
+        <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => void save(true)}>
+          <RotateCcw data-icon="inline-start" />{tr("恢复订阅值")}</Button>
+        <Button type="submit" variant="default" size="sm" disabled={busy}>{tr("保存覆写")}</Button>
       </div>
     </form>
   )
