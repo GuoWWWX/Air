@@ -8,7 +8,7 @@ use std::collections::HashSet;
 fn deleting_the_routing_source_detaches_inheritance_and_rejects_only_its_outbounds() {
     let linked = Target::Group { source_id: "deleted".into(), name: "Old group".into() };
     let mut config = RoutingConfig {
-        subscription_id: Some("deleted".into()),
+        rule_library: None, match_fallback: None, subscription_id: Some("deleted".into()),
         inherit_rules: true,
         fallback: Target::Subscription,
         rules: vec![
@@ -29,7 +29,7 @@ fn deleting_the_routing_source_detaches_inheritance_and_rejects_only_its_outboun
     assert!(matches!(config.rules[2].target, Target::Reject));
     assert_eq!(
         config.compile(&[]).unwrap(),
-        ["DOMAIN,example.com,REJECT", "DOMAIN,local.test,DIRECT", "MATCH,REJECT"]
+        ["DOMAIN,example.com,REJECT", "DOMAIN,local.test,DIRECT", "MATCH,GLOBAL"]
     );
 }
 use std::fs;
@@ -63,7 +63,7 @@ rules:
     )
     .unwrap();
     let mut config = RoutingConfig {
-        subscription_id: Some("s".into()),
+        rule_library: None, match_fallback: None, subscription_id: Some("s".into()),
         inherit_rules: true,
         fallback: Target::Direct,
         rules: vec![
@@ -175,7 +175,7 @@ fn composite_process_host_rules_and_node_targets_compile_and_detach() {
     .unwrap();
     let node_id = subscription.nodes[0].id.clone();
     let mut config = RoutingConfig {
-        subscription_id: None,
+        rule_library: None, match_fallback: None, subscription_id: None,
         inherit_rules: false,
         fallback: Target::Selected,
         rules: vec![

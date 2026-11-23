@@ -1,3 +1,4 @@
+import { resolveRules } from '@/shared/proxy/rule-library'
 import { subscriptionLabel } from '@/shared/proxy/subscription-name'
 import type {
   CustomGroup,
@@ -1176,9 +1177,16 @@ export const browserAir = {
         return `${prefix},${rule.value.trim()},${target}`
       })
     const exit = selected?.kind === 'node' ? selected.id : selected?.kind === 'chain' ? selected.hops.at(-1) : undefined
-    const sourceId = exit ? state.nodes.find(node => node.record.id === exit)?.record.sourceId : config.subscriptionId
+    const owner = selected?.kind === 'chain' && selected.inheritExitRules === false ? undefined
+      : exit ? state.nodes.find(node => node.record.id === exit)?.record.sourceId : config.subscriptionId
+    const keys = selected?.kind === 'node' ? ['node:' + selected.id, ...(selected.groupId ? ['group:' + selected.groupId] : [])]
+      : selected?.kind === 'chain' && selected.id ? ['chain:' + selected.id] : []
+    if (owner) keys.push('subscription:' + owner)
+    const ref = resolveRules(config.ruleLibrary, keys, owner ?? undefined)
+    const sourceId = ref.startsWith('subscription:') ? ref.slice(13) : undefined
     const yaml = sourceId && state.yamls[sourceId]
-    const profile = yaml ? (await import('yaml')).parse(yaml.local ?? yaml.original) : undefined
+    const user = config.ruleLibrary?.sets.find(set => 'user:' + set.id === ref)
+    const profile = user?.profile ?? (yaml ? (await import('yaml')).parse(yaml.local ?? yaml.original) : undefined)
     const inherited: string[] = Array.isArray(profile?.rules) ? profile.rules.filter((rule: unknown) => typeof rule === 'string') : []
     const end = inherited.findIndex(line => /^MATCH\s*,/i.test(line.trim()))
     const formatPolicy = (line: string) => {
@@ -1191,17 +1199,19 @@ export const browserAir = {
         const [first] = group.memberNames ?? group.members
         fields[index] = ['DIRECT', 'REJECT', 'REJECT-DROP'].includes(first) ? first : 'GLOBAL'
       }
+      else if (user && !['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(fields[index])) fields[index] = 'GLOBAL'
       return fields.join(',')
     }
     if (exit) lines.push('GEOIP,private,DIRECT,no-resolve', 'GEOSITE,private,DIRECT')
+    const demoSettings = await browserAir.networkSettings()
+    if (demoSettings.settings.blockQuic) lines.push('AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((GEOSITE,cn))),(NOT,((GEOIP,CN,no-resolve)))),REJECT')
     if (exit || config.inheritRules) {
       lines.push(...(end < 0 ? inherited : inherited.slice(0, end)).map(formatPolicy))
     }
     if (exit && !inherited.length) lines.push('GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve')
-    const fallback = exit ? (selected?.kind === 'chain' ? 'air-residential-exit' : 'GLOBAL') : formatTarget(config.fallback)
-    const terminal = end >= 0 && (exit || config.fallback.kind === 'subscription') ? formatPolicy(inherited[end]) : `MATCH,${fallback}`
+    const fallback = config.matchFallback && config.matchFallback.kind !== 'subscription' ? formatTarget(config.matchFallback) : exit ? (selected?.kind === 'chain' ? 'air-residential-exit' : 'GLOBAL') : formatTarget(config.fallback)
+    const terminal = end >= 0 && (config.matchFallback ? config.matchFallback.kind === 'subscription' : exit || config.fallback.kind === 'subscription') ? formatPolicy(inherited[end]) : `MATCH,${fallback}`
     lines.push(terminal)
-    if (exit && !/^MATCH,(DIRECT|REJECT|REJECT-DROP)$/i.test(terminal)) lines.push('MATCH,REJECT')
     return lines
   },
 

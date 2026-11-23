@@ -1,3 +1,4 @@
+import { dropBinding, objectKey, resolveRules } from '@/shared/proxy/rule-library'
 import { tr } from '@/shared/i18n/messages'
 import { parseDocument, stringify } from 'yaml'
 import type { ProxyMode } from '@/shared/proxy/state'
@@ -8,7 +9,7 @@ import { repairSubscriptionNames, subscriptionLabel } from '@/shared/proxy/subsc
 export type Mode = ProxyMode
 export type Theme = 'system' | 'light' | 'dark'
 export type Policy = 'select' | 'url-test' | 'fallback' | 'load-balance'
-export type Choice = { type: 'node' | 'group' | 'chain'; id: string }
+export type Choice = { type: 'node' | 'group' | 'chain'; id: string; groupId?: string }
 export type Proxy = Record<string, unknown> & { name: string; type: string; server: string; port: number }
 
 export interface Subscription {
@@ -59,7 +60,7 @@ export interface Group {
   automatic?: { sourceId: string; maxDelay: number; limit: number }
   members: string[]
 }
-export interface Chain { id: string; name: string; hops: string[] }
+export interface Chain { inheritExitRules?: boolean; id: string; name: string; hops: string[] }
 export interface ProbeSample { at: number; delay: number }
 export interface Library {
   sources: Subscription[]
@@ -117,7 +118,7 @@ export function restoreLibrary(saved: Partial<Library> & {
     sourceFilter: resolvedSourceFilter,
     networkVersion: mobileNetworkVersion,
     network: resolvedNetwork,
-    routing: routing ? { rules: routing.rules ?? [], fallback: routingFallback(routing, routing.fallback ?? defaultRouting.fallback) } : defaultRouting,
+    routing: routing ? { ...(routing.ruleLibrary && { ruleLibrary: routing.ruleLibrary }), rules: routing.rules ?? [], fallback: routingFallback(routing, routing.fallback ?? defaultRouting.fallback) } : defaultRouting,
   }
   const editedNodes = [...Object.keys(library.edits), ...library.hiddenNodes]
   library.sources = repairSubscriptionNames(library.sources).map(source => ({
@@ -302,7 +303,8 @@ function reconcileRouting(library: Library, model: ReturnType<typeof readLibrary
   }
 
   return {
-    fallback: keepTarget(routing.fallback),
+    ...routing,
+    fallback: keepTarget(routing.fallback).kind === 'reject' && routing.fallback.kind !== 'reject' ? defaultRouting.fallback : keepTarget(routing.fallback),
     rules: routing.rules.map(rule => ({ ...rule, target: keepTarget(rule.target) })),
   }
 }
@@ -312,6 +314,8 @@ export function withoutSubscription(library: Library, sourceId: string): Library
   const keepNode = (id: string) => !localIds.has(id) && !id.startsWith(sourceId + '/')
   const next: Library = {
     ...library,
+    routing: library.routing.ruleLibrary ? { ...library.routing,
+      ruleLibrary: dropBinding(library.routing.ruleLibrary, 'subscription:' + sourceId, 'subscription:' + sourceId) } : library.routing,
     sources: library.sources.filter(source => source.id !== sourceId),
     sourceFilter: library.sourceFilter.filter(id => id !== sourceId),
     nodes: library.nodes.filter(node => node.sourceId !== sourceId),
@@ -416,6 +420,16 @@ export function ruleSourceId(library: Library, model: ReturnType<typeof readLibr
   return sourceId && model.profiles.has(sourceId) ? sourceId : ''
 }
 
+export function resolvedRuleSet(library: Library, model = readLibrary(library), choice: Choice | undefined = selection(library, model)) {
+  const source = ruleSourceId(library, model, choice)
+  const chain = choice?.type === 'chain' && library.chains.find(item => item.id === choice.id)
+  const owner = chain && chain.inheritExitRules === false ? '' : source
+  const keys = choice ? [objectKey(choice.type, choice.id)] : []
+  if (choice?.type === 'node' && choice.groupId && library.groups.some(group => group.id === choice.groupId && membersOf(group, model, library).some(node => node.id === choice.id))) keys.push(objectKey('group', choice.groupId))
+  if (owner) keys.push(objectKey('subscription', owner))
+  return resolveRules(library.routing.ruleLibrary, keys, owner)
+}
+
 export function compile(library: Library, model = readLibrary(library), previewSourceId?: string) {
   const { network, routing } = library
   const byId = new Map<string, string>()
@@ -456,8 +470,10 @@ export function compile(library: Library, model = readLibrary(library), previewS
   const active = (choice && byId.get(choice.id)) ?? (library.mode === 'direct' ? 'DIRECT' : 'REJECT')
   // Rule targets and the selector's members stay fixed when the chosen exit changes.
   proxyGroups.push({ name: 'GLOBAL', type: 'select', proxies: [...byId.values(), 'DIRECT', 'REJECT'] })
-  const effectiveSubscriptionId = previewSourceId ?? ruleSourceId(library, model, choice)
-  const source = effectiveSubscriptionId ? model.profiles.get(effectiveSubscriptionId)?.profile : undefined
+  const reference = previewSourceId ? resolveRules(routing.ruleLibrary, ['subscription:' + previewSourceId], previewSourceId) : resolvedRuleSet(library, model, choice)
+  const effectiveSubscriptionId = reference.startsWith('subscription:') ? reference.slice(13) : ''
+  const userSet = reference.startsWith('user:') ? routing.ruleLibrary?.sets.find(set => set.id === reference.slice(5)) : undefined
+  const source = userSet?.profile ?? model.profiles.get(effectiveSubscriptionId)?.profile
   const nodeLookup = new Map<string, string>()
   for (const node of model.nodes.filter(node => node.sourceId === effectiveSubscriptionId)) {
     nodeLookup.set(node.id.slice(effectiveSubscriptionId.length + 1), byId.get(node.id)!)
@@ -495,7 +511,7 @@ export function compile(library: Library, model = readLibrary(library), previewS
       if (raw.type === 'select') return choice ? 'GLOBAL' : (groupLookup.get(name) ?? 'GLOBAL')
       return groupLookup.get(name) ?? 'GLOBAL'
     }
-    return groupLookup.get(name)
+    return groupLookup.get(name) ?? (name === 'GLOBAL' || userSet ? 'GLOBAL' : undefined)
   }
   let subscriptionDefault: string | undefined
   const inherited: string[] = []
@@ -539,7 +555,7 @@ export function compile(library: Library, model = readLibrary(library), previewS
   }
   const custom = routing.rules.map(rule => compileRule(rule, routeTarget(rule.target))).filter((rule): rule is string => Boolean(rule))
   const domesticFallback =
-    !subscriptionDefault && inherited.length === 0 && ['selected', 'subscription'].includes(routing.fallback.kind)
+    !subscriptionDefault && inherited.length === 0
       ? ['GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve']
       : []
   const quicRule = network.blockQuic
@@ -633,7 +649,7 @@ export function compile(library: Library, model = readLibrary(library), previewS
   return { plan: { config, ipv6: network.ipv6, tunnel, select: { GLOBAL: active }, localHosts, probeTargets,
     outboundLabel: library.mode === 'direct' ? '' : (selectionName(choice, model, library) ?? ''),
     ...(hostSources.size > 0 && { hostScopes: { tables, byProxy, active: activeScope } }),
-  }, byId, labels, choice, ruleSourceId: effectiveSubscriptionId }
+  }, byId, labels, choice, ruleSourceId: effectiveSubscriptionId, ruleReference: reference }
 }
 
 export function canStart(library: Library, choice?: Choice) {

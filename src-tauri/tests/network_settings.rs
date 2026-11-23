@@ -286,6 +286,7 @@ async fn kernel_resolves_through_selected_dns_and_reuses_active_settings_on_node
     )
     .unwrap();
     let target = StartTarget::Node {
+        group_id: None,
         id: source.nodes[0].id.clone(),
     };
     let config = || {

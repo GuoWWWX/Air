@@ -1,3 +1,4 @@
+import { validateRuleLibrary } from '@/shared/proxy/rule-library'
 import { tr } from '@/shared/i18n/messages'
 import { parseDocument, stringify } from 'yaml'
 import { defaultNetwork, type NetworkSettings } from '@/shared/proxy/network'
@@ -26,6 +27,7 @@ export interface RouteRule {
   target: RouteTarget
 }
 export interface MobileRouting {
+  ruleLibrary?: import('@/shared/proxy/rule-library').RuleLibrary
   fallback: RouteTarget
   rules: RouteRule[]
 }
@@ -246,6 +248,7 @@ function routeTarget(value: unknown, name: string): RouteTarget {
 }
 
 export function validateRouting(routing: MobileRouting) {
+  if (routing.ruleLibrary) validateRuleLibrary(routing.ruleLibrary)
   for (const [index, rule] of routing.rules.entries()) {
     if (rule.enabled && !compileRule(rule, 'DIRECT')) throw new Error(tr("规则 {0} 的匹配值格式无效", index + 1))
   }
@@ -273,7 +276,9 @@ export function parseSettings(text: string) {
   const network = { ...defaultMobileNetwork, ...rawNetwork }
   const rawRouting = map(source.routing ?? {}, 'routing')
   if (rawRouting.rules !== undefined && !Array.isArray(rawRouting.rules)) throw new Error(tr('rules 需要是规则列表'))
+  if (rawRouting.ruleLibrary !== undefined) validateRuleLibrary(rawRouting.ruleLibrary)
   const routing: MobileRouting = {
+    ...(rawRouting.ruleLibrary && { ruleLibrary: rawRouting.ruleLibrary }),
     fallback: routingFallback(rawRouting, routeTarget(rawRouting.fallback ?? defaultRouting.fallback, tr('默认出口'))),
     rules: (rawRouting.rules as unknown[] | undefined ?? []).map((value, index) => {
       const name = tr('规则 ') + (index + 1)

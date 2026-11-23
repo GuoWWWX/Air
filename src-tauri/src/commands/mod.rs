@@ -142,7 +142,7 @@ mod subscription_deletion_tests {
         let before = file.load().unwrap();
         file.save(
             &RoutingConfig {
-                subscription_id: Some("remove".into()),
+                rule_library: None, match_fallback: None, subscription_id: Some("remove".into()),
                 inherit_rules: true,
                 fallback: Target::Subscription,
                 ..before.routing
@@ -155,7 +155,7 @@ mod subscription_deletion_tests {
         assert_eq!(library.sources.len(), 1);
         assert_eq!(library.sources[0].id, "keep");
         assert_eq!(library.nodes().count(), 1);
-        assert_eq!(file.load().unwrap().routing.compile(&library.sources).unwrap(), ["MATCH,REJECT"]);
+        assert_eq!(file.load().unwrap().routing.compile(&library.sources).unwrap(), ["MATCH,GLOBAL"]);
     }
 }
 
@@ -319,6 +319,11 @@ impl App {
     }
 
     fn compile_target(&self, mode: Mode, routing: &RoutingConfig, library: &Library, target: &StartTarget) -> AirResult<ProxyConfig> {
+        let mut adjusted;
+        let target = if let StartTarget::Node { id, group_id: Some(group_id) } = target {
+            if custom_groups::load(&self.directory)?.iter().any(|g| &g.id == group_id && g.members.contains(id)) { target }
+            else { adjusted = target.clone(); if let StartTarget::Node { group_id, .. } = &mut adjusted { *group_id = None; } &adjusted }
+        } else { target };
         let yaml = match (target, &routing.subscription_id) {
             (StartTarget::Routing, Some(id)) => self.store.effective_source_yaml(id)?,
             _ => None,
@@ -1062,7 +1067,7 @@ pub async fn subscription_yaml(state: State<'_, Arc<App>>, id: String, runtime: 
     let node = library.sources.iter().find(|s| s.id == id).ok_or("订阅已不存在")?.nodes.iter()
         .find(|node| !node.is_subscription_notice()).ok_or("订阅没有可用的节点")?;
     let session = state.store.startup_proxy()?;
-    let config = state.compile_target(session.mode, &file.load()?.routing, &library, &StartTarget::Node { id: node.id.clone() })?;
+    let config = state.compile_target(session.mode, &file.load()?.routing, &library, &StartTarget::Node { group_id: None, id: node.id.clone() })?;
     config.preview_yaml(&file.network()?.settings, session.mode, session.tun).map(|yaml| format!("# 按当前设置生成的订阅预览\n{yaml}"))
 }
 
@@ -1507,13 +1512,14 @@ pub async fn preview_routing(
     config: RoutingConfig,
     target: Option<StartTarget>,
 ) -> AirResult<Vec<String>> {
-    let active = state.proxy.lock().await.active_target();
+    let runtime = state.proxy.lock().await;
+    let active = runtime.active_target();
+    let target = active.or(target).unwrap_or(StartTarget::Routing);
     let library = state.library.read().await;
-    let Some(target) = active.or(target).filter(|t| !matches!(t, StartTarget::Routing)) else {
-        return config.compile(&library.sources);
-    };
     let file = RoutingFile::new(&state.directory);
-    state.compile_target(Mode::Rule, &config, &library, &target)?.preview_rules(&file.network()?.settings)
+    let network = runtime.active_network().cloned().unwrap_or(file.network()?.settings);
+    let mode = if runtime.active_target().is_some() { runtime.mode() } else { Mode::Direct };
+    state.compile_target(mode, &config, &library, &target)?.preview_rules(&network)
 }
 
 #[tauri::command]
@@ -1622,8 +1628,8 @@ pub async fn proxy_control(
                 session.target = Some(target);
             }
         }
-        ProxyAction::SelectNode { id } => {
-            let target = StartTarget::Node { id };
+        ProxyAction::SelectNode { id, group_id } => {
+            let target = StartTarget::Node { id, group_id };
             let config = state.proxy_config(runtime.mode(), &target).await?;
             runtime.select_node(config).await?;
             session.target = Some(target);

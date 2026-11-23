@@ -1334,7 +1334,7 @@ export function Nodes({
           onClick={() => {
             if (busy) return
             if (selecting) toggleSelect()
-            else choose({ type: 'node', id: node.id })
+            else choose({ type: 'node', id: node.id, groupId: activeGroup && !activeGroup.sourceId ? activeGroup.id : undefined })
           }}
         >
           <div className="node-heading">

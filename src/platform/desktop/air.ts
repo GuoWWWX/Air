@@ -44,6 +44,7 @@ export interface CustomGroupInput {
 }
 
 export interface ChainRecord {
+  inheritExitRules?: boolean
   id: string
   name: string
   hops: string[]
@@ -136,6 +137,7 @@ export interface ProxyExit {
 export type ChainProbeResult = ExitVerification | { error: string }
 
 export interface ProxyStatus extends ProxyPowerState {
+  target?: ProxyTarget
   mode: ProxyMode
   port: number | null
   tunServiceReady: boolean | null
@@ -176,8 +178,8 @@ export interface ProxyTelemetry extends ProxyTraffic {
 
 export type ProxyTarget =
   | { kind: 'routing' }
-  | { kind: 'node'; id: string }
-  | { kind: 'chain'; name: string; hops: string[] }
+  | { kind: 'node'; id: string; groupId?: string }
+  | { kind: 'chain'; id?: string; inheritExitRules?: boolean; name: string; hops: string[] }
 
 export type ProxyModeAction =
   | { action: 'mode'; mode: ProxyMode }
@@ -185,7 +187,7 @@ export type ProxyModeAction =
 
 export type ProxyAction =
   | { action: 'start'; kernelPath: string; target: ProxyTarget }
-  | { action: 'selectNode'; id: string }
+  | { action: 'selectNode'; id: string; groupId?: string }
   | { action: 'stop' }
   | ProxyModeAction
 
@@ -206,6 +208,8 @@ export interface RouteRule {
 }
 
 export interface RoutingConfig {
+  ruleLibrary?: import('@/shared/proxy/rule-library').RuleLibrary
+  matchFallback?: RouteTarget
   subscriptionId: string | null
   inheritRules: boolean
   fallback: RouteTarget

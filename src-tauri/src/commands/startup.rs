@@ -156,7 +156,7 @@ mod tests {
         session.mode = Mode::Global;
         session.tun = true;
         session.running = true;
-        session.target = Some(StartTarget::Node { id: "chosen".into() });
+        session.target = Some(StartTarget::Node { group_id: None, id: "chosen".into() });
         app.store.save_startup_proxy(&session).unwrap();
         drop(app);
 
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(status.tun, cfg!(windows));
         let saved = app.store.startup_proxy().unwrap();
         assert!(!status.running && !saved.always_start);
-        assert!(matches!(saved.target, Some(StartTarget::Node { id }) if id == "chosen"));
+        assert!(matches!(saved.target, Some(StartTarget::Node { id, .. }) if id == "chosen"));
     }
 
     #[tokio::test]

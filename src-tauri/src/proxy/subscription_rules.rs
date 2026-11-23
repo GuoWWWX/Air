@@ -98,6 +98,7 @@ impl RuleOutbounds {
                 break;
             }
         }
+        if source.id.starts_with("user:") && !matches!(name, "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS") { return Ok(Some("GLOBAL".into())); }
         if source
             .groups
             .iter()

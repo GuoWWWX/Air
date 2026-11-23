@@ -1,3 +1,4 @@
+import { resolveRules } from '@/shared/proxy/rule-library'
 import { tr } from '@/shared/i18n/messages'
 import { displayPath } from '@/shared/lib/displayPath'
 import {
@@ -160,18 +161,14 @@ export function RoutingSettings({ sources, groups, nodes, target, bindApplicatio
   const automatic = target.kind !== 'routing'
   const exitId = target.kind === 'node' ? target.id : target.kind === 'chain' ? target.hops.at(-1) : undefined
   const exitSource = nodes.find(node => node.id === exitId)?.sourceId
-  const sourceName = subscriptionSources.find(source => source.id === exitSource)?.name
-  useEffect(() => { setPreview(undefined) }, [automatic, exitId])
-  const sourceMissing =
-    Boolean(draft?.subscriptionId) &&
-    !subscriptionSources.some(source => source.id === draft?.subscriptionId)
-  const sourceOptions = [
-    { value: 'none', label: tr('无'), disabled: false },
-    ...subscriptionSources.map(source => ({ value: source.id, label: source.name, disabled: false })),
-  ]
-  if (sourceMissing && draft?.subscriptionId) {
-    sourceOptions.push({ value: draft.subscriptionId, label: tr('订阅已不存在'), disabled: true })
-  }
+  const source = target.kind === 'chain' && target.inheritExitRules === false ? undefined : exitSource
+  const keys = target.kind === 'node' ? ['node:' + target.id, ...(target.groupId ? ['group:' + target.groupId] : [])]
+    : target.kind === 'chain' && target.id ? ['chain:' + target.id] : []
+  if (source) keys.push('subscription:' + source)
+  const reference = resolveRules(draft?.ruleLibrary, keys, source ?? (target.kind === 'routing' ? draft?.subscriptionId ?? undefined : undefined))
+  const sourceName = subscriptionSources.find(item => 'subscription:' + item.id === reference)?.name
+    ?? draft?.ruleLibrary?.sets.find(item => 'user:' + item.id === reference)?.name
+  useEffect(() => { setPreview(undefined) }, [automatic, exitId, reference])
 
   function accept(document: RoutingDocument) {
     cachedRoutingDoc = document
@@ -267,13 +264,6 @@ export function RoutingSettings({ sources, groups, nodes, target, bindApplicatio
 
   async function apply(save: boolean) {
     if (!draft) return
-    if (save && !automatic && !draft.subscriptionId && draft.fallback.kind === 'subscription') {
-      showMessage({
-        type: 'error',
-        title: tr('未选择订阅规则来源时，默认出口不能为「沿用订阅默认出口」'),
-      })
-      return
-    }
     setBusy(true)
     try {
       if (save) {
@@ -344,56 +334,14 @@ export function RoutingSettings({ sources, groups, nodes, target, bindApplicatio
               }}
             >
               <fieldset disabled={busy} className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0">
-                {automatic ? (
-                  <div className="flex flex-col gap-1.5">
-                    <Label>{tr("订阅规则来源")}</Label>
-                    <span className="text-sm">{sourceName ?? tr("无")}</span>
-                    <p className="text-xs text-muted-foreground">{tr('先匹配自定义规则，再匹配当前节点所属订阅的规则。')}</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                      <div className="flex flex-col gap-1.5">
-                        <Label>{tr("订阅规则来源")}</Label>
-                        <AirSelect
-                          label={tr("订阅规则来源")}
-                          value={draft.subscriptionId ?? 'none'}
-                          options={sourceOptions}
-                          onChange={next =>
-                            update(current => ({
-                              ...current,
-                              subscriptionId: next === 'none' ? null : next,
-                              inheritRules: next !== 'none',
-                              fallback:
-                                next === 'none' && current.fallback.kind === 'subscription'
-                                  ? { kind: 'selected' }
-                                  : current.fallback,
-                            }))
-                          }
-                        />
-                      </div>
-                      <TargetField
-                        label={tr("默认出口")}
-                        target={draft.fallback}
-                        groups={groups}
-                        nodes={nodes}
-                        fallback
-                        allowSubscription={Boolean(draft.subscriptionId && !sourceMissing)}
-                        onChange={fallback => update(current => ({ ...current, fallback }))}
-                      />
-                    </div>
-
-                    <AirCheckbox
-                      label={tr("在自定义规则之后匹配该订阅的规则")}
-                      checked={draft.inheritRules}
-                      disabled={!draft.subscriptionId}
-                      onChange={inheritRules => update(current => ({ ...current, inheritRules }))}
-                    >
-                      <span className="text-xs text-foreground">{tr("在自定义规则之后匹配该订阅的规则")}</span>
-                    </AirCheckbox>
-                  </>
-                )}
-
+                <div className="flex flex-col gap-1.5">
+                  <Label>{tr("订阅规则来源")}</Label>
+                  <span className="text-sm">{nodes.find(node => node.id === exitId)?.name ?? tr('当前代理出口')} → {sourceName ?? tr('无')}</span>
+                </div>
+                <TargetField label={tr("默认出口")} target={draft.matchFallback ?? (automatic ? { kind: 'subscription' } : draft.fallback)}
+                  groups={groups} nodes={nodes} fallback allowSubscription
+                  onChange={value => update(current => ({ ...current, matchFallback: value,
+                    fallback: !automatic && value.kind !== 'subscription' ? value : current.fallback }))} />
                 <Separator />
 
                 <div className="flex items-center justify-between gap-2">

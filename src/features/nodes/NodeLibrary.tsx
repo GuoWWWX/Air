@@ -84,7 +84,7 @@ interface Props {
   preferredNodeId: string
   selectingNodeId?: string
   powerPending: boolean
-  onChooseNode: (id: string) => void
+  onChooseNode: (id: string, groupId?: string) => void
   onEdit: (node: NodeRecord) => void
   onAdd: () => void
   onAddToGroup: (groupId: string) => void
@@ -618,7 +618,7 @@ export function NodeLibrary({
         disabled={nodeActionDisabled}
         onClick={event => {
           event.stopPropagation()
-          onChooseNode(node.id)
+          onChooseNode(node.id, activeCustomGroup?.id)
         }}
       >{tr("设为当前")}</Button>
     )
@@ -660,7 +660,7 @@ export function NodeLibrary({
         <ContextMenuContent>
           <ContextMenuItem
             disabled={nodeActionDisabled || node.subscriptionNotice || Boolean(nodeChoiceLabel(node))}
-            onClick={() => onChooseNode(node.id)}
+            onClick={() => onChooseNode(node.id, activeCustomGroup?.id)}
           >
             <Check />
             {nodeChoiceLabel(node) ?? tr('设为当前节点')}
@@ -1444,7 +1444,7 @@ export function NodeLibrary({
                               : canAssign
                                 ? () => chainSelection?.onAssignNode(node.id)
                                 : canChoose
-                                  ? () => onChooseNode(node.id)
+                                  ? () => onChooseNode(node.id, activeCustomGroup?.id)
                                   : undefined
                           }
                           className={cn(

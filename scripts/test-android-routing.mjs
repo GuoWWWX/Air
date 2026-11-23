@@ -90,3 +90,23 @@ test('connection policies persist as custom rules and direct apps stay in the mo
   assert.ok(plan.config.rules.includes('DOMAIN,only.example,REJECT'))
   assert.ok(!plan.tunnel.disallowedApplications?.includes(pkg))
 })
+
+test('node, group context, subscription and saved chain resolve the closest explicit binding', () => {
+  const ruleLibrary = { sets: [{ id: 'u', name: 'U', profile: { rules: ['DOMAIN,custom.test,DIRECT', 'MATCH,PROXY'] } }],
+    bindings: { 'subscription:second': 'user:u', 'group:mix': 'none', 'chain:new': 'subscription:first' } }
+  const base = { ...library, groups: [{ id: 'mix', name: 'Mix', type: 'select', members: ['second/Node'] }],
+    routing: { ...library.routing, ruleLibrary } }
+  const run = extra => compile({ ...base, ...extra }).plan.config.rules
+  assert.ok(run({}).includes('DOMAIN,custom.test,DIRECT'))
+  const grouped = { type: 'node', id: 'second/Node', groupId: 'mix' }
+  assert.ok(run({ choice: grouped }).includes('GEOSITE,cn,DIRECT'))
+  ruleLibrary.bindings['node:second/Node'] = 'subscription:first'
+  assert.equal(run({ choice: grouped }).at(-1), 'MATCH,DIRECT')
+  const chain = { id: 'new', name: 'New', inheritExitRules: false, hops: ['first/Node','second/Node'] }
+  const picked = { chains: [chain], choice: { type: 'chain', id: 'new' } }
+  assert.ok(run(picked).includes(firstRule))
+  delete ruleLibrary.bindings['chain:new']
+  assert.ok(run(picked).includes('GEOIP,CN,DIRECT,no-resolve'))
+  assert.deepEqual(restoreLibrary(base).routing.ruleLibrary, ruleLibrary)
+  assert.deepEqual(parseSettings(stringify({routing:base.routing})).routing.ruleLibrary,ruleLibrary)
+})

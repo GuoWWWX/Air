@@ -89,6 +89,7 @@ async fn switches_a_loaded_node_and_mode_without_restarting_the_kernel() {
             std::slice::from_ref(&source),
             None,
             &StartTarget::Node {
+                group_id: None,
                 id: source.nodes[index].id.clone(),
             },
         )
@@ -137,7 +138,7 @@ async fn switches_a_loaded_node_and_mode_without_restarting_the_kernel() {
         )).unwrap()
     });
     let routing = RoutingConfig {
-        subscription_id: Some("one".into()),
+        rule_library: None, match_fallback: None, subscription_id: Some("one".into()),
         rules: vec![Rule {
             enabled: true, matcher: Matcher::Ip, value: "1.1.1.1".into(),
             host_matcher: None, host_value: None,
@@ -147,7 +148,7 @@ async fn switches_a_loaded_node_and_mode_without_restarting_the_kernel() {
     };
     runtime.set_mode(Mode::Rule).await.unwrap();
     for (index, expected) in ["first", "second"].into_iter().enumerate() {
-        let target = StartTarget::Node { id: sources[index].nodes[0].id.clone() };
+        let target = StartTarget::Node { group_id: None, id: sources[index].nodes[0].id.clone() };
         runtime.select_node(compile(Mode::Rule, &routing, &sources, None, &target).unwrap()).await.unwrap();
         assert_eq!(request().await.unwrap().text().await.unwrap(), "first");
         assert_eq!(client.get("http://1.0.0.1/").send().await.unwrap().text().await.unwrap(), expected);

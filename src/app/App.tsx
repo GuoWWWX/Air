@@ -450,6 +450,7 @@ export function App() {
   })
   const systemDark = useSystemTheme(theme)
   const [chains, setChains] = useState<ChainRecord[]>(loadSavedChains)
+  const [preferredGroupId, setPreferredGroupId] = useState(() => preferences.getItem('air.preferredGroupId') ?? undefined)
   const [preferredNodeId, setPreferredNodeId] = useState(() => preferences.getItem('air.preferredNodeId') ?? '')
   const preferenceVersion = useRef(0)
   const [activeChainId, setActiveChainId] = useState<string>(() => {
@@ -788,7 +789,7 @@ export function App() {
       activeChainId && chains.some(item => item.id === activeChainId)
         ? activeChainId
         : `chain-${Date.now().toString(36)}`
-    const record: ChainRecord = { id, name: finalName, hops: [...hops] }
+    const record: ChainRecord = { id, name: finalName, hops: [...hops], inheritExitRules: chains.some(chain => chain.id === id) ? chains.find(chain => chain.id === id)?.inheritExitRules : false }
     clearPreferredNode()
     setChains(prev => {
       const idx = prev.findIndex(item => item.id === id)
@@ -877,7 +878,10 @@ export function App() {
     }
   }
 
-  function rememberPreferredNode(id: string) {
+  function rememberPreferredNode(id: string, groupId?: string) {
+    setPreferredGroupId(groupId)
+    if (groupId) preferences.setItem('air.preferredGroupId', groupId)
+    else preferences.removeItem('air.preferredGroupId')
     preferenceVersion.current += 1
     if (id) preferences.setItem('air.preferredNodeId', id)
     else preferences.removeItem('air.preferredNodeId')
@@ -886,7 +890,7 @@ export function App() {
 
   function clearPreferredNode() { rememberPreferredNode('') }
 
-  async function choosePreferredNode(id: string) {
+  async function choosePreferredNode(id: string, groupId?: string) {
     if (proxy.pending || proxy.selectingNodeId) return
     if (store.library.nodes.some(node => node.id === id && node.subscriptionNotice)) {
       onError(tr('所选条目是订阅提示，请选择可连接的代理节点'))
@@ -894,22 +898,28 @@ export function App() {
     }
     const version = preferenceVersion.current
     if (!proxy.status.running) {
-      rememberPreferredNode(id)
+      rememberPreferredNode(id, groupId)
       return
     }
-    const next = await proxy.control({ action: 'selectNode', id })
+    const next = await proxy.control({ action: 'selectNode', id, groupId })
     if (next?.outbound?.hops[0]?.id === id && preferenceVersion.current === version) {
-      rememberPreferredNode(id)
+      rememberPreferredNode(id, groupId)
     }
   }
 
+  function chainTarget(): ProxyTarget {
+    const saved = chains.find(chain => chain.id === activeChainId)
+    return { kind: 'chain', id: saved?.id, name: chainName, hops, inheritExitRules: saved ? saved.inheritExitRules : false }
+  }
+
   function selectedProxyTarget(): ProxyTarget {
-    if (preferredNodeId) return { kind: 'node', id: preferredNodeId }
-    if (activeChainId || hops.some(Boolean)) return { kind: 'chain', name: chainName, hops }
+    if (preferredNodeId) return { kind: 'node', id: preferredNodeId, groupId: store.customGroups.some(group => group.id === preferredGroupId && group.members.includes(preferredNodeId)) ? preferredGroupId : undefined }
+    if (activeChainId || hops.some(Boolean)) return chainTarget()
     return { kind: 'routing' }
   }
 
   function routingSettingsTarget(): ProxyTarget {
+    if (proxy.status.running && proxy.status.target) return proxy.status.target
     const outbound = proxy.status.running ? proxy.status.outbound : undefined
     if (!outbound) {
       const selected = selectedProxyTarget()
@@ -958,7 +968,7 @@ export function App() {
 
   async function startCurrentChain() {
     const version = preferenceVersion.current
-    const next = await startProxy({ kind: 'chain', name: chainName, hops })
+    const next = await startProxy(chainTarget())
     if (next?.running && preferenceVersion.current === version) clearPreferredNode()
   }
 
@@ -1076,7 +1086,7 @@ export function App() {
                   preferredNodeId={preferredNodeId}
                   selectingNodeId={proxy.selectingNodeId}
                   powerPending={Boolean(proxy.pending)}
-                  onChooseNode={id => void choosePreferredNode(id)}
+                  onChooseNode={(id, groupId) => void choosePreferredNode(id, groupId)}
                   onEdit={openNode}
                   onAdd={() => openAddCustom()}
                   onAddToGroup={openAddCustom}

@@ -47,6 +47,7 @@ pub enum Action {
     },
     SelectNode {
         id: String,
+        group_id: Option<String>,
     },
     Stop,
     Mode {
@@ -61,11 +62,11 @@ pub enum Action {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum StartTarget {
     Routing,
-    Node { id: String },
-    Chain { name: String, hops: Vec<String> },
+    Node { id: String, group_id: Option<String> },
+    Chain { id: Option<String>, inherit_exit_rules: Option<bool>, name: String, hops: Vec<String> },
 }
 
 #[derive(Clone, Serialize)]
@@ -94,6 +95,7 @@ pub struct Status {
     pub tun: bool,
     tun_service_ready: Option<bool>,
     session_id: Option<String>,
+    target: Option<StartTarget>,
     outbound: Option<Outbound>,
 }
 
@@ -267,6 +269,7 @@ impl Runtime {
             tun: active.map_or(self.tun, |active| active.tun),
             tun_service_ready: tun_service_ready(),
             session_id: active.map(|active| active.session_id.clone()),
+            target: self.active_target(),
             outbound: active.map(|active| active.outbound.clone()),
         })
     }
@@ -400,6 +403,10 @@ impl Runtime {
 
     pub fn telemetry(&self) -> Option<TelemetrySnapshot> {
         self.active.as_ref()?.telemetry.clone()
+    }
+
+    pub fn active_network(&self) -> Option<&crate::network::NetworkSettings> {
+        self.active.as_ref().map(|active| &active.network)
     }
 
     pub fn active_target(&self) -> Option<StartTarget> {

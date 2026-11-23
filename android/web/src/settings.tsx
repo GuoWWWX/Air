@@ -13,7 +13,7 @@ import { showMessage } from '@/shared/ui/message'
 import logo from '@/assets/air-m1.svg'
 import { native, onAndroid } from './bridge'
 import { compileRule, configSource, defaultRouting, parseSettings, ruleMatchers, validateRouting, type HostMatcher, type MobileRouting, type RouteRule, type RouteTarget } from './configuration'
-import { compile, ruleSourceId, type Library, type Theme } from './model'
+import { compile, resolvedRuleSet, type Library, type Theme } from './model'
 import { SettingSwitch, type NetworkPage } from './network-settings'
 import { Row, Tag } from './ui'
 import { Field } from './workflows'
@@ -103,7 +103,8 @@ export function RoutingSettings({ library, model, busy, sdk, save }: {
   const [draft, setDraft] = useState(library.routing)
   const [preview, setPreview] = useState<string[]>()
   const sourceNames = new Map(library.sources.map(source => [source.id, source.name]))
-  const sourceName = sourceNames.get(ruleSourceId(library, model))
+  const reference = resolvedRuleSet({ ...library, routing: draft }, model)
+  const sourceName = sourceNames.get(reference.slice(13)) ?? draft.ruleLibrary?.sets.find(set => 'user:' + set.id === reference)?.name
   const targets: { target: RouteTarget; label: string; disabled?: boolean }[] = [
     { target: { kind: 'selected' }, label: tr('当前所选出口') },
     { target: { kind: 'direct' }, label: tr('直连') },

@@ -321,7 +321,7 @@ export function ChainEditor({ library, model, busy, save, use, remove, test }: {
   library: Library; model: Model; busy: boolean; save: (chain: Chain) => void; use: (chain: Chain) => void
   remove: (chain: Chain) => void; test: (chain: Chain) => void
 }) {
-  const [editing, setEditing] = useState<Chain>(() => library.chains.find(c => c.id === library.choice?.id) ?? library.chains[0] ?? { id: id(), name: '', hops: ['', ''] })
+  const [editing, setEditing] = useState<Chain>(() => library.chains.find(c => c.id === library.choice?.id) ?? library.chains[0] ?? { id: id(), inheritExitRules: false, name: '', hops: ['', ''] })
   const existing = library.chains.some(c => c.id === editing.id)
   const valid = editing.name.trim() && editing.hops.length >= 2 &&
     new Set(editing.hops).size === editing.hops.length && editing.hops.every(id => model.nodes.some(n => n.id === id))
@@ -337,7 +337,7 @@ export function ChainEditor({ library, model, busy, save, use, remove, test }: {
           placeholder={tr("新建链路")}
           onChange={value => {
             if (value === '__new__') {
-              setEditing({ id: id(), name: '', hops: ['', ''] })
+              setEditing({ id: id(), inheritExitRules: false, name: '', hops: ['', ''] })
               return
             }
             const found = library.chains.find(c => c.id === value)
@@ -349,7 +349,7 @@ export function ChainEditor({ library, model, busy, save, use, remove, test }: {
           ]}
         />
       </div>
-      <Button type="button" variant="outline" onClick={() => setEditing({ id: id(), name: '', hops: ['', ''] })}><Plus />{tr("新建")}</Button>
+      <Button type="button" variant="outline" onClick={() => setEditing({ id: id(), inheritExitRules: false, name: '', hops: ['', ''] })}><Plus />{tr("新建")}</Button>
       {existing && <Button type="button" variant="destructive" size="icon" aria-label={tr("删除链路")} disabled={busy} onClick={() => remove(editing)}><Trash2 /></Button>}
     </div>
     <Field label={tr("链路名称")}><input value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} required placeholder={tr("例如 节点转家宽")} /></Field>

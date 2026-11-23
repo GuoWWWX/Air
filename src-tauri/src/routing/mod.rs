@@ -1,4 +1,6 @@
 mod file;
+mod library;
+pub use library::{RuleLibrary, UserRuleSet};
 
 pub use file::{ConfigSource, Document, NetworkDocument, RoutingFile};
 
@@ -9,6 +11,10 @@ use std::{borrow::Cow, collections::HashSet, net::IpAddr};
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct RoutingConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_library: Option<RuleLibrary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_fallback: Option<Target>,
     pub subscription_id: Option<String>,
     pub inherit_rules: bool,
     pub fallback: Target,
@@ -81,10 +87,22 @@ impl RoutingConfig {
             self.subscription_id = None;
             self.inherit_rules = false;
             if matches!(self.fallback, Target::Subscription) {
-                self.fallback = Target::Reject;
+                self.fallback = Target::Selected;
             }
         }
         let mut changed = selected;
+        if let Some(lib) = &mut self.rule_library {
+            let key = format!("subscription:{id}");
+            let count = lib.bindings.len();
+            lib.bindings.retain(|owner, value| owner != &key && value != &key);
+            changed |= lib.bindings.len() != count;
+        }
+        for fallback in std::iter::once(&mut self.fallback).chain(self.match_fallback.iter_mut()) {
+            if matches!(fallback, Target::Group { source_id, .. } if source_id == id) {
+                *fallback = Target::Selected;
+                changed = true;
+            }
+        }
         for target in std::iter::once(&mut self.fallback)
             .chain(self.rules.iter_mut().map(|rule| &mut rule.target))
         {
@@ -98,6 +116,14 @@ impl RoutingConfig {
 
     pub fn detach_nodes(&mut self, removed_node_ids: &HashSet<String>) -> bool {
         let mut changed = false;
+        if let Some(lib) = &mut self.rule_library {
+            for id in removed_node_ids { changed |= lib.bindings.remove(&format!("node:{id}")).is_some(); }
+        }
+        for fallback in std::iter::once(&mut self.fallback).chain(self.match_fallback.iter_mut()) {
+            if matches!(fallback, Target::Node { id } if removed_node_ids.contains(id)) {
+                *fallback = Target::Selected; changed = true;
+            }
+        }
         for target in std::iter::once(&mut self.fallback)
             .chain(self.rules.iter_mut().map(|rule| &mut rule.target))
         {
@@ -110,6 +136,7 @@ impl RoutingConfig {
     }
 
     pub fn compile(&self, sources: &[Source]) -> AirResult<Vec<String>> {
+        if let Some(lib) = &self.rule_library { lib.validate()?; }
         let source = self
             .subscription_id
             .as_ref()
@@ -206,7 +233,7 @@ impl Target {
     pub(crate) fn group_alias(source_id: &str, name: &str) -> String {
         format!("air-group-{}", crate::subscriptions::digest(format!("{source_id}\0{name}")))
     }
-    fn outbound<'a>(&'a self, sources: &'a [Source], source: Option<&'a Source>) -> AirResult<Cow<'a, str>> {
+    pub(crate) fn outbound<'a>(&'a self, sources: &'a [Source], source: Option<&'a Source>) -> AirResult<Cow<'a, str>> {
         match self {
             Self::Direct => Ok(Cow::Borrowed("DIRECT")),
             Self::Reject => Ok(Cow::Borrowed("REJECT")),
