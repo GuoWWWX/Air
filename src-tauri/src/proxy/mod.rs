@@ -45,6 +45,7 @@ pub enum Action {
         kernel_path: PathBuf,
         target: StartTarget,
     },
+    SelectGroup { id: String },
     SelectNode {
         id: String,
         group_id: Option<String>,
@@ -65,6 +66,7 @@ pub enum Action {
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum StartTarget {
     Routing,
+    Group { id: String, #[serde(default)] name: String, #[serde(default)] members: Vec<String> },
     Node { id: String, group_id: Option<String> },
     Chain { id: Option<String>, inherit_exit_rules: Option<bool>, name: String, hops: Vec<String> },
 }

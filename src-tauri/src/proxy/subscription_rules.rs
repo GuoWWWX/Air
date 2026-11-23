@@ -85,7 +85,7 @@ impl RuleOutbounds {
         // A direct/reject group keeps that decision. Fixed nodes and automatic groups retain their own target.
         let mut current = name;
         let mut seen = HashSet::new();
-        while let Some(group) = source.groups.iter().find(|g| g.name == current) {
+        while let Some(group) = source.groups.iter().find(|g| g.name == current && g.strategy == "select") {
             if !seen.insert(current) {
                 return Err("订阅分组包含循环引用".into());
             }

@@ -1,3 +1,4 @@
+import { useDesktopBinding } from '@/features/settings/useDesktopBinding'
 import { tr } from '@/shared/i18n/messages'
 import { Check, Layers, Plus } from 'lucide-react'
 import { useEffect, useEffectEvent, useState, type FormEvent } from 'react'
@@ -43,13 +44,16 @@ export function CustomGroupDialog({
   onAssignExisting,
   onDeleteGroup,
 }: Props) {
+  const binding = useDesktopBinding('group', state.kind === 'rename' ? state.group.id : undefined, state.kind === 'rename' || state.kind === 'create')
   const [name, setName] = useState('')
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
+  const [createdId, setCreatedId] = useState<string>()
   const [newGroupName, setNewGroupName] = useState('')
   const [pending, setPending] = useState(false)
 
   const resetDraft = useEffectEvent(() => {
     setPending(false)
+    setCreatedId(undefined)
     if (state.kind === 'create') {
       setName('')
     } else if (state.kind === 'rename') {
@@ -73,11 +77,14 @@ export function CustomGroupDialog({
           showMessage({ type: 'warning', title: tr('请输入分组名称') })
           return
         }
-        await onSaveGroup({
+        const saved = await onSaveGroup({
           name: name.trim(),
+          id: createdId,
           members: state.initialMembers,
           parentId: state.parent?.id,
         })
+        setCreatedId(saved.id)
+        await binding.save(saved.id)
         showMessage({ type: 'success', title: tr("已创建分组「{0}」", name.trim()) })
         onClose()
       } else if (state.kind === 'rename') {
@@ -85,10 +92,11 @@ export function CustomGroupDialog({
           showMessage({ type: 'warning', title: tr('请输入新的分组名称') })
           return
         }
-        await onSaveGroup({
+        const saved = await onSaveGroup({
           id: state.group.id,
           name: name.trim(),
         })
+        await binding.save(saved.id)
         showMessage({ type: 'success', title: tr('分组名称已更新') })
         onClose()
       } else if (state.kind === 'assign') {
@@ -161,6 +169,7 @@ export function CustomGroupDialog({
 
           {(state.kind === 'create' || state.kind === 'rename') && (
             <div className="flex flex-col gap-2 py-2">
+              {binding.field}
               <Label htmlFor="custom-group-name">{tr("分组名称")}</Label>
               <Input
                 id="custom-group-name"

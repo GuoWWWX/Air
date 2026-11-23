@@ -48,7 +48,7 @@ function useProxyExit(status: ProxyStatus): ExitLookup {
   const [attempt, setAttempt] = useState(0)
   const [result, setResult] = useState<{ key: string; value?: ProxyExit }>()
   const key = status.running && status.sessionId
-    ? JSON.stringify([status.outbound?.hops.map(hop => hop.id) ?? [], attempt])
+    ? JSON.stringify([status.target, status.outbound?.hops.map(hop => hop.id) ?? [], attempt])
     : null
   // TUN can replace the kernel session while keeping the same active outbound.
   const lookup = useEffectEvent(() => status.sessionId ? air.proxyExit(status.sessionId) : undefined)
@@ -191,7 +191,7 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
 
   function control(action: ProxyAction) {
     const isPower = action.action === 'start' || action.action === 'stop'
-    if (action.action === 'selectNode') {
+    if ((action.action === 'selectNode' || action.action === 'selectGroup')) {
       if (powerBusy.current || nodeBusy.current) return Promise.resolve(undefined)
       nodeBusy.current = true
       setSelectingNodeId(action.id)
@@ -234,7 +234,7 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
           powerBusy.current = false
           if (mounted.current) setPending(undefined)
         }
-        if (action.action === 'selectNode') {
+        if ((action.action === 'selectNode' || action.action === 'selectGroup')) {
           nodeBusy.current = false
           if (mounted.current) setSelectingNodeId(undefined)
         }

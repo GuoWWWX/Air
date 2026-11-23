@@ -178,6 +178,7 @@ export interface ProxyTelemetry extends ProxyTraffic {
 
 export type ProxyTarget =
   | { kind: 'routing' }
+  | { kind: 'group'; id: string; name: string; members: string[] }
   | { kind: 'node'; id: string; groupId?: string }
   | { kind: 'chain'; id?: string; inheritExitRules?: boolean; name: string; hops: string[] }
 
@@ -187,6 +188,7 @@ export type ProxyModeAction =
 
 export type ProxyAction =
   | { action: 'start'; kernelPath: string; target: ProxyTarget }
+  | { action: 'selectGroup'; id: string }
   | { action: 'selectNode'; id: string; groupId?: string }
   | { action: 'stop' }
   | ProxyModeAction
@@ -199,6 +201,7 @@ export type RouteTarget =
 export type HostMatcher = 'domain' | 'domainSuffix' | 'ip'
 
 export interface RouteRule {
+  resumeOnEnable?: boolean
   enabled: boolean
   matcher: 'domain' | 'domainSuffix' | 'ip' | 'processName' | 'processPath'
   value: string

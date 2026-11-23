@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { tr } from '@/shared/i18n/messages'
-import { applicationRule, moveRuleRow, replaceRuleRows, ruleRows, type RuleRow } from '@/shared/proxy/rule-rows'
+import { applicationRule, moveRuleRow, replaceRuleRows, ruleRows, toggleRuleRow, type RuleRow } from '@/shared/proxy/rule-rows'
 import { validatePolicyHostValue, type PolicyRuleLike, type PolicyHostMatcher } from '@/shared/proxy/connection-policy'
 import { AirSelect } from './AirSelect'
 import { Badge } from './badge'
@@ -61,9 +61,9 @@ export function GlobalRuleList<R extends PolicyRuleLike>({ rules, android, apps,
     }
     for (const rule of edit.entries) {
       if (!rule.enabled) continue
-      const error = rule.hostMatcher ? validatePolicyHostValue(rule.hostMatcher, rule.hostValue ?? '') : undefined
-      if (error || !rule.value.trim()) {
-        showMessage({ type: 'error', title: error ?? tr('请填写匹配值') })
+      const invalidHost = rule.hostMatcher && !validatePolicyHostValue(rule.hostMatcher, rule.hostValue ?? '')
+      if (invalidHost || !rule.value.trim()) {
+        showMessage({ type: 'error', title: invalidHost ? tr('请输入有效的域名或 IP') : tr('请填写匹配值') })
         return
       }
     }
@@ -97,13 +97,13 @@ export function GlobalRuleList<R extends PolicyRuleLike>({ rules, android, apps,
           <Badge variant="accent" className="max-w-[32%] truncate">{main ? label(main) : tr('按域名细分')}</Badge><ChevronRight size={14} />
         </button>
         <Switch size="sm" aria-label={tr('启用规则')} disabled={busy} checked={entries.some(rule => rule.enabled)}
-          onCheckedChange={enabled => void persist(rules.map((r, i) => row.indices.includes(i) ? { ...r, enabled } : r))} />
+          onCheckedChange={enabled => void persist(toggleRuleRow(rules, row, enabled))} />
       </div>
     })}
     {edit && overlay(detail && applicationRule(detail) ? tr('软件分流详情') : tr('规则详情'), () => { if (!busy) setEdit(undefined) }, <div className="grid min-w-0 gap-3">
       {edit.entries.map((rule, i) => <div key={i} className="grid gap-2 rounded-md border border-border p-3">
         <div className="flex items-center gap-2"><strong className="flex-1 text-sm">{applicationRule(rule) ? rule.hostMatcher ? tr('域名或 IP 例外') : tr('整个应用') : tr('匹配方式')}</strong>
-          <Switch size="sm" aria-label={tr('启用规则')} checked={rule.enabled} onCheckedChange={enabled => patch(i, { enabled })} />
+          <Switch size="sm" aria-label={tr('启用规则')} checked={rule.enabled} onCheckedChange={enabled => patch(i, { enabled, resumeOnEnable: undefined })} />
           <Button type="button" size="icon-sm" variant="ghost" aria-label={tr('上移')} disabled={!i} onClick={() => reorder(i, -1)}><ArrowUp /></Button>
           <Button type="button" size="icon-sm" variant="ghost" aria-label={tr('下移')} disabled={i === edit.entries.length - 1} onClick={() => reorder(i, 1)}><ArrowDown /></Button>
           <Button type="button" size="icon-sm" variant="ghost" aria-label={tr('删除规则')} onClick={() => setEdit({ ...edit, entries: edit.entries.filter((_, at) => i !== at) })}><Trash2 /></Button></div>

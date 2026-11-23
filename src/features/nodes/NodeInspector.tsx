@@ -1,3 +1,4 @@
+import { useDesktopBinding } from '@/features/settings/useDesktopBinding'
 import { tr } from '@/shared/i18n/messages'
 import { FileCode2, Network, RotateCcw, X } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedded }: Props) {
+  const binding = useDesktopBinding('node', node.id)
   const [name, setName] = useState(node.name)
   const [server, setServer] = useState(node.server)
   const [port, setPort] = useState(String(node.port))
@@ -37,6 +39,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
     try {
       if (reset) await air.resetNode(node.id)
       else await air.editNode({ id: node.id, name, server, port: Number(port) })
+      if (!reset) await binding.save(node.id)
       showMessage({ type: 'success', title: reset ? tr('已恢复订阅值') : tr('节点覆写已保存') })
       onSaved()
     } catch (error) {
@@ -94,6 +97,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
         </div>
 
         <div className="flex flex-col gap-1.5">
+          {binding.field}
           <Label htmlFor="node-edit-name">{tr("显示名称")}</Label>
           <Input
             id="node-edit-name"

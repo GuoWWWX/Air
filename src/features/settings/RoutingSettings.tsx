@@ -1,4 +1,6 @@
 import { resolveRules } from '@/shared/proxy/rule-library'
+import { RuleLibraryManager, profileYaml } from '@/shared/ui/RuleLibraryManager'
+import { downloadSubscription } from '@/shared/proxy/subscription-extension'
 import { GlobalRuleList, type AppIdentity } from '@/shared/ui/GlobalRuleList'
 import { ruleDialog } from '@/shared/ui/RuleDialog'
 import { tr } from '@/shared/i18n/messages'
@@ -33,6 +35,7 @@ interface Props {
   groups: Library['groups']
   nodes: NodeRecord[]
   target: ProxyTarget
+  ownerNames: Record<string, string>
   apps: AppIdentity[]
   bindApplication: boolean
   onBack: () => void
@@ -133,7 +136,7 @@ function TargetField({
 
 let cachedRoutingDoc: RoutingDocument | undefined
 
-export function RoutingSettings({ sources, groups, nodes, target, apps, bindApplication, onBack }: Props) {
+export function RoutingSettings({ sources, groups, nodes, target, apps, ownerNames, bindApplication, onBack }: Props) {
   const [draft, setDraft] = useState<RoutingConfig | undefined>(() =>
     cachedRoutingDoc
       ? (bindApplication
@@ -160,9 +163,11 @@ export function RoutingSettings({ sources, groups, nodes, target, apps, bindAppl
   const automatic = target.kind !== 'routing'
   const exitId = target.kind === 'node' ? target.id : target.kind === 'chain' ? target.hops.at(-1) : undefined
   const exitSource = nodes.find(node => node.id === exitId)?.sourceId
-  const source = target.kind === 'chain' && target.inheritExitRules === false ? undefined : exitSource
+  const groupSources = target.kind === 'group' ? new Set(nodes.filter(n => target.members.includes(n.id)).map(n => n.sourceId)) : undefined
+  const source = groupSources ? (groupSources.size === 1 ? [...groupSources][0] : undefined)
+    : target.kind === 'chain' && target.inheritExitRules === false ? undefined : exitSource
   const keys = target.kind === 'node' ? ['node:' + target.id, ...(target.groupId ? ['group:' + target.groupId] : [])]
-    : target.kind === 'chain' && target.id ? ['chain:' + target.id] : []
+    : target.kind === 'group' ? ['group:' + target.id] : target.kind === 'chain' && target.id ? ['chain:' + target.id] : []
   if (source) keys.push('subscription:' + source)
   const reference = resolveRules(draft?.ruleLibrary, keys, source ?? (target.kind === 'routing' ? draft?.subscriptionId ?? undefined : undefined))
   const sourceName = subscriptionSources.find(item => 'subscription:' + item.id === reference)?.name
@@ -310,8 +315,12 @@ export function RoutingSettings({ sources, groups, nodes, target, apps, bindAppl
               <fieldset disabled={busy} className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0">
                 <div className="flex flex-col gap-1.5">
                   <Label>{tr("订阅规则来源")}</Label>
-                  <span className="text-sm">{nodes.find(node => node.id === exitId)?.name ?? tr('当前代理出口')} → {sourceName ?? tr('无')}</span>
+                  <span className="text-sm">{target.kind === 'group' || target.kind === 'chain' ? target.name : nodes.find(node => node.id === exitId)?.name ?? tr('当前代理出口')} → {sourceName ?? tr('无')}</span>
                 </div>
+                <RuleLibraryManager catalog={draft.ruleLibrary} owners={ownerNames} overlay={ruleDialog} exportYaml={downloadSubscription}
+                  sources={subscriptionSources.map(s => ({ id:s.id,name:s.name,updated:s.details?.updatedAt,
+                    read:async () => profileYaml(await air.subscriptionYaml(s.id, false)) }))}
+                  save={async ruleLibrary => { accept(await air.saveRouting({ ...draft, ruleLibrary }, revision, target)); return true }} />
                 <TargetField label={tr("默认出口")} target={draft.matchFallback ?? (automatic ? { kind: 'subscription' } : draft.fallback)}
                   groups={groups} nodes={nodes} fallback allowSubscription
                   onChange={value => update(current => ({ ...current, matchFallback: value,
@@ -340,6 +349,7 @@ export function RoutingSettings({ sources, groups, nodes, target, apps, bindAppl
         {preview && (
           <Card className="gap-2.5 p-4">
             <h2 className="text-sm font-semibold text-foreground">{tr("Mihomo 规则顺序")}</h2>
+            <p className="text-xs text-muted-foreground">{tr('全局规则 → 基础网络保障 → {0} → 默认出口', sourceName ?? tr('国内直连兜底'))}</p>
             <ol className="flex flex-col gap-1 pl-5 text-xs text-foreground">
               {preview.map((line, index) => (
                 <li key={index} className="break-all">

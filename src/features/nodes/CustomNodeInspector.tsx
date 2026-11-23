@@ -1,3 +1,4 @@
+import { useDesktopBinding } from '@/features/settings/useDesktopBinding'
 import { tr } from '@/shared/i18n/messages'
 import { Check, Network, ShieldAlert, Trash2, X, Zap } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
@@ -37,6 +38,7 @@ export function CustomNodeInspector({
   onSettings,
   onError,
 }: Props) {
+  const binding = useDesktopBinding('node', nodeId)
   const [name, setName] = useState('')
   const [protocol, setProtocol] = useState<CustomProtocol>('http')
   const [server, setServer] = useState('')
@@ -142,6 +144,7 @@ export function CustomNodeInspector({
         if (!payload) return
         savedId = await air.saveCustomNode(payload)
       }
+      await binding.save(savedId)
       await onSaved(savedId)
       showMessage({ type: 'success', title: nodeId ? tr('节点已保存') : tr('自定义节点已添加') })
     } catch (error) {
@@ -194,6 +197,7 @@ export function CustomNodeInspector({
 
       <div className="air-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-4 py-3.5">
         <div className="flex flex-col gap-1.5">
+          {binding.field}
           <Label htmlFor="custom-node-name">{tr("名称")}</Label>
           <Input
             id="custom-node-name"

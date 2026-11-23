@@ -15,6 +15,7 @@ fn deleting_the_routing_source_detaches_inheritance_and_rejects_only_its_outboun
             rule(Matcher::Domain, "example.com", linked.clone()),
             rule(Matcher::Domain, "local.test", Target::Direct),
             Rule {
+                resume_on_enable: None,
                 enabled: false,
                 ..rule(Matcher::Domain, "disabled.test", linked)
             },
@@ -36,6 +37,7 @@ use std::fs;
 
 fn rule(matcher: Matcher, value: &str, target: Target) -> Rule {
     Rule {
+        resume_on_enable: None,
         enabled: true,
         matcher,
         value: value.into(),
@@ -82,6 +84,7 @@ rules:
                 },
             ),
             Rule {
+                resume_on_enable: None,
                 enabled: false,
                 ..rule(Matcher::Domain, "disabled.example.com", Target::Direct)
             },
@@ -180,6 +183,7 @@ fn composite_process_host_rules_and_node_targets_compile_and_detach() {
         fallback: Target::Selected,
         rules: vec![
             Rule {
+                resume_on_enable: None,
                 enabled: true,
                 matcher: Matcher::ProcessName,
                 value: "chrome.exe".into(),
@@ -188,6 +192,7 @@ fn composite_process_host_rules_and_node_targets_compile_and_detach() {
                 target: Target::Node { id: node_id.clone() },
             },
             Rule {
+                resume_on_enable: None,
                 enabled: true,
                 matcher: Matcher::ProcessName,
                 value: "chrome.exe".into(),

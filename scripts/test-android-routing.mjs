@@ -112,7 +112,7 @@ test('node, group context, subscription and saved chain resolve the closest expl
 })
 
 test('software rows collect path and process exceptions while preserving unrelated priorities', async () => {
-  const {ruleRows, replaceRuleRows, moveRuleRow} = await vite.ssrLoadModule('@/shared/proxy/rule-rows.ts')
+  const {ruleRows, replaceRuleRows, moveRuleRow, toggleRuleRow} = await vite.ssrLoadModule('@/shared/proxy/rule-rows.ts')
   const app = { ...custom, matcher:'processName', value:'Example.EXE' }
   const exception = {...app,hostMatcher:'domain',hostValue:'own.test'}
   const path = {...app,matcher:'processPath',value:'C:\\Apps\\Example.exe',hostMatcher:'domainSuffix',hostValue:'home.test'}
@@ -122,4 +122,29 @@ test('software rows collect path and process exceptions while preserving unrelat
   assert.deepEqual(result,[exception,custom,path,app])
   assert.deepEqual(moveRuleRow(result,rows[1],rows[0]),[custom,exception,path,app])
   assert.equal(ruleRows([custom,custom]).length,2)
+  const mixed = [app,{...exception,enabled:false}]
+  const bucket = ruleRows(mixed)[0]
+  const paused = toggleRuleRow(mixed,bucket,false)
+  assert.deepEqual(toggleRuleRow(paused,bucket,true).map(rule=>rule.enabled),[true,false])
+})
+
+test('borrowed automatic groups preserve DIRECT members and original health-check strategy', () => {
+  const first = library.sources[0]
+  const profile = parse(first.yaml)
+  profile['proxy-groups'] = [{ name:'Fallback', type:'fallback', proxies:['DIRECT','Node'], url:'https://example.org/ping', interval:91 }]
+  profile.rules = ['DOMAIN,auto.test,Fallback','MATCH,DIRECT']
+  const yaml = stringify(profile)
+  const routing = { ...library.routing, ruleLibrary:{ sets:[],bindings:{'node:second/Node':'subscription:first'} } }
+  const result = compile({...library, sources:[{...first,yaml,original:yaml},library.sources[1]], routing}).plan.config
+  const alias = result.rules.find(line=>line.startsWith('DOMAIN,auto.test,')).split(',').at(-1)
+  const group = result['proxy-groups'].find(item=>item.name===alias)
+  assert.equal(group.type,'fallback')
+  assert.equal(group.interval,91)
+  assert.deepEqual(group.proxies,['DIRECT','AirNode-1'])
+})
+test('deleting a user template unbinds every referencing object and keeps unrelated bindings', async () => {
+  const {dropBinding} = await vite.ssrLoadModule('@/shared/proxy/rule-library.ts')
+  const catalog = {sets:[{id:'a'},{id:'b'}],bindings:{'node:X':'user:a','group:G':'user:a','chain:C':'user:a','subscription:S':'user:a','node:Y':'none'}}
+  assert.deepEqual(dropBinding(catalog,'user:a'),{sets:[{id:'b'}],bindings:{'node:Y':'none'}})
+  assert.equal(Object.keys(catalog.bindings).length,5)
 })

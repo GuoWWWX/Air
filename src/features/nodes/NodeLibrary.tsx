@@ -84,6 +84,7 @@ interface Props {
   preferredNodeId: string
   selectingNodeId?: string
   powerPending: boolean
+  onChooseGroup: (id: string) => void
   onChooseNode: (id: string, groupId?: string) => void
   onEdit: (node: NodeRecord) => void
   onAdd: () => void
@@ -165,6 +166,7 @@ export function NodeLibrary({
   preferredNodeId,
   selectingNodeId,
   powerPending,
+  onChooseGroup,
   onChooseNode,
   onEdit,
   onAdd,
@@ -1170,6 +1172,8 @@ export function NodeLibrary({
                   <h2 className="min-w-0 truncate text-[15px] font-semibold text-foreground" title={scopeTitle}>
                     <FlagText text={scopeTitle} />
                   </h2>
+                  {activeCustomGroup && <Button type="button" size="sm" variant="outline" disabled={!activeCustomGroup.members.length || nodeActionDisabled}
+                    onClick={() => onChooseGroup(activeCustomGroup.id)}>{tr('设为自动出站')}</Button>}
                   <span className="mono text-xs text-muted-foreground">{filtered.length}</span>
                   {scope.kind !== 'all' && (
                     <Button

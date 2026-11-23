@@ -1,3 +1,4 @@
+import { useDesktopBinding } from '@/features/settings/useDesktopBinding'
 import { formatLocale, diagnostic, tr } from '@/shared/i18n/messages'
 import {
   Check, ArrowDown, ArrowUp, CloudDownload, CalendarClock, ChevronRight, Download, Eye, Loader2, Puzzle, QrCode,
@@ -907,6 +908,7 @@ function EditSubscription({
   onYaml: (id: string) => void
   onSourceDeleted: (id: string) => void
 }) {
+  const binding = useDesktopBinding('subscription', dialog.kind === 'source' ? dialog.source.id : undefined, dialog.kind === 'source')
   const [name, setName] = useState(dialog.kind === 'group' ? dialog.group.name : dialog.source.name)
   const [url, setUrl] = useState(dialog.kind === 'source' ? dialog.url : '')
   const [strategy, setStrategy] = useState(
@@ -922,7 +924,8 @@ function EditSubscription({
     setPending(true)
     try {
       if (dialog.kind === 'source') {
-        await air.updateSubscription(dialog.source.id, name, url)
+        if (name !== dialog.source.name || url !== dialog.url) await air.updateSubscription(dialog.source.id, name, url)
+        await binding.save(dialog.source.id)
       } else if (dialog.kind === 'group') {
         await air.changeSubscriptionItem(dialog.group.sourceId, dialog.group.name, true, {
           name,
@@ -996,11 +999,12 @@ function EditSubscription({
         <p className="text-xs leading-relaxed text-muted-foreground">
           {dialog.item
             ? tr('从该来源的本地副本移除此条目。订阅刷新后仍沿用本地副本。')
-            : tr('此订阅及其节点和分组将从 Air 移除。引用它的分流出口将改为拒绝连接。')}
+            : tr('将删除订阅及其节点和分组，规则集绑定将跟随默认。指向已删除节点或分组的全局规则将拒绝连接。')}
         </p>
       ) : (
         <>
           <div className="flex flex-col gap-1.5">
+            {dialog.kind === 'source' && binding.field}
             <Label htmlFor="edit-sub-name">{tr("名称")}</Label>
             <Input
               id="edit-sub-name"

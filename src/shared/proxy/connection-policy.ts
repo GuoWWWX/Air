@@ -5,6 +5,7 @@ export interface PolicyTargetLike {
 }
 
 export interface PolicyRuleLike<Target extends PolicyTargetLike = PolicyTargetLike> {
+  resumeOnEnable?: boolean
   enabled: boolean
   matcher: string
   value: string

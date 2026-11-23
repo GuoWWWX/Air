@@ -45,3 +45,12 @@ export function moveRuleRow<R extends PolicyRuleLike>(rules: R[], row: RuleRow, 
   return rules.flatMap((rule, index) => selected.has(index) ? [] : index !== anchor ? [rule]
     : before ? [...moving, rule] : [rule, ...moving])
 }
+
+export function toggleRuleRow<R extends PolicyRuleLike>(rules: R[], row: RuleRow, enabled: boolean): R[] {
+  const indices = new Set(row.indices)
+  const hasPrevious = row.indices.some(i => rules[i].resumeOnEnable)
+  return rules.map((rule, i) => !indices.has(i) ? rule : {
+    ...rule, enabled: enabled && (!hasPrevious || !!rule.resumeOnEnable),
+    resumeOnEnable: !enabled && rule.enabled ? true : undefined,
+  })
+}

@@ -19,6 +19,7 @@ export type RouteTarget =
 export type RuleMatcher = 'domain' | 'domainSuffix' | 'ip' | 'processName'
 export type HostMatcher = 'domain' | 'domainSuffix' | 'ip'
 export interface RouteRule {
+  resumeOnEnable?: boolean
   enabled: boolean
   matcher: RuleMatcher
   value: string
@@ -296,6 +297,7 @@ export function parseSettings(text: string) {
       }
       return {
         enabled: rule.enabled,
+        ...(rule.resumeOnEnable === true && { resumeOnEnable: true }),
         value: rule.value,
         matcher: rule.matcher as RuleMatcher,
         ...(hostMatcher ? { hostMatcher: hostMatcher as HostMatcher } : {}),

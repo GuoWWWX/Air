@@ -1,4 +1,6 @@
 import { Sheet } from './ui'
+import { RuleLibraryManager, readRuleProfile } from '@/shared/ui/RuleLibraryManager'
+import { downloadSubscription } from '@/shared/proxy/subscription-extension'
 import { GlobalRuleList, type AppIdentity } from '@/shared/ui/GlobalRuleList'
 import { LanguagePicker } from '@/shared/i18n/LanguagePicker'
 import { savePreviewLanguage, tr } from '@/shared/i18n/messages'
@@ -15,7 +17,7 @@ import { showMessage } from '@/shared/ui/message'
 import logo from '@/assets/air-m1.svg'
 import { native, onAndroid } from './bridge'
 import { compileRule, configSource, defaultRouting, parseSettings, ruleMatchers, validateRouting, type HostMatcher, type MobileRouting, type RouteRule, type RouteTarget } from './configuration'
-import { compile, resolvedRuleSet, type Library, type Theme } from './model'
+import { compile, resolvedRuleSet, selection, selectionName, type Library, type Theme } from './model'
 import { SettingSwitch, type NetworkPage } from './network-settings'
 import { Row, Tag } from './ui'
 import { Field } from './workflows'
@@ -147,8 +149,15 @@ export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
       <fieldset disabled={busy} className="settings-fields">
         <section className="panel settings-form">
           <h2 className="settings-form-title">{tr("订阅规则与默认出口")}</h2>
-          <div className="field"><span>{tr("订阅规则来源")}</span><strong>{sourceName ?? tr('无')}</strong></div>
-          <p className="fine-print">{tr('先匹配自定义规则，再匹配当前节点所属订阅的规则。')}</p>
+          <div className="field"><span>{tr("订阅规则来源")}</span><strong>{selectionName(selection(library,model),model,library) ?? tr('无')} → {sourceName ?? tr('无')}</strong></div>
+          <RuleLibraryManager catalog={draft.ruleLibrary} overlay={(title, close, content) => <Sheet open title={title} close={close}>{content}</Sheet>}
+            sources={library.sources.map(s => ({ id:s.id,name:s.name,updated:s.updated,
+              read:async () => readRuleProfile(model.profiles.get(s.id)?.profile) }))}
+            owners={Object.fromEntries([...library.sources.map(s => ['subscription:' + s.id,s.name]),
+              ...model.nodes.map(n => ['node:' + n.id,n.config.name]), ...library.groups.map(g => ['group:' + g.id,g.name]),
+              ...library.chains.map(c => ['chain:' + c.id,c.name])])}
+            save={async ruleLibrary => { const next = { ...draft,ruleLibrary }; if (!await save(next)) return false; change(next); return true }}
+            exportYaml={(name,text) => onAndroid ? native('export', { name:name + '.yaml',text }) : downloadSubscription(name,text)} />
           {selectTarget(tr('默认出口'), draft.fallback, fallback => change({ ...draft, fallback }))}
         </section>
         <section className="panel settings-form">
@@ -168,7 +177,7 @@ export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
           try { setPreview(check()) }
           catch (failure) { showMessage({ type: 'error', title: errorText(failure) }) }
         }}><GitBranch data-icon="inline-start" />{tr("预览生效规则")}</Button>
-        {preview && <pre className="effective-preview whitespace-pre-wrap break-all">{preview.join('\n')}</pre>}
+        {preview && <pre className="effective-preview whitespace-pre-wrap break-all">{tr('全局规则 → 基础网络保障 → {0} → 默认出口', sourceName ?? tr('国内直连兜底')) + '\n\n' + preview.join('\n')}</pre>}
       </fieldset>
     </main>
     <footer className="page-action settings-footer">

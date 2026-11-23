@@ -245,7 +245,7 @@ export function readLibrary(library: Library) {
     const defaultBuiltinPolicy = (name: string, seen = new Set<string>()): string | undefined => {
       if (builtin.has(name)) return name
       const row = names.get(name)
-      if (!row || seen.has(name) || !Array.isArray(row.proxies)) return
+      if (!row || row.type !== 'select' || seen.has(name) || !Array.isArray(row.proxies)) return
       const next = new Set(seen).add(name)
       const first = row.proxies.find((child): child is string => typeof child === 'string' && Boolean(child.trim()))?.trim()
       if (!first) return
@@ -324,6 +324,11 @@ export function withoutSubscription(library: Library, sourceId: string): Library
     edits: Object.fromEntries(Object.entries(library.edits).filter(([id]) => keepNode(id))),
     probes: Object.fromEntries(Object.entries(library.probes).filter(([id]) => keepNode(id))),
     hiddenNodes: library.hiddenNodes.filter(keepNode),
+  }
+  if (next.routing.ruleLibrary) {
+    const bindings = Object.fromEntries(Object.entries(next.routing.ruleLibrary.bindings)
+      .filter(([key]) => !key.startsWith('node:') || keepNode(key.slice(5))))
+    next.routing = { ...next.routing, ruleLibrary: { ...next.routing.ruleLibrary, bindings } }
   }
   const model = readLibrary(next)
   return { ...next, routing: reconcileRouting(next, model), choice: selection(next, model) }
@@ -490,6 +495,25 @@ export function compile(library: Library, model = readLibrary(library), previewS
       if (typeof group.name === 'string') rawGroups.set(group.name, group)
     }
   }
+  // Keep the subscription's strategy and member order for automatically selected groups.
+  const materialized = new Map<string, string>()
+  function originalGroup(name: string, path = new Set<string>()): string | undefined {
+    const raw = rawGroups.get(name)
+    if (!raw) return
+    if (path.has(name)) throw new Error(tr('订阅分组包含循环引用'))
+    const cached = materialized.get(name)
+    if (cached) return cached
+    const members = Array.isArray(raw.proxies) ? raw.proxies.map(item => {
+      const member = String(item)
+      return builtin.has(member) ? member : nodeLookup.get(member) ?? originalGroup(member, new Set(path).add(name))
+    }) : []
+    if (!members.length || members.some(item => !item)) throw new Error(tr('规则引用的节点或分组不存在'))
+    const alias = 'AirRuleGroup-' + (materialized.size + 1)
+    materialized.set(name, alias)
+    labels[alias] = name
+    proxyGroups.push({ ...raw, name:alias, proxies:members })
+    return alias
+  }
   const lookupPolicy = (policy: string, seen = new Set<string>()): string | undefined => {
     const name = policy.trim()
     if (!name) return
@@ -501,6 +525,7 @@ export function compile(library: Library, model = readLibrary(library), previewS
       const members = Array.isArray(raw.proxies)
         ? raw.proxies.filter((p): p is string => typeof p === 'string').map(p => p.trim()).filter(Boolean)
         : []
+      if (raw.type !== 'select') return userSet ? 'GLOBAL' : originalGroup(name)
       const first = members[0]
       if (first === 'DIRECT') return 'DIRECT'
       if (first === 'REJECT' || first === 'REJECT-DROP') return first

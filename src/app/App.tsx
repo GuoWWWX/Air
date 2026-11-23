@@ -450,6 +450,7 @@ export function App() {
   })
   const systemDark = useSystemTheme(theme)
   const [chains, setChains] = useState<ChainRecord[]>(loadSavedChains)
+  const [outboundGroupId, setOutboundGroupId] = useState(() => preferences.getItem('air.outboundGroupId') ?? '')
   const [preferredGroupId, setPreferredGroupId] = useState(() => preferences.getItem('air.preferredGroupId') ?? undefined)
   const [preferredNodeId, setPreferredNodeId] = useState(() => preferences.getItem('air.preferredNodeId') ?? '')
   const preferenceVersion = useRef(0)
@@ -798,9 +799,19 @@ export function App() {
     })
     setActiveChainId(current => current === activeChainId ? id : current)
     setChainName(current => current === chainName ? finalName : current)
+    return id
   }
 
-  function deleteSavedChain(id: string) {
+  async function deleteSavedChain(id: string) {
+    try {
+      const doc = await air.routingSettings()
+      const lib = doc.routing.ruleLibrary
+      if (lib && Object.hasOwn(lib.bindings, 'chain:' + id)) {
+        const bindings = { ...lib.bindings }
+        delete bindings['chain:' + id]
+        await air.saveRouting({ ...doc.routing, ruleLibrary:{ ...lib, bindings } }, doc.revision)
+      }
+    } catch (error) { onError(error); return }
     const nextChains = chains.filter(item => item.id !== id)
     setChains(nextChains)
     showMessage({ type: 'success', title: tr('链路已删除') })
@@ -879,6 +890,8 @@ export function App() {
   }
 
   function rememberPreferredNode(id: string, groupId?: string) {
+    preferences.removeItem('air.outboundGroupId')
+    setOutboundGroupId('')
     setPreferredGroupId(groupId)
     if (groupId) preferences.setItem('air.preferredGroupId', groupId)
     else preferences.removeItem('air.preferredGroupId')
@@ -912,7 +925,17 @@ export function App() {
     return { kind: 'chain', id: saved?.id, name: chainName, hops, inheritExitRules: saved ? saved.inheritExitRules : false }
   }
 
+  async function chooseGroup(id: string) {
+    if (proxy.pending || proxy.selectingNodeId) return
+    if (proxy.status.running && !await proxy.control({ action:'selectGroup', id })) return
+    clearPreferredNode()
+    setOutboundGroupId(id)
+    preferences.setItem('air.outboundGroupId', id)
+  }
+
   function selectedProxyTarget(): ProxyTarget {
+    const group = store.customGroups.find(g => g.id === outboundGroupId)
+    if (group) return {kind:'group',id:group.id,name:group.name,members:group.members}
     if (preferredNodeId) return { kind: 'node', id: preferredNodeId, groupId: store.customGroups.some(group => group.id === preferredGroupId && group.members.includes(preferredNodeId)) ? preferredGroupId : undefined }
     if (activeChainId || hops.some(Boolean)) return chainTarget()
     return { kind: 'routing' }
@@ -1086,6 +1109,7 @@ export function App() {
                   preferredNodeId={preferredNodeId}
                   selectingNodeId={proxy.selectingNodeId}
                   powerPending={Boolean(proxy.pending)}
+                  onChooseGroup={id => void chooseGroup(id)}
                   onChooseNode={(id, groupId) => void choosePreferredNode(id, groupId)}
                   onEdit={openNode}
                   onAdd={() => openAddCustom()}
@@ -1212,6 +1236,11 @@ export function App() {
                     groups={store.library.groups}
                     nodes={store.library.nodes}
                     target={routingSettingsTarget()}
+                    ownerNames={Object.fromEntries([
+                      ...store.library.sources.map(s => ['subscription:' + s.id, s.name]),
+                      ...store.library.nodes.map(n => ['node:' + n.id, n.source + ' / ' + n.name]),
+                      ...store.customGroups.map(g => ['group:' + g.id, g.name]), ...chains.map(c => ['chain:' + c.id, c.name]),
+                    ])}
                     apps={(proxy.telemetry?.connectionLogs ?? proxy.telemetry?.connections ?? []).map(conn => ({
                       executable: conn.processName ?? conn.appExecutable, path: conn.processPath, name: conn.app,
                       icon: conn.appIconKey ? proxy.telemetry?.appIcons?.[conn.appIconKey] : undefined,

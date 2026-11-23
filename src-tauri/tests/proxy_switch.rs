@@ -140,6 +140,7 @@ async fn switches_a_loaded_node_and_mode_without_restarting_the_kernel() {
     let routing = RoutingConfig {
         rule_library: None, match_fallback: None, subscription_id: Some("one".into()),
         rules: vec![Rule {
+            resume_on_enable: None,
             enabled: true, matcher: Matcher::Ip, value: "1.1.1.1".into(),
             host_matcher: None, host_value: None,
             target: Target::Group { source_id: "one".into(), name: "Group".into() },
@@ -155,6 +156,17 @@ async fn switches_a_loaded_node_and_mode_without_restarting_the_kernel() {
         assert!(runtime.subscription_snapshot(&sources[index].id).unwrap().is_some());
         assert!(runtime.subscription_snapshot(&sources[1 - index].id).unwrap().is_none());
     }
+    let target = StartTarget::Node { id:sources[1].nodes[0].id.clone(), group_id:Some("team".into()) };
+    let binding: RoutingConfig = serde_json::from_value(serde_json::json!({
+        "ruleLibrary": {"sets":[{"id":"template","name":"Custom","profile":{"rules":["MATCH,PROXY"]}}],
+            "bindings":{"group:team":"user:template"}},
+        "rules":[{"matcher":"ip","value":"1.1.1.1","target":{"kind":"group","sourceId":"one","name":"Group"}}]
+    })).unwrap();
+    let preview = compile(Mode::Rule,&binding,&sources,None,&target).unwrap().preview_rules(&network).unwrap();
+    runtime.select_node(compile(Mode::Rule,&binding,&sources,None,&target).unwrap()).await.unwrap();
+    assert_eq!(preview.last().unwrap(),"MATCH,GLOBAL");
+    assert_eq!(request().await.unwrap().text().await.unwrap(),"first");
+    assert_eq!(client.get("http://1.0.0.1/").send().await.unwrap().text().await.unwrap(),"second");
     runtime.stop().await.unwrap();
     first.abort();
     second.abort();

@@ -1,3 +1,5 @@
+import { setBinding } from '@/shared/proxy/rule-library'
+import { RuleBindingPicker } from '@/shared/ui/RuleLibraryManager'
 import { preferences } from '@/shared/lib/preferences'
 import { diagnostic, tr, useLanguage } from '@/shared/i18n/messages'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -820,8 +822,17 @@ export function App() {
     })
   }
 
-  function saveNode(node: Node) {
-    void task(async () => { await commit(latest => nextNode(node, latest)); setDialog(undefined); notice(tr('节点已保存')) })
+  function withBinding(next: Library, owner: string, value?: string): Library {
+    if (value === undefined) return next
+    return { ...next, routing: { ...next.routing, ruleLibrary:setBinding(next.routing.ruleLibrary, owner, value) } }
+  }
+  function subscriptionBinding(id: string) {
+    const owner = 'subscription:' + id
+    return <RuleBindingPicker sources={library.sources} catalog={library.routing.ruleLibrary} disabled={busy}
+      value={library.routing.ruleLibrary?.bindings[owner] ?? ''} change={value => void task(() => commit(latest => withBinding(latest, owner, value)))} />
+  }
+  function saveNode(node: Node, binding?: string) {
+    void task(async () => { await commit(latest => withBinding(nextNode(node, latest), 'node:' + node.id, binding)); setDialog(undefined); notice(tr('节点已保存')) })
   }
 
   function removeNode(node: Node) {
@@ -831,6 +842,7 @@ export function App() {
       delete edits[node.id]
       return save({
         ...latest,
+        routing: withBinding(latest, 'node:' + node.id, '').routing,
         nodes: latest.nodes.filter(n => n.id !== node.id),
         sources: pauseSource(node.sourceId, latest),
         hiddenNodes: node.sourceId === 'custom' ? latest.hiddenNodes : [...latest.hiddenNodes, node.id],
@@ -1251,7 +1263,7 @@ export function App() {
   if (!loaded) {
     page = null
   } else if (screen?.kind === 'import') {
-    page = <><Header icon="import" animateKey={`import:${screenSource?.id ?? 'new'}`} statusPhase={currentPhase} title={screenSource ? tr('编辑订阅') : tr('导入订阅')} back={back} /><ImportView key={screenSource?.id ?? 'new'} source={screenSource} sources={library.sources} onStartImport={startImport} /></>
+    page = <><Header icon="import" animateKey={`import:${screenSource?.id ?? 'new'}`} statusPhase={currentPhase} title={screenSource ? tr('编辑订阅') : tr('导入订阅')} back={back} /><ImportView key={screenSource?.id ?? 'new'} source={screenSource} sources={library.sources} bindingField={screenSource && subscriptionBinding(screenSource.id)} onStartImport={startImport} /></>
   } else if (screen?.kind === 'yaml' && screenSource) {
     page = <><Header icon="yaml" animateKey={`yaml:${screenSource.id}`} statusPhase={currentPhase} title={tr("编辑 YAML")} back={back} /><YamlEditor key={screenSource.id} source={screenSource} compiled={effectiveYaml(library, screenSource.id)}
       busy={busy} save={text => replaceYaml(screenSource, text, true)} reset={() => confirm(tr('恢复订阅原文并清除本地副本'), () => replaceYaml(screenSource, screenSource.original, false))} /></>
@@ -1341,7 +1353,7 @@ export function App() {
   if (dialog?.kind === 'node') {
     const node = dialog.node
     sheetTitle = node ? tr('编辑节点') : tr('添加自定义节点')
-    sheet = <NodeEditor node={node} busy={busy} save={saveNode} test={draft => void task(() => measure([draft.id], nextNode(draft), false, { notify: 'nodeTest' }))}
+    sheet = <NodeEditor node={node} library={library} busy={busy} save={saveNode} test={draft => void task(() => measure([draft.id], nextNode(draft), false, { notify: 'nodeTest' }))}
       reset={node && library.edits[node.id] ? () => void task(async () => {
         await commit(latest => {
           const edits = { ...latest.edits }; delete edits[node.id]
@@ -1356,22 +1368,22 @@ export function App() {
     const group = dialog.group
     sheetTitle = group ? (group.sourceId ? group.name : tr('编辑分组')) : tr('新建分组')
     sheet = <GroupEditor group={group} library={library} model={model} busy={busy}
-      save={next => void task(async () => {
-        await commit(latest => ({ ...latest, groups: [...latest.groups.filter(old => old.id !== next.id), next] }))
+      save={(next, binding) => void task(async () => {
+        await commit(latest => withBinding({ ...latest, groups: [...latest.groups.filter(old => old.id !== next.id), next] }, 'group:' + next.id, binding))
         setDialog(undefined); notice(tr('分组已保存'))
       })}
       choose={group ? () => choose({ type: 'group', id: group.id }) : undefined}
       remove={group && !group.sourceId ? () => confirm(tr('删除分组「{0}」', group.name), () => void task(async () => {
-        await commit(latest => ({ ...latest, groups: latest.groups.filter(old => old.id !== group.id) }))
+        await commit(latest => withBinding({ ...latest, groups: latest.groups.filter(old => old.id !== group.id) }, 'group:' + group.id, ''))
         setDialog(undefined); notice(tr('分组已删除'))
       })) : undefined} />
   } else if (dialog?.kind === 'chain') {
     sheetTitle = tr('链路')
     sheet = <ChainEditor library={library} model={model} busy={busy}
-      save={chain => void task(async () => { await enqueueWrite(() => save(chainLibrary(chain))); notice(tr('链路已保存')) })}
+      save={(chain, binding) => void task(async () => { await enqueueWrite(() => save(withBinding(chainLibrary(chain), 'chain:' + chain.id, binding))); notice(tr('链路已保存')) })}
       use={chain => choose({ type: 'chain', id: chain.id })}
       remove={chain => confirm(tr('删除链路「{0}」', chain.name), () => void task(async () => {
-        await commit(latest => ({ ...latest, chains: latest.chains.filter(c => c.id !== chain.id) }))
+        await commit(latest => withBinding({ ...latest, chains: latest.chains.filter(c => c.id !== chain.id) }, 'chain:' + chain.id, ''))
         setDialog(undefined); notice(tr('链路已删除'))
       }))}
       test={chain => void task(() => measureChain(chain, true))} />
@@ -1451,7 +1463,7 @@ export function App() {
       const openTool = (data: SubscriptionToolData) => {
         setDialog({ kind: 'tool', key: `${source.id}:${data.kind}`, name: source.name, data })
       }
-      sheet = <SourceActionsSheet
+      sheet = <>{subscriptionBinding(source.id)}<SourceActionsSheet
         source={source}
         copied={copied === source.id}
         isRefreshing={refreshing.includes(source.id)}
@@ -1491,7 +1503,7 @@ export function App() {
         })}
         onMove={delta => { moveSource(source.id, delta); setDialog(undefined) }}
         onDelete={() => setDialog({ kind: 'deleteSource', id: source.id })}
-      />
+      /></>
     }
   } else if (dialog?.kind === 'tool') {
     sheetTitle = `${subscriptionToolLabels[dialog.data.kind]} · ${dialog.name}`
@@ -1503,7 +1515,7 @@ export function App() {
       const stopsProxy = running && library.mode !== 'direct' && model.nodes.length > 0 &&
         model.nodes.every(node => node.sourceId === source.id)
       sheet = <div className="sheet-form">
-        <p>{tr('删除「{0}」及其节点和分组？失效的分流出口会改为「拒绝连接」。', source.name)}{stopsProxy && tr('删除后将自动停止代理。')}</p>
+        <p>{tr('删除「{0}」及其节点和分组？规则集绑定将跟随默认。指向已删除节点或分组的全局规则将拒绝连接。', source.name)}{stopsProxy && tr('删除后将自动停止代理。')}</p>
         <div className="sheet-actions justify-end">
           <Button variant="outline" onClick={() => setDialog(undefined)}>{tr("取消")}</Button>
           <Button variant="destructive" disabled={busy} onClick={() => void task(() => removeSource(source.id))}>{tr("确认删除")}</Button>

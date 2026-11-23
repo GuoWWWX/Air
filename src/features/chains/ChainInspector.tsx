@@ -1,3 +1,4 @@
+import { useDesktopBinding } from '@/features/settings/useDesktopBinding'
 import { tr } from '@/shared/i18n/messages'
 import {
   AppWindow,
@@ -46,7 +47,7 @@ interface Props {
   verified?: ExitVerification
   onSelectChain: (id: string) => void
   onNewChain: () => void
-  onSaveChain: () => Promise<void>
+  onSaveChain: () => Promise<string>
   onStartChain: () => void
   onDeleteChain: (id: string) => void
   onChangeName: (name: string) => void
@@ -92,6 +93,7 @@ export function ChainInspector({
   onError,
 }: Props) {
   const [pending, setPending] = useState(false)
+  const binding = useDesktopBinding('chain', activeChainId)
   const [saving, setSaving] = useState(false)
   const [savedFeedback, setSavedFeedback] = useState(false)
   const savedTimer = useRef<number | undefined>(undefined)
@@ -196,7 +198,8 @@ export function ChainInspector({
     setSaving(true)
     setSavedFeedback(false)
     try {
-      await onSaveChain()
+      const savedId = await onSaveChain()
+      await binding.save(savedId)
       setSavedFeedback(true)
       showMessage({ type: 'success', title: tr('链路已保存') })
       window.clearTimeout(savedTimer.current)
@@ -257,6 +260,7 @@ export function ChainInspector({
         </div>
 
         <div className="flex flex-col gap-1.5">
+          {binding.field}
           <Label htmlFor="chain-name-input">{tr("链路名称")}</Label>
           <Input
             id="chain-name-input"

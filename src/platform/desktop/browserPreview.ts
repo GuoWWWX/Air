@@ -1003,9 +1003,9 @@ export const browserAir = {
         const nodes = target.kind === 'chain' ? resolveDemoChain(target.hops)
           : target.kind === 'node' ? resolveDemoNodes([target.id]) : []
         const hops = nodes.map(({ id, name, protocol, source }) => ({ id, name, protocol, source }))
-        const name = (target.kind === 'chain' ? target.name.trim() : '')
+        const name = (target.kind === 'chain' || target.kind === 'group' ? target.name.trim() : '')
           || hops.map(hop => hop.name).join(' → ') || '按分流规则'
-        proxyState = { ...proxyState, running: true, port: 7897, sessionId: crypto.randomUUID(), outbound: { name, hops } }
+        proxyState = { ...proxyState, target, running: true, port: 7897, sessionId: crypto.randomUUID(), outbound: { name, hops } }
         telemetryState.lastSampledAt = 0
         telemetryState.uploadTotal = 0
         telemetryState.downloadTotal = 0
@@ -1015,10 +1015,16 @@ export const browserAir = {
       case 'stop':
         proxyState = { ...proxyState, running: false, port: null, sessionId: null, outbound: null }
         break
+      case 'selectGroup': {
+        const group = customGroupsState.find(g => g.id === request.id)
+        if (!proxyState.running || !group?.members.length) throw new Error('分组没有可用节点')
+        proxyState = { ...proxyState,target:{ kind:'group',id:group.id,name:group.name,members:group.members },outbound:{name:group.name,hops:[]} }
+        break
+      }
       case 'selectNode': {
         if (!proxyState.running) throw new Error('代理已停止，请重新启动')
         const [{ id, name, protocol, source }] = resolveDemoNodes([request.id])
-        proxyState = { ...proxyState, outbound: { name, hops: [{ id, name, protocol, source }] } }
+        proxyState = { ...proxyState, target:{kind:'node',id,groupId:request.groupId}, outbound: { name, hops: [{ id, name, protocol, source }] } }
         break
       }
       case 'mode':
@@ -1177,10 +1183,12 @@ export const browserAir = {
         return `${prefix},${rule.value.trim()},${target}`
       })
     const exit = selected?.kind === 'node' ? selected.id : selected?.kind === 'chain' ? selected.hops.at(-1) : undefined
-    const owner = selected?.kind === 'chain' && selected.inheritExitRules === false ? undefined
+    const automatic = selected && selected.kind !== 'routing'
+    const groupSources = selected?.kind === 'group' ? new Set(state.nodes.filter(n => selected.members.includes(n.record.id)).map(n => n.record.sourceId)) : undefined
+    const owner = groupSources ? (groupSources.size === 1 ? [...groupSources][0] : undefined) : selected?.kind === 'chain' && selected.inheritExitRules === false ? undefined
       : exit ? state.nodes.find(node => node.record.id === exit)?.record.sourceId : config.subscriptionId
     const keys = selected?.kind === 'node' ? ['node:' + selected.id, ...(selected.groupId ? ['group:' + selected.groupId] : [])]
-      : selected?.kind === 'chain' && selected.id ? ['chain:' + selected.id] : []
+      : selected?.kind === 'group' ? ['group:' + selected.id] : selected?.kind === 'chain' && selected.id ? ['chain:' + selected.id] : []
     if (owner) keys.push('subscription:' + owner)
     const ref = resolveRules(config.ruleLibrary, keys, owner ?? undefined)
     const sourceId = ref.startsWith('subscription:') ? ref.slice(13) : undefined
@@ -1190,7 +1198,7 @@ export const browserAir = {
     const inherited: string[] = Array.isArray(profile?.rules) ? profile.rules.filter((rule: unknown) => typeof rule === 'string') : []
     const end = inherited.findIndex(line => /^MATCH\s*,/i.test(line.trim()))
     const formatPolicy = (line: string) => {
-      if (!exit) return line
+      if (!automatic) return line
       const fields = line.split(',').map(field => field.trim())
       let index = fields.length - 1
       while (index > 0 && ['no-resolve', 'src'].includes(fields[index])) index--
@@ -1202,15 +1210,15 @@ export const browserAir = {
       else if (user && !['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(fields[index])) fields[index] = 'GLOBAL'
       return fields.join(',')
     }
-    if (exit) lines.push('GEOIP,private,DIRECT,no-resolve', 'GEOSITE,private,DIRECT')
+    if (automatic) lines.push('GEOIP,private,DIRECT,no-resolve', 'GEOSITE,private,DIRECT')
     const demoSettings = await browserAir.networkSettings()
     if (demoSettings.settings.blockQuic) lines.push('AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((GEOSITE,cn))),(NOT,((GEOIP,CN,no-resolve)))),REJECT')
-    if (exit || config.inheritRules) {
+    if (automatic || config.inheritRules) {
       lines.push(...(end < 0 ? inherited : inherited.slice(0, end)).map(formatPolicy))
     }
-    if (exit && !inherited.length) lines.push('GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve')
-    const fallback = config.matchFallback && config.matchFallback.kind !== 'subscription' ? formatTarget(config.matchFallback) : exit ? (selected?.kind === 'chain' ? 'air-residential-exit' : 'GLOBAL') : formatTarget(config.fallback)
-    const terminal = end >= 0 && (config.matchFallback ? config.matchFallback.kind === 'subscription' : exit || config.fallback.kind === 'subscription') ? formatPolicy(inherited[end]) : `MATCH,${fallback}`
+    if (automatic && !inherited.length) lines.push('GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve')
+    const fallback = config.matchFallback && config.matchFallback.kind !== 'subscription' ? formatTarget(config.matchFallback) : automatic ? (selected?.kind === 'chain' ? 'air-residential-exit' : 'GLOBAL') : formatTarget(config.fallback)
+    const terminal = end >= 0 && (config.matchFallback ? config.matchFallback.kind === 'subscription' : automatic || config.fallback.kind === 'subscription') ? formatPolicy(inherited[end]) : `MATCH,${fallback}`
     lines.push(terminal)
     return lines
   },

@@ -1,3 +1,4 @@
+import { RuleBindingPicker } from '@/shared/ui/RuleLibraryManager'
 import { tr } from '@/shared/i18n/messages'
 import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Camera, Check, Code2, FileCode2, FileUp, Image as ImageIcon, Link, Plus, QrCode, Save, Search, Trash2, Waypoints, Zap } from 'lucide-react'
@@ -30,9 +31,10 @@ export interface SubscriptionImportRequest {
   file?: { name: string; text: string }
 }
 
-export function ImportView({ source, sources, onStartImport }: {
+export function ImportView({ source, sources, onStartImport, bindingField }: {
   source?: Subscription
   sources: Subscription[]
+  bindingField?: ReactNode
   onStartImport: (request: SubscriptionImportRequest) => void
 }) {
   const [kind, setKind] = useState<'url' | 'file' | 'qr'>(source?.url || !source ? 'url' : 'file')
@@ -111,6 +113,7 @@ export function ImportView({ source, sources, onStartImport }: {
 
   return <form className="page-form" onSubmit={submit}>
     <div className="page-scroll">
+      {bindingField}
       <Segmented layoutId="android-import-mode" ariaLabel={tr("导入方式")} size="md" fullWidth
         value={kind} onChange={tab => { setKind(tab); setScanning(false) }}
         options={[{ value: 'url', icon: <Link />, label: tr('URL 链接') }, { value: 'file', icon: <FileUp />, label: tr('本地文件') }, { value: 'qr', icon: <QrCode />, label: tr('二维码') }]} />
@@ -178,8 +181,8 @@ function CameraScanner({ onValue, onError }: { onValue: (value: string) => void;
   return <video className="qr-video" ref={video} playsInline muted />
 }
 
-export function NodeEditor({ node, busy, save, test, remove, reset }: {
-  node?: Node; busy: boolean; save: (node: Node) => void; test: (node: Node) => void; remove?: () => void; reset?: () => void
+export function NodeEditor({ node, library, busy, save, test, remove, reset }: {
+  node?: Node; library: Library; busy: boolean; save: (node: Node, binding?: string) => void; test: (node: Node) => void; remove?: () => void; reset?: () => void
 }) {
   const [name, setName] = useState(node?.config.name ?? '')
   const [server, setServer] = useState(node?.config.server ?? '')
@@ -188,6 +191,7 @@ export function NodeEditor({ node, busy, save, test, remove, reset }: {
   const [username, setUsername] = useState(String(node?.config.username ?? ''))
   const [password, setPassword] = useState(String(node?.config.password ?? ''))
   const [stableId] = useState(() => node?.id ?? id())
+  const binding = useObjectBinding(library, 'node:' + stableId)
   const proxyType = node?.config.type ?? (type === 'SOCKS5' ? 'socks5' : 'http')
   const isHttp = !node || proxyType === 'http' || proxyType === 'socks5'
   const valid = name.trim() && server.trim() && Number.isInteger(Number(port)) && Number(port) > 0 && Number(port) <= 65535
@@ -203,7 +207,8 @@ export function NodeEditor({ node, busy, save, test, remove, reset }: {
     }
     return { id: stableId, sourceId: node?.sourceId ?? 'custom', config }
   }
-  return <form className="sheet-form" onSubmit={e => { e.preventDefault(); if (valid) save(value()) }}>
+  return <form className="sheet-form" onSubmit={e => { e.preventDefault(); if (valid) save(value(), binding.draft) }}>
+    {binding.field}
     <Field label={tr("名称")}><input value={name} onChange={e => setName(e.target.value)} placeholder={tr("例如 家宽出口")} required /></Field>
     <div className="field">
       <span>{tr("代理协议")}</span>
@@ -239,9 +244,18 @@ export function NodeEditor({ node, busy, save, test, remove, reset }: {
   </form>
 }
 
+function useObjectBinding(library: Library, owner: string) {
+  const [edit, setEdit] = useState<{ owner:string; value:string }>()
+  const draft = edit?.owner === owner ? edit.value : undefined
+  return { draft, field:<RuleBindingPicker catalog={library.routing.ruleLibrary} sources={library.sources}
+    value={draft ?? library.routing.ruleLibrary?.bindings[owner] ?? ''} change={value => setEdit({owner,value})} /> }
+}
+
 export function GroupEditor({ group, library, model, busy, save, choose, remove }: {
-  group?: Group; library: Library; model: Model; busy: boolean; save: (group: Group) => void; choose?: () => void; remove?: () => void
+  group?: Group; library: Library; model: Model; busy: boolean; save: (group: Group, binding?: string) => void; choose?: () => void; remove?: () => void
 }) {
+  const [groupId] = useState(() => group?.id ?? id())
+  const binding = useObjectBinding(library, 'group:' + groupId)
   const [name, setName] = useState(group?.name ?? '')
   const [type, setType] = useState<Policy>(group?.type ?? 'select')
   const [mode, setMode] = useState(group?.automatic ? 'automatic' : 'manual')
@@ -259,8 +273,9 @@ export function GroupEditor({ group, library, model, busy, save, choose, remove 
   return <form className="sheet-form" onSubmit={e => {
     e.preventDefault()
     if (!name.trim()) return
-    save({ id: group?.id ?? id(), name: name.trim(), type, members, automatic: mode === 'automatic' ? { sourceId: source, maxDelay: delay, limit } : undefined })
+    save({ id: groupId, name: name.trim(), type, members, automatic: mode === 'automatic' ? { sourceId: source, maxDelay: delay, limit } : undefined }, binding.draft)
   }}>
+    {binding.field}
     <Field label={tr("分组名称")}><input required value={name} onChange={e => setName(e.target.value)} placeholder={tr("例如 日常候选")} /></Field>
     <div className="grid grid-cols-2 gap-2">
       <div className="field">
@@ -318,17 +333,18 @@ export function GroupEditor({ group, library, model, busy, save, choose, remove 
 }
 
 export function ChainEditor({ library, model, busy, save, use, remove, test }: {
-  library: Library; model: Model; busy: boolean; save: (chain: Chain) => void; use: (chain: Chain) => void
+  library: Library; model: Model; busy: boolean; save: (chain: Chain, binding?: string) => void; use: (chain: Chain) => void
   remove: (chain: Chain) => void; test: (chain: Chain) => void
 }) {
   const [editing, setEditing] = useState<Chain>(() => library.chains.find(c => c.id === library.choice?.id) ?? library.chains[0] ?? { id: id(), inheritExitRules: false, name: '', hops: ['', ''] })
+  const binding = useObjectBinding(library, 'chain:' + editing.id)
   const existing = library.chains.some(c => c.id === editing.id)
   const valid = editing.name.trim() && editing.hops.length >= 2 &&
     new Set(editing.hops).size === editing.hops.length && editing.hops.every(id => model.nodes.some(n => n.id === id))
   const active = library.choice?.id === editing.id
   const current = { ...editing, name: editing.name.trim() }
-  const changed = JSON.stringify(library.chains.find(c => c.id === editing.id)) !== JSON.stringify(current)
-  return <form className="sheet-form" onSubmit={e => { e.preventDefault(); if (valid) save(current) }}>
+  const changed = binding.draft !== undefined || JSON.stringify(library.chains.find(c => c.id === editing.id)) !== JSON.stringify(current)
+  return <form className="sheet-form" onSubmit={e => { e.preventDefault(); if (valid) save(current, binding.draft) }}>
     <div className="flex items-center gap-2">
       <div className="min-w-0 flex-1">
         <AirSelect
@@ -352,6 +368,7 @@ export function ChainEditor({ library, model, busy, save, use, remove, test }: {
       <Button type="button" variant="outline" onClick={() => setEditing({ id: id(), inheritExitRules: false, name: '', hops: ['', ''] })}><Plus />{tr("新建")}</Button>
       {existing && <Button type="button" variant="destructive" size="icon" aria-label={tr("删除链路")} disabled={busy} onClick={() => remove(editing)}><Trash2 /></Button>}
     </div>
+    {binding.field}
     <Field label={tr("链路名称")}><input value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} required placeholder={tr("例如 节点转家宽")} /></Field>
     {editing.hops.map((hop, index) => <div className="hop" key={index}>
       <Tag>{index === 0 ? tr('前置') : index === editing.hops.length - 1 ? tr('出口') : tr('中转')}</Tag>

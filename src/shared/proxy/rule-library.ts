@@ -35,3 +35,12 @@ export function validateRuleLibrary(value: unknown): asserts value is RuleLibrar
       || !(ref === 'none' || /^subscription:.+/.test(ref) || (ref.startsWith('user:') && ids.has(ref.slice(5))))) throw new Error(tr('分流规则绑定无效'))
   }
 }
+
+export const emptyRuleLibrary: RuleLibrary = { sets: [], bindings: {} }
+
+export function setBinding(catalog: RuleLibrary | undefined, owner: string, value: string): RuleLibrary {
+  const next = { ...(catalog ?? emptyRuleLibrary), bindings: { ...catalog?.bindings } }
+  if (value) next.bindings[owner] = value
+  else delete next.bindings[owner]
+  return next
+}

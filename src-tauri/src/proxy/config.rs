@@ -61,6 +61,13 @@ impl ProxyConfig {
         tun: bool,
         current_pool: Option<&str>,
     ) -> AirResult<()> {
+        if let StartTarget::Group { id, .. } = &self.target {
+            let alias = Target::group_alias("custom", id);
+            if let Some(group) = self.yaml["proxy-groups"].as_sequence_mut().and_then(|groups| groups.iter_mut().find(|g| g["name"].as_str() == Some(&alias))) {
+                group["url"] = network.probe_url.clone().into();
+                group["expected-status"] = network.probe_status.to_string().into();
+            }
+        }
         network.apply_proxy(&mut self.yaml, tun, current_pool)?;
         if network.block_quic {
             if let Some(rules) = self.yaml["rules"].as_sequence_mut() {
@@ -142,7 +149,8 @@ pub fn compile(
         .collect::<Vec<_>>();
     let has_node = matches!(target, StartTarget::Node { .. });
     let has_chain = matches!(target, StartTarget::Chain { .. });
-    let automatic = has_node || has_chain;
+    let has_group = matches!(target, StartTarget::Group { .. });
+    let automatic = has_node || has_chain || has_group;
     let mut standalone;
     let routing = if !automatic && routing.match_fallback.is_some() {
         standalone = routing.clone();
@@ -161,7 +169,27 @@ pub fn compile(
     }
     let mut rules = custom.compile(sources)?;
     let mut proxies = Vec::new();
+    let mut member_sources = HashSet::new();
+    let mut current_group = None;
     let (active, name, ids) = match target {
+        StartTarget::Group { id, name, members } => {
+            let alias = Target::group_alias("custom", id);
+            let mut names = Vec::new();
+            let mut seen = HashSet::new();
+            for node in members.iter().filter_map(|id| nodes.iter().find(|n| &n.id == id && !n.is_subscription_notice())) {
+                member_sources.insert(node.source_id.clone());
+                names.push(node.kernel_name());
+                for entry in selected_node_configs(&nodes, &node.id)? {
+                    if seen.insert(entry["name"].as_str().ok_or("节点缺少名称")?.to_owned()) { proxies.push(entry); }
+                }
+            }
+            if names.is_empty() { return Err("分组没有可用节点".into()); }
+            current_group = Some(serde_yaml::to_value(serde_json::json!({
+                "name": alias, "type":"url-test", "proxies":names, "url":crate::network::NetworkSettings::default().probe_url,
+                "interval":300, "lazy":true
+            })).map_err(|_| "无法生成分组出站")?);
+            (Some(alias), name.clone(), &[][..])
+        }
         StartTarget::Chain { name, hops, .. } => {
             proxies = chain_hops(&nodes, hops)?;
             (
@@ -221,7 +249,7 @@ pub fn compile(
         .iter()
         .filter_map(|proxy| proxy["name"].as_str().map(str::to_owned))
         .collect();
-    let mut rule_source_ids = HashSet::new();
+    let mut rule_source_ids = member_sources.clone();
     let mut uses_selected = false;
     let mut rule_outbounds = super::subscription_rules::RuleOutbounds::default();
     let match_fallback = routing.match_fallback.as_ref().filter(|_| automatic);
@@ -264,7 +292,7 @@ pub fn compile(
     }
 
     if !has_chain
-        && ((match_fallback == Some(&Target::Residential) || (!has_node && matches!(routing.fallback, Target::Residential)))
+        && ((match_fallback == Some(&Target::Residential) || (!automatic && matches!(routing.fallback, Target::Residential)))
             || routing
                 .rules
                 .iter()
@@ -275,7 +303,9 @@ pub fn compile(
 
     let mut providers = Mapping::new();
     let custom_rules_end;
-    let owner = if let Some(exit) = ids.last() {
+    let owner = if has_group {
+        sources.iter().find(|s| member_sources.len() == 1 && member_sources.contains(&s.id))
+    } else if let Some(exit) = ids.last() {
         sources.iter().find(|source| source.nodes.iter().any(|node| node.id == exit.trim()))
     } else {
         sources.iter().find(|source| Some(&source.id) == custom.subscription_id.as_ref())
@@ -332,6 +362,7 @@ pub fn compile(
         if existing_proxy_names.insert(entry["name"].as_str().ok_or("节点缺少名称")?.to_owned()) { proxies.push(entry); }
     }
     let mut groups = rule_outbounds.groups;
+    groups.extend(current_group);
     if let Some(source) = sources
         .iter()
         .find(|source| Some(&source.id) == custom.subscription_id.as_ref())
@@ -350,7 +381,7 @@ pub fn compile(
         }
         if routing.inherit_rules {
             if let Some(entries) = raw["rule-providers"].as_mapping() {
-                for (index, (name, entry)) in entries.iter().enumerate() {
+                for (name, entry) in entries {
                     let mut provider = entry.clone();
                     match provider["type"].as_str() {
                         Some("http")
@@ -359,7 +390,8 @@ pub fn compile(
                                 .and_then(|url| reqwest::Url::parse(url).ok())
                                 .is_some_and(|url| matches!(url.scheme(), "http" | "https")) =>
                         {
-                            provider["path"] = format!("rules/{index}.cache").into();
+                            let key = crate::subscriptions::digest(format!("{}\0{}\0{}", source.id, name.as_str().unwrap_or_default(), provider["url"].as_str().unwrap_or_default()));
+                            provider["path"] = format!("rules/{key}.cache").into();
                         }
                         Some("inline") => {}
                         _ => return Err("订阅规则仅支持 HTTP、HTTPS 或内联规则集".into()),
@@ -570,7 +602,7 @@ mod tests {
         let exit = b.nodes[0].id.clone();
         let sources = [a, b];
         let routing = RoutingConfig { rule_library: None, match_fallback: None, subscription_id: Some("a".into()), inherit_rules: false,
-            fallback: Target::Reject, rules: vec![Rule { enabled: true, matcher: Matcher::Domain,
+            fallback: Target::Reject, rules: vec![Rule { resume_on_enable: None, enabled: true, matcher: Matcher::Domain,
                 value: "b.test".into(), host_matcher: None, host_value: None,
                 target: Target::Group { source_id: "a".into(), name: "Group".into() } }] };
         for target in [StartTarget::Node { group_id: None, id: exit.clone() }, StartTarget::Chain { id: None, inherit_exit_rules: None, name: "Via A".into(), hops: vec![front.clone(), exit] }] {
@@ -623,6 +655,23 @@ mod tests {
     }
 
     #[test]
+    fn automatic_group_uses_its_binding_or_common_subscription() {
+        let profile = "proxies: [{name: N, type: http, server: localhost, port: 8888}]\nrules: ['MATCH,REJECT']";
+        let sources = [parse("a".into(),"A".into(),profile).unwrap(),parse("b".into(),"B".into(),profile).unwrap()];
+        let members = sources.iter().map(|s| s.nodes[0].id.clone()).collect::<Vec<_>>();
+        let group = |members| StartTarget::Group {id:"team".into(),name:"Team".into(),members};
+        let compile_group = |cfg: &RoutingConfig, target| compile(Mode::Rule,cfg,&sources,None,&target).unwrap();
+        let mixed = compile_group(&RoutingConfig::default(),group(members.clone()));
+        assert_eq!(mixed.rule_source_id,None);
+        assert_eq!(mixed.yaml["proxy-groups"][0]["type"],"url-test");
+        assert_eq!(mixed.yaml["proxy-groups"][0]["proxies"].as_sequence().unwrap().len(),2);
+        let homogeneous = compile_group(&RoutingConfig::default(),group(vec![members[1].clone()]));
+        assert_eq!(homogeneous.rule_source_id.as_deref(),Some("b"));
+        let cfg = serde_json::from_value(serde_json::json!({"ruleLibrary":{"bindings":{"group:team":"subscription:a"}}})).unwrap();
+        assert_eq!(compile_group(&cfg,group(members)).rule_source_id.as_deref(),Some("a"));
+    }
+
+    #[test]
     fn subscription_notices_are_rejected_as_explicit_outbounds() {
         let source = parse(
             "subscription".into(),
@@ -653,6 +702,7 @@ mod tests {
         let routing = RoutingConfig {
             fallback: Target::Residential,
             rules: vec![Rule {
+                resume_on_enable: None,
                 enabled: true,
                 matcher: Matcher::DomainSuffix,
                 value: "example.test".into(),
@@ -681,6 +731,7 @@ mod tests {
         let routing = RoutingConfig {
             rules: vec![
                 Rule {
+                    resume_on_enable: None,
                     enabled: true,
                     matcher: Matcher::ProcessName,
                     value: "app.exe".into(),
@@ -689,6 +740,7 @@ mod tests {
                     target: Target::Node { id: us_id.clone() },
                 },
                 Rule {
+                    resume_on_enable: None,
                     enabled: true,
                     matcher: Matcher::ProcessName,
                     value: "app.exe".into(),
@@ -742,6 +794,7 @@ mod tests {
         let us_id = source.nodes[1].id.clone();
         let routing = RoutingConfig {
             rules: vec![Rule {
+                resume_on_enable: None,
                 enabled: true,
                 matcher: Matcher::ProcessName,
                 value: "sgame.exe".into(),

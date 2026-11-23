@@ -24,6 +24,8 @@ pub struct RoutingConfig {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Rule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_on_enable: Option<bool>,
     #[serde(default = "enabled")]
     pub enabled: bool,
     pub matcher: Matcher,

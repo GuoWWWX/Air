@@ -104,6 +104,7 @@ impl RuleLibrary {
                     keys.push(format!("group:{group}"));
                 }
             }
+            StartTarget::Group { id, .. } => keys.push(format!("group:{id}")),
             StartTarget::Chain { id: Some(id), .. } => keys.push(format!("chain:{id}")),
             _ => (),
         }

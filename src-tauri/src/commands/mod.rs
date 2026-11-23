@@ -320,7 +320,11 @@ impl App {
 
     fn compile_target(&self, mode: Mode, routing: &RoutingConfig, library: &Library, target: &StartTarget) -> AirResult<ProxyConfig> {
         let mut adjusted;
-        let target = if let StartTarget::Node { id, group_id: Some(group_id) } = target {
+        let target = if let StartTarget::Group { id, .. } = target {
+            let group = custom_groups::load(&self.directory)?.into_iter().find(|g| &g.id == id).ok_or("分组已不存在")?;
+            adjusted = StartTarget::Group { id:group.id, name:group.name, members:group.members };
+            &adjusted
+        } else if let StartTarget::Node { id, group_id: Some(group_id) } = target {
             if custom_groups::load(&self.directory)?.iter().any(|g| &g.id == group_id && g.members.contains(id)) { target }
             else { adjusted = target.clone(); if let StartTarget::Node { group_id, .. } = &mut adjusted { *group_id = None; } &adjusted }
         } else { target };
@@ -1393,7 +1397,16 @@ pub async fn change_custom_group_members(
 #[tauri::command]
 pub async fn delete_custom_group(state: State<'_, Arc<App>>, id: String) -> AirResult<()> {
     let _edit = state.edits.lock().await;
-    custom_groups::delete(&state.directory, &id)
+    let file = RoutingFile::new(&state.directory);
+    let previous = file.load()?;
+    let mut routing = previous.routing.clone();
+    let detached = routing.rule_library.as_mut().and_then(|lib| lib.bindings.remove(&format!("group:{id}")));
+    let saved = detached.map(|_| file.save(&routing, &previous.revision)).transpose()?;
+    if let Err(error) = custom_groups::delete(&state.directory, &id) {
+        if let Some(doc) = saved { file.save(&previous.routing, &doc.revision)?; }
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1627,6 +1640,12 @@ pub async fn proxy_control(
                 runtime.start(&kernel_path, config).await?;
                 session.target = Some(target);
             }
+        }
+        ProxyAction::SelectGroup { id } => {
+            let target = StartTarget::Group { id, name:String::new(), members:vec![] };
+            let config = state.proxy_config(runtime.mode(), &target).await?;
+            runtime.select_node(config).await?;
+            session.target = Some(target);
         }
         ProxyAction::SelectNode { id, group_id } => {
             let target = StartTarget::Node { id, group_id };
