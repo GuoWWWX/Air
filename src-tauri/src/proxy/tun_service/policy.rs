@@ -98,10 +98,17 @@ pub(super) fn runtime_config(mut value: Value) -> AirResult<serde_yaml::Value> {
                 Some("inline") => {
                     provider.as_object_mut().expect("rule provider was validated").remove("path");
                 }
-                Some("http") if provider["url"].as_str().is_some_and(|url| {
-                    reqwest::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.has_host())
-                }) => {
-                    let key = crate::subscriptions::digest(format!("{name}\\0{}\\0{}\\0{}", provider["url"], provider["behavior"], provider["format"]));
+                Some("http")
+                    if provider["url"].as_str().is_some_and(|url| {
+                        reqwest::Url::parse(url).is_ok_and(|url| {
+                            matches!(url.scheme(), "http" | "https") && url.has_host()
+                        })
+                    }) =>
+                {
+                    let key = crate::subscriptions::digest(format!(
+                        "{name}\0{}\0{}\0{}",
+                        provider["url"], provider["behavior"], provider["format"]
+                    ));
                     provider["path"] = format!("rules/{key}.cache").into();
                 }
                 _ => return Err("虚拟网卡服务仅支持内联和远程规则集".into()),
@@ -170,9 +177,15 @@ mod tests {
         source["rule-providers"] = json!({
             "test": { "type": "http", "behavior": "domain", "url": "https://example.com/rules", "path": "example-path" },
         });
-        let path = runtime_config(source.clone()).unwrap()["rule-providers"]["test"]["path"].as_str().unwrap().to_owned();
+        let path = runtime_config(source.clone()).unwrap()["rule-providers"]["test"]["path"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         assert!(path.starts_with("rules/") && path.ends_with(".cache"));
         source["rule-providers"]["test"]["url"] = "https://example.org/other".into();
-        assert_ne!(runtime_config(source).unwrap()["rule-providers"]["test"]["path"], path.as_str());
+        assert_ne!(
+            runtime_config(source).unwrap()["rule-providers"]["test"]["path"],
+            path.as_str()
+        );
     }
 }

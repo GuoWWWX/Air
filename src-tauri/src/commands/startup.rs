@@ -156,7 +156,10 @@ mod tests {
         session.mode = Mode::Global;
         session.tun = true;
         session.running = true;
-        session.target = Some(StartTarget::Node { group_id: None, id: "chosen".into() });
+        session.target = Some(StartTarget::Node {
+            group_id: None,
+            id: "chosen".into(),
+        });
         app.store.save_startup_proxy(&session).unwrap();
         drop(app);
 

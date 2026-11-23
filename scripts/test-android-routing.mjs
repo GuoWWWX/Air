@@ -121,6 +121,18 @@ test('software rows collect path and process exceptions while preserving unrelat
   const result = replaceRuleRows([app,custom,exception,path],rows[0].indices,[app,exception,path])
   assert.deepEqual(result,[exception,custom,path,app])
   assert.deepEqual(moveRuleRow(result,rows[1],rows[0]),[custom,exception,path,app])
+  const pathDefault = {...path, hostMatcher:undefined, hostValue:undefined}
+  assert.deepEqual(replaceRuleRows([pathDefault,exception],[0,1],[pathDefault,exception]),[exception,pathDefault])
+  const disabled = {...exception,enabled:false,hostValue:'paused.test'}
+  const updated = mergeAppPolicyRules([exception,disabled,custom],{
+    processMatcher:pathDefault.matcher, processValue:pathDefault.value, coarseTarget:pathDefault.target, fineRules:[],
+  })
+  assert.deepEqual(updated.slice(0,2),[exception,disabled])
+  assert.equal(updated[2].matcher,'processPath')
+  const edited = mergeAppPolicyRules([exception,disabled],{
+    processMatcher:app.matcher, processValue:app.value, coarseTarget:app.target, fineRules:[],
+  })
+  assert.deepEqual(edited,[disabled,app])
   assert.equal(ruleRows([custom,custom]).length,2)
   const mixed = [app,{...exception,enabled:false}]
   const bucket = ruleRows(mixed)[0]
@@ -141,6 +153,15 @@ test('borrowed automatic groups preserve DIRECT members and original health-chec
   assert.equal(group.type,'fallback')
   assert.equal(group.interval,91)
   assert.deepEqual(group.proxies,['DIRECT','AirNode-1'])
+  const { rules, 'proxy-groups': groups } = profile
+  const cloned = compile({...library, routing:{...library.routing, ruleLibrary:{
+    sets:[{id:'copy',name:'Copy',profile:{rules,'proxy-groups':groups}}],
+    bindings:{'node:second/Node':'user:copy'},
+  }}}).plan.config
+  const copiedAlias = cloned.rules.find(line => line.startsWith('DOMAIN,auto.test,')).split(',').at(-1)
+  const copiedGroup = cloned['proxy-groups'].find(item => item.name === copiedAlias)
+  assert.equal(copiedGroup.interval,91)
+  assert.deepEqual(copiedGroup.proxies,['DIRECT','AirNode-2'])
 })
 test('deleting a user template unbinds every referencing object and keeps unrelated bindings', async () => {
   const {dropBinding} = await vite.ssrLoadModule('@/shared/proxy/rule-library.ts')

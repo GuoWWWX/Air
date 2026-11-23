@@ -63,7 +63,14 @@ impl ProxyConfig {
     ) -> AirResult<()> {
         if let StartTarget::Group { id, .. } = &self.target {
             let alias = Target::group_alias("custom", id);
-            if let Some(group) = self.yaml["proxy-groups"].as_sequence_mut().and_then(|groups| groups.iter_mut().find(|g| g["name"].as_str() == Some(&alias))) {
+            if let Some(group) = self.yaml["proxy-groups"]
+                .as_sequence_mut()
+                .and_then(|groups| {
+                    groups
+                        .iter_mut()
+                        .find(|g| g["name"].as_str() == Some(&alias))
+                })
+            {
                 group["url"] = network.probe_url.clone().into();
                 group["expected-status"] = network.probe_status.to_string().into();
             }
@@ -155,12 +162,20 @@ pub fn compile(
     let routing = if !automatic && routing.match_fallback.is_some() {
         standalone = routing.clone();
         standalone.fallback = routing.match_fallback.clone().unwrap_or(Target::Selected);
-        if matches!(standalone.fallback, Target::Subscription) && !sources.iter().any(|s|
-            Some(&s.id) == standalone.subscription_id.as_ref() && s.rules.iter().any(|r| r.to_ascii_uppercase().starts_with("MATCH,"))) {
+        if matches!(standalone.fallback, Target::Subscription)
+            && !sources.iter().any(|s| {
+                Some(&s.id) == standalone.subscription_id.as_ref()
+                    && s.rules
+                        .iter()
+                        .any(|r| r.to_ascii_uppercase().starts_with("MATCH,"))
+            })
+        {
             standalone.fallback = Target::Selected;
         }
         &standalone
-    } else { routing };
+    } else {
+        routing
+    };
     let mut custom = routing.clone();
     if automatic {
         custom.subscription_id = None;
@@ -176,14 +191,22 @@ pub fn compile(
             let alias = Target::group_alias("custom", id);
             let mut names = Vec::new();
             let mut seen = HashSet::new();
-            for node in members.iter().filter_map(|id| nodes.iter().find(|n| &n.id == id && !n.is_subscription_notice())) {
+            for node in members.iter().filter_map(|id| {
+                nodes
+                    .iter()
+                    .find(|n| &n.id == id && !n.is_subscription_notice())
+            }) {
                 member_sources.insert(node.source_id.clone());
                 names.push(node.kernel_name());
                 for entry in selected_node_configs(&nodes, &node.id)? {
-                    if seen.insert(entry["name"].as_str().ok_or("节点缺少名称")?.to_owned()) { proxies.push(entry); }
+                    if seen.insert(entry["name"].as_str().ok_or("节点缺少名称")?.to_owned()) {
+                        proxies.push(entry);
+                    }
                 }
             }
-            if names.is_empty() { return Err("分组没有可用节点".into()); }
+            if names.is_empty() {
+                return Err("分组没有可用节点".into());
+            }
             current_group = Some(serde_yaml::to_value(serde_json::json!({
                 "name": alias, "type":"url-test", "proxies":names, "url":crate::network::NetworkSettings::default().probe_url,
                 "interval":300, "lazy":true
@@ -251,15 +274,18 @@ pub fn compile(
         .collect();
     let mut rule_source_ids = member_sources.clone();
     let mut uses_selected = false;
-    let mut rule_outbounds = super::subscription_rules::RuleOutbounds::default();
+    let mut rule_outbounds = super::subscription_rules::RuleOutbounds::new(active.clone());
     let match_fallback = routing.match_fallback.as_ref().filter(|_| automatic);
-    for target_ref in std::iter::once(&custom.fallback).chain(match_fallback).chain(
-        routing
-            .rules
-            .iter()
-            .filter(|rule| rule.enabled)
-            .map(|rule| &rule.target),
-    ) {
+    for target_ref in std::iter::once(&custom.fallback)
+        .chain(match_fallback)
+        .chain(
+            routing
+                .rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .map(|rule| &rule.target),
+        )
+    {
         if matches!(target_ref, Target::Selected) {
             uses_selected = true;
         }
@@ -292,7 +318,8 @@ pub fn compile(
     }
 
     if !has_chain
-        && ((match_fallback == Some(&Target::Residential) || (!automatic && matches!(routing.fallback, Target::Residential)))
+        && ((match_fallback == Some(&Target::Residential)
+            || (!automatic && matches!(routing.fallback, Target::Residential)))
             || routing
                 .rules
                 .iter()
@@ -304,27 +331,53 @@ pub fn compile(
     let mut providers = Mapping::new();
     let custom_rules_end;
     let owner = if has_group {
-        sources.iter().find(|s| member_sources.len() == 1 && member_sources.contains(&s.id))
+        sources
+            .iter()
+            .find(|s| member_sources.len() == 1 && member_sources.contains(&s.id))
     } else if let Some(exit) = ids.last() {
         sources.iter().find(|source| source.nodes.iter().any(|node| node.id == exit.trim()))
     } else {
         sources.iter().find(|source| Some(&source.id) == custom.subscription_id.as_ref())
     };
 
-    let owner = owner.filter(|source| source.id != "custom"
-        && !matches!(target, StartTarget::Chain { inherit_exit_rules: Some(false), .. }));
+    let owner = owner.filter(|source| {
+        source.id != "custom"
+            && !matches!(
+                target,
+                StartTarget::Chain {
+                    inherit_exit_rules: Some(false),
+                    ..
+                }
+            )
+    });
     let owner_id = owner.map(|s| s.id.as_str());
     let reference = if automatic {
         match &routing.rule_library {
             Some(lib) => lib.resolve(target, owner_id),
             None => owner_id.map(|id| format!("subscription:{id}")),
         }
-    } else { owner_id.map(|id| format!("subscription:{id}")) };
-    let user_source = reference.as_deref().and_then(|value| value.strip_prefix("user:"))
-        .and_then(|id| routing.rule_library.as_ref()?.sets.iter().find(|s| s.id == id)).map(|s| s.source());
-    let rule_source = reference.as_deref().and_then(|value| value.strip_prefix("subscription:"))
+    } else {
+        owner_id.map(|id| format!("subscription:{id}"))
+    };
+    let user_source = reference
+        .as_deref()
+        .and_then(|value| value.strip_prefix("user:"))
+        .and_then(|id| {
+            routing
+                .rule_library
+                .as_ref()?
+                .sets
+                .iter()
+                .find(|s| s.id == id)
+        })
+        .map(|s| s.source());
+    let rule_source = reference
+        .as_deref()
+        .and_then(|value| value.strip_prefix("subscription:"))
         .and_then(|id| sources.iter().find(|s| s.id == id));
-    if let Some(s) = rule_source { rule_source_ids.insert(s.id.clone()); }
+    if let Some(s) = rule_source {
+        rule_source_ids.insert(s.id.clone());
+    }
 
     if automatic {
         rules.pop().ok_or("默认出口不存在")?;
@@ -342,20 +395,49 @@ pub fn compile(
             None | Some(Target::Subscription) => None,
             Some(value) => Some(value.outbound(sources, None)?.into_owned()),
         };
-        let fallback = explicit.as_deref().or(terminal.as_deref()).unwrap_or(selected);
+        let fallback = explicit
+            .as_deref()
+            .or(terminal.as_deref())
+            .unwrap_or(selected);
         rules.push(format!("MATCH,{fallback}"));
-
-    } else if routing.subscription_id.is_none() && routing.rules.is_empty() && matches!(routing.fallback, Target::Direct) {
-        if mode != Mode::Direct { return Err("请在节点库设为当前节点，或先配置至少 2 跳的链路".into()); }
+    } else if routing.match_fallback.is_none()
+        && routing.subscription_id.is_none()
+        && routing.rules.is_empty()
+        && matches!(routing.fallback, Target::Direct)
+    {
+        if mode != Mode::Direct {
+            return Err("请在节点库设为当前节点，或先配置至少 2 跳的链路".into());
+        }
         custom_rules_end = 0;
     } else {
         let mut custom_only = routing.clone();
         custom_only.inherit_rules = false;
         custom_only.fallback = Target::Direct;
-        custom_rules_end = custom_only
-            .compile(sources)
-            .map(|compiled| compiled.len().saturating_sub(1))
-            .unwrap_or(0);
+        let global_end = custom_only.compile(sources)?.len().saturating_sub(1);
+        custom_rules_end = if routing.match_fallback.is_some() {
+            rules.splice(
+                global_end..global_end,
+                [
+                    "GEOIP,private,DIRECT,no-resolve".to_owned(),
+                    "GEOSITE,private,DIRECT".to_owned(),
+                ],
+            );
+            let base_end = global_end + 2;
+            let has_inherited =
+                routing.inherit_rules && rule_source.is_some_and(|source| !source.rules.is_empty());
+            if !has_inherited {
+                rules.splice(
+                    base_end..base_end,
+                    [
+                        "GEOSITE,cn,DIRECT".to_owned(),
+                        "GEOIP,CN,DIRECT,no-resolve".to_owned(),
+                    ],
+                );
+            }
+            base_end
+        } else {
+            global_end
+        };
     }
 
     for entry in rule_outbounds.proxies {
@@ -390,7 +472,12 @@ pub fn compile(
                                 .and_then(|url| reqwest::Url::parse(url).ok())
                                 .is_some_and(|url| matches!(url.scheme(), "http" | "https")) =>
                         {
-                            let key = crate::subscriptions::digest(format!("{}\0{}\0{}", source.id, name.as_str().unwrap_or_default(), provider["url"].as_str().unwrap_or_default()));
+                            let key = crate::subscriptions::digest(format!(
+                                "{}\0{}\0{}",
+                                source.id,
+                                name.as_str().unwrap_or_default(),
+                                provider["url"].as_str().unwrap_or_default()
+                            ));
                             provider["path"] = format!("rules/{key}.cache").into();
                         }
                         Some("inline") => {}
@@ -556,8 +643,22 @@ mod tests {
         let mut network = crate::network::NetworkSettings::default();
         network.hosts = vec!["127.0.0.1 local.test".into()];
         for (routing, target) in [
-            (RoutingConfig::default(), StartTarget::Node { group_id: None, id: first.clone() }),
-            (RoutingConfig { rule_library: None, match_fallback: None, subscription_id: Some("s".into()), ..RoutingConfig::default() }, StartTarget::Routing),
+            (
+                RoutingConfig::default(),
+                StartTarget::Node {
+                    group_id: None,
+                    id: first.clone(),
+                },
+            ),
+            (
+                RoutingConfig {
+                    rule_library: None,
+                    match_fallback: None,
+                    subscription_id: Some("s".into()),
+                    ..RoutingConfig::default()
+                },
+                StartTarget::Routing,
+            ),
         ] {
             let mut yaml = compile(Mode::Global, &routing, &sources, Some(profile), &target).unwrap().yaml;
             network.apply_dns(&mut yaml).unwrap();
@@ -578,13 +679,25 @@ mod tests {
     fn unbound_node_keeps_its_own_domestic_rules_before_the_selected_exit() {
         let profile = "proxies: [{name: JP, type: http, server: 127.0.0.1, port: 8080}]\nrules: [ 'GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve', 'MATCH,Group', 'DOMAIN,ignored.test,DIRECT' ]";
         let mut source = parse("s".into(), "Test".into(), profile).unwrap();
-        let target = StartTarget::Node { group_id: None, id: source.nodes[0].id.clone() };
-        let routing = RoutingConfig { fallback: Target::Reject, ..RoutingConfig::default() };
+        let target = StartTarget::Node {
+            group_id: None,
+            id: source.nodes[0].id.clone(),
+        };
+        let routing = RoutingConfig {
+            fallback: Target::Reject,
+            ..RoutingConfig::default()
+        };
         let compile_rules = |source: &Source| {
             let config = compile(Mode::Rule, &routing, std::slice::from_ref(source), None, &target).unwrap();
             serde_yaml::from_value::<Vec<String>>(config.yaml["rules"].clone()).unwrap()
         };
-        let expected = ["GEOIP,private,DIRECT,no-resolve", "GEOSITE,private,DIRECT", "GEOSITE,cn,DIRECT", "GEOIP,CN,DIRECT,no-resolve", "MATCH,GLOBAL"];
+        let expected = [
+            "GEOIP,private,DIRECT,no-resolve",
+            "GEOSITE,private,DIRECT",
+            "GEOSITE,cn,DIRECT",
+            "GEOIP,CN,DIRECT,no-resolve",
+            "MATCH,GLOBAL",
+        ];
         assert_eq!(compile_rules(&source), expected);
         source.rules.insert(0, "RULE-SET,private-provider,Group".into());
         assert_eq!(compile_rules(&source), expected);
@@ -601,11 +714,37 @@ mod tests {
         let front = a.nodes[0].id.clone();
         let exit = b.nodes[0].id.clone();
         let sources = [a, b];
-        let routing = RoutingConfig { rule_library: None, match_fallback: None, subscription_id: Some("a".into()), inherit_rules: false,
-            fallback: Target::Reject, rules: vec![Rule { resume_on_enable: None, enabled: true, matcher: Matcher::Domain,
-                value: "b.test".into(), host_matcher: None, host_value: None,
-                target: Target::Group { source_id: "a".into(), name: "Group".into() } }] };
-        for target in [StartTarget::Node { group_id: None, id: exit.clone() }, StartTarget::Chain { id: None, inherit_exit_rules: None, name: "Via A".into(), hops: vec![front.clone(), exit] }] {
+        let routing = RoutingConfig {
+            rule_library: None,
+            match_fallback: None,
+            subscription_id: Some("a".into()),
+            inherit_rules: false,
+            fallback: Target::Reject,
+            rules: vec![Rule {
+                resume_on_enable: None,
+                enabled: true,
+                matcher: Matcher::Domain,
+                value: "b.test".into(),
+                host_matcher: None,
+                host_value: None,
+                target: Target::Group {
+                    source_id: "a".into(),
+                    name: "Group".into(),
+                },
+            }],
+        };
+        for target in [
+            StartTarget::Node {
+                group_id: None,
+                id: exit.clone(),
+            },
+            StartTarget::Chain {
+                id: None,
+                inherit_exit_rules: None,
+                name: "Via A".into(),
+                hops: vec![front.clone(), exit],
+            },
+        ] {
             let compiled = compile(Mode::Rule, &routing, &sources, None, &target).unwrap();
             assert_eq!(compiled.rule_source_id.as_deref(), Some("b"));
             let rules = serde_yaml::from_value::<Vec<String>>(compiled.yaml["rules"].clone()).unwrap();
@@ -617,8 +756,21 @@ mod tests {
             let group = compiled.yaml["proxy-groups"].as_sequence().unwrap().iter().find(|g| g["name"] == alias.as_str()).unwrap();
             assert_eq!(group["proxies"][0], sources[0].nodes[0].kernel_name());
         }
-        let first = compile(Mode::Rule, &routing, &sources, None, &StartTarget::Node { group_id: None, id: front }).unwrap();
-        assert_eq!(first.yaml["rules"].as_sequence().unwrap().last().unwrap(), "MATCH,DIRECT");
+        let first = compile(
+            Mode::Rule,
+            &routing,
+            &sources,
+            None,
+            &StartTarget::Node {
+                group_id: None,
+                id: front,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            first.yaml["rules"].as_sequence().unwrap().last().unwrap(),
+            "MATCH,DIRECT"
+        );
         assert_eq!(first.rule_source_id.as_deref(), Some("a"));
         let manual = RoutingConfig {
             fallback: Target::Group { source_id: "b".into(), name: "Group".into() },
@@ -639,36 +791,169 @@ mod tests {
                 "bindings": {"subscription:s":"user:u","group:g":"none","chain:c":"user:u"}
             }
         })).unwrap();
-        let target = |group: Option<&str>| StartTarget::Node { id:id.clone(), group_id: group.map(str::to_owned) };
-        let rules = |cfg: &RoutingConfig, target| compile(Mode::Rule, cfg, std::slice::from_ref(&source), None, &target)
-            .unwrap().preview_rules(&crate::network::NetworkSettings::default()).unwrap();
+        let target = |group: Option<&str>| StartTarget::Node {
+            id: id.clone(),
+            group_id: group.map(str::to_owned),
+        };
+        let rules = |cfg: &RoutingConfig, target| {
+            compile(
+                Mode::Rule,
+                cfg,
+                std::slice::from_ref(&source),
+                None,
+                &target,
+            )
+            .unwrap()
+            .preview_rules(&crate::network::NetworkSettings::default())
+            .unwrap()
+        };
         assert!(rules(&routing, target(None)).contains(&"DOMAIN,local.test,DIRECT".into()));
         assert!(rules(&routing, target(Some("g"))).contains(&"GEOSITE,cn,DIRECT".into()));
-        routing.rule_library.as_mut().unwrap().bindings.insert(format!("node:{id}"), "subscription:s".into());
-        assert_eq!(rules(&routing,target(Some("g"))).last().unwrap(),"MATCH,REJECT");
-        routing.match_fallback=Some(Target::Direct);
-        assert_eq!(rules(&routing,target(Some("g"))).last().unwrap(),"MATCH,DIRECT");
-        let chain = StartTarget::Chain { id:Some("c".into()), inherit_exit_rules:Some(false), name:"C".into(), hops:vec![] };
-        assert_eq!(routing.rule_library.as_ref().unwrap().resolve(&chain,None).as_deref(),Some("user:u"));
-        let old: StartTarget = serde_json::from_value(serde_json::json!({"kind":"node","id":id})).unwrap();
-        assert_eq!(rules(&RoutingConfig::default(),old).last().unwrap(),"MATCH,REJECT");
+        routing
+            .rule_library
+            .as_mut()
+            .unwrap()
+            .bindings
+            .insert(format!("node:{id}"), "subscription:s".into());
+        assert_eq!(
+            rules(&routing, target(Some("g"))).last().unwrap(),
+            "MATCH,REJECT"
+        );
+        routing.match_fallback = Some(Target::Direct);
+        assert_eq!(
+            rules(&routing, target(Some("g"))).last().unwrap(),
+            "MATCH,DIRECT"
+        );
+        let chain = StartTarget::Chain {
+            id: Some("c".into()),
+            inherit_exit_rules: Some(false),
+            name: "C".into(),
+            hops: vec![],
+        };
+        assert_eq!(
+            routing
+                .rule_library
+                .as_ref()
+                .unwrap()
+                .resolve(&chain, None)
+                .as_deref(),
+            Some("user:u")
+        );
+        let old: StartTarget =
+            serde_json::from_value(serde_json::json!({"kind":"node","id":id})).unwrap();
+        assert_eq!(
+            rules(&RoutingConfig::default(), old).last().unwrap(),
+            "MATCH,REJECT"
+        );
+    }
+
+    #[test]
+    fn explicit_direct_default_can_run_without_a_selected_node() {
+        let config = RoutingConfig {
+            match_fallback: Some(Target::Direct),
+            ..RoutingConfig::default()
+        };
+        let plan = compile(Mode::Rule, &config, &[], None, &StartTarget::Routing).unwrap();
+        let rules = plan
+            .preview_rules(&crate::network::NetworkSettings::default())
+            .unwrap();
+        assert_eq!(
+            rules,
+            [
+                "GEOIP,private,DIRECT,no-resolve",
+                "GEOSITE,private,DIRECT",
+                "GEOSITE,cn,DIRECT",
+                "GEOIP,CN,DIRECT,no-resolve",
+                "MATCH,DIRECT",
+            ]
+        );
+    }
+
+    #[test]
+    fn portable_rule_template_preserves_automatic_group_and_uses_selected_proxy() {
+        let source = parse(
+            "airport".into(),
+            "Airport".into(),
+            "proxies: [{name: Current, type: http, server: localhost, port: 80}]",
+        )
+        .unwrap();
+        let target = StartTarget::Node {
+            id: source.nodes[0].id.clone(),
+            group_id: None,
+        };
+        let config: RoutingConfig = serde_json::from_value(serde_json::json!({
+            "ruleLibrary": {
+                "sets": [{"id":"copy","name":"Template","profile":{
+                    "rules":["MATCH,Auto"],
+                    "proxy-groups":[{"name":"Auto","type":"fallback","proxies":["DIRECT","Original","Other"],"interval":91}]
+                }}],
+                "bindings":{"subscription:airport":"user:copy"}
+            }
+        })).unwrap();
+        let kernel_name = source.nodes[0].kernel_name();
+        let result = compile(Mode::Rule, &config, &[source], None, &target).unwrap();
+        let terminal = result.yaml["rules"]
+            .as_sequence()
+            .unwrap()
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap();
+        let group_name = terminal.strip_prefix("MATCH,").unwrap();
+        let group = result.yaml["proxy-groups"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|group| group["name"].as_str() == Some(group_name))
+            .unwrap();
+        assert_eq!(group["interval"].as_i64(), Some(91));
+        assert_eq!(
+            group["proxies"],
+            serde_yaml::to_value(["DIRECT", kernel_name.as_str()]).unwrap()
+        );
     }
 
     #[test]
     fn automatic_group_uses_its_binding_or_common_subscription() {
         let profile = "proxies: [{name: N, type: http, server: localhost, port: 8888}]\nrules: ['MATCH,REJECT']";
-        let sources = [parse("a".into(),"A".into(),profile).unwrap(),parse("b".into(),"B".into(),profile).unwrap()];
-        let members = sources.iter().map(|s| s.nodes[0].id.clone()).collect::<Vec<_>>();
-        let group = |members| StartTarget::Group {id:"team".into(),name:"Team".into(),members};
-        let compile_group = |cfg: &RoutingConfig, target| compile(Mode::Rule,cfg,&sources,None,&target).unwrap();
-        let mixed = compile_group(&RoutingConfig::default(),group(members.clone()));
-        assert_eq!(mixed.rule_source_id,None);
-        assert_eq!(mixed.yaml["proxy-groups"][0]["type"],"url-test");
-        assert_eq!(mixed.yaml["proxy-groups"][0]["proxies"].as_sequence().unwrap().len(),2);
-        let homogeneous = compile_group(&RoutingConfig::default(),group(vec![members[1].clone()]));
-        assert_eq!(homogeneous.rule_source_id.as_deref(),Some("b"));
-        let cfg = serde_json::from_value(serde_json::json!({"ruleLibrary":{"bindings":{"group:team":"subscription:a"}}})).unwrap();
-        assert_eq!(compile_group(&cfg,group(members)).rule_source_id.as_deref(),Some("a"));
+        let sources = [
+            parse("a".into(), "A".into(), profile).unwrap(),
+            parse("b".into(), "B".into(), profile).unwrap(),
+        ];
+        let members = sources
+            .iter()
+            .map(|s| s.nodes[0].id.clone())
+            .collect::<Vec<_>>();
+        let group = |members| StartTarget::Group {
+            id: "team".into(),
+            name: "Team".into(),
+            members,
+        };
+        let compile_group = |cfg: &RoutingConfig, target| {
+            compile(Mode::Rule, cfg, &sources, None, &target).unwrap()
+        };
+        let mixed = compile_group(&RoutingConfig::default(), group(members.clone()));
+        assert_eq!(mixed.rule_source_id, None);
+        assert_eq!(mixed.yaml["proxy-groups"][0]["type"], "url-test");
+        assert_eq!(
+            mixed.yaml["proxy-groups"][0]["proxies"]
+                .as_sequence()
+                .unwrap()
+                .len(),
+            2
+        );
+        let homogeneous = compile_group(&RoutingConfig::default(), group(vec![members[1].clone()]));
+        assert_eq!(homogeneous.rule_source_id.as_deref(), Some("b"));
+        let cfg = serde_json::from_value(
+            serde_json::json!({"ruleLibrary":{"bindings":{"group:team":"subscription:a"}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            compile_group(&cfg, group(members))
+                .rule_source_id
+                .as_deref(),
+            Some("a")
+        );
     }
 
     #[test]
@@ -698,7 +983,10 @@ mod tests {
             "proxies:\n  - { name: Test node, type: http, server: 127.0.0.1, port: 8080 }\n",
         ).unwrap();
         let name = source.nodes[0].kernel_name();
-        let target = StartTarget::Node { group_id: None, id: source.nodes[0].id.clone() };
+        let target = StartTarget::Node {
+            group_id: None,
+            id: source.nodes[0].id.clone(),
+        };
         let routing = RoutingConfig {
             fallback: Target::Residential,
             rules: vec![Rule {
@@ -751,7 +1039,17 @@ mod tests {
             ],
             ..RoutingConfig::default()
         };
-        let config = compile(Mode::Rule, &routing, &[source], None, &StartTarget::Node { group_id: None, id: hk_id }).unwrap();
+        let config = compile(
+            Mode::Rule,
+            &routing,
+            &[source],
+            None,
+            &StartTarget::Node {
+                group_id: None,
+                id: hk_id,
+            },
+        )
+        .unwrap();
         let rules = serde_yaml::from_value::<Vec<String>>(config.yaml["rules"].clone()).unwrap();
         assert_eq!(
             rules,
@@ -804,9 +1102,39 @@ mod tests {
             }],
             ..RoutingConfig::default()
         };
-        let mut hk_cfg = compile(Mode::Rule, &routing, std::slice::from_ref(&source), Some(profile), &StartTarget::Node { group_id: None, id: hk_id.clone() }).unwrap();
-        let mut us_cfg = compile(Mode::Rule, &routing, std::slice::from_ref(&source), Some(profile), &StartTarget::Node { group_id: None, id: us_id }).unwrap();
-        let mut hk_again = compile(Mode::Rule, &routing, &[source], Some(profile), &StartTarget::Node { group_id: None, id: hk_id }).unwrap();
+        let mut hk_cfg = compile(
+            Mode::Rule,
+            &routing,
+            std::slice::from_ref(&source),
+            Some(profile),
+            &StartTarget::Node {
+                group_id: None,
+                id: hk_id.clone(),
+            },
+        )
+        .unwrap();
+        let mut us_cfg = compile(
+            Mode::Rule,
+            &routing,
+            std::slice::from_ref(&source),
+            Some(profile),
+            &StartTarget::Node {
+                group_id: None,
+                id: us_id,
+            },
+        )
+        .unwrap();
+        let mut hk_again = compile(
+            Mode::Rule,
+            &routing,
+            &[source],
+            Some(profile),
+            &StartTarget::Node {
+                group_id: None,
+                id: hk_id,
+            },
+        )
+        .unwrap();
         let rules = serde_yaml::from_value::<Vec<String>>(hk_cfg.yaml["rules"].clone()).unwrap();
         assert_eq!(
             rules,
@@ -850,7 +1178,12 @@ mod tests {
             &routing,
             &sources,
             None,
-            &StartTarget::Chain { id: None, inherit_exit_rules: None, name: "Home".into(), hops },
+            &StartTarget::Chain {
+                id: None,
+                inherit_exit_rules: None,
+                name: "Home".into(),
+                hops,
+            },
         )
         .unwrap();
         let chain_rules = serde_yaml::from_value::<Vec<String>>(chain_cfg.yaml["rules"].clone()).unwrap();
@@ -877,7 +1210,10 @@ mod tests {
             &routing,
             &sources,
             None,
-            &StartTarget::Node { group_id: None, id: custom_id },
+            &StartTarget::Node {
+                group_id: None,
+                id: custom_id,
+            },
         )
         .unwrap();
         let custom_rules = serde_yaml::from_value::<Vec<String>>(custom_cfg.yaml["rules"].clone()).unwrap();

@@ -58,7 +58,7 @@ impl UserRuleSet {
             name: self.name.clone(),
             nodes: vec![],
             groups,
-            group_configs: vec![],
+            group_configs: self.profile.proxy_groups.clone(),
             rules: self.profile.rules.clone(),
             rule_providers: self.profile.rule_providers.clone(),
             hosts: Mapping::new(),

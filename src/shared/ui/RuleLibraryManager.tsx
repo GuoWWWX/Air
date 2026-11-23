@@ -30,7 +30,7 @@ export function readRuleProfile(input: unknown): RuleProfile {
   const groups = profile['proxy-groups']
   if (groups && (!Array.isArray(groups) || groups.some(g => !g || typeof g.name !== 'string' || typeof g.type !== 'string' || (g.proxies && (!Array.isArray(g.proxies) || g.proxies.some(n => typeof n !== 'string')))))) throw new Error(tr('规则集格式无效'))
   return { rules: profile.rules ?? [], ...(providers && { 'rule-providers': providers }),
-    ...(groups?.length && { 'proxy-groups': groups.map(({ name, type, proxies }) => ({ name, type, ...(proxies && { proxies }) })) }) }
+    ...(groups?.length && { 'proxy-groups': groups }) }
 }
 export function profileYaml(yaml: string) {
   const doc = parseDocument(yaml)

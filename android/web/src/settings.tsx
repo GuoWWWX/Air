@@ -108,7 +108,8 @@ export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
   const [preview, setPreview] = useState<string[]>()
   const sourceNames = new Map(library.sources.map(source => [source.id, source.name]))
   const reference = resolvedRuleSet({ ...library, routing: draft }, model)
-  const sourceName = sourceNames.get(reference.slice(13)) ?? draft.ruleLibrary?.sets.find(set => 'user:' + set.id === reference)?.name
+  const sourceName = reference.startsWith('subscription:') ? sourceNames.get(reference.slice(13))
+    : draft.ruleLibrary?.sets.find(set => 'user:' + set.id === reference)?.name
   const targets: { target: RouteTarget; label: string; disabled?: boolean }[] = [
     { target: { kind: 'selected' }, label: tr('当前所选出口') },
     { target: { kind: 'direct' }, label: tr('直连') },
@@ -149,7 +150,7 @@ export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
       <fieldset disabled={busy} className="settings-fields">
         <section className="panel settings-form">
           <h2 className="settings-form-title">{tr("订阅规则与默认出口")}</h2>
-          <div className="field"><span>{tr("订阅规则来源")}</span><strong>{selectionName(selection(library,model),model,library) ?? tr('无')} → {sourceName ?? tr('无')}</strong></div>
+          <div className="field"><span>{tr("当前生效规则集")}</span><strong>{selectionName(selection(library,model),model,library) ?? tr('无')} → {sourceName ?? tr('无')}</strong></div>
           <RuleLibraryManager catalog={draft.ruleLibrary} overlay={(title, close, content) => <Sheet open title={title} close={close}>{content}</Sheet>}
             sources={library.sources.map(s => ({ id:s.id,name:s.name,updated:s.updated,
               read:async () => readRuleProfile(model.profiles.get(s.id)?.profile) }))}
@@ -181,7 +182,7 @@ export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
       </fieldset>
     </main>
     <footer className="page-action settings-footer">
-      <Button type="button" variant="outline" disabled={busy} onClick={() => { change(defaultRouting); showMessage({ type: 'info', title: tr('已恢复默认规则，点击保存后生效') }) }}>{tr("恢复默认")}</Button>
+      <Button type="button" variant="outline" disabled={busy} onClick={() => { change({ ...defaultRouting, ruleLibrary: draft.ruleLibrary }); showMessage({ type: 'info', title: tr('已恢复默认规则，点击保存后生效') }) }}>{tr("恢复默认")}</Button>
       <Button type="submit" variant="default" className="flex-1" disabled={busy}><Save data-icon="inline-start" />{tr("保存规则")}</Button>
     </footer>
   </form>

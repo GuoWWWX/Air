@@ -505,13 +505,15 @@ export function compile(library: Library, model = readLibrary(library), previewS
     if (cached) return cached
     const members = Array.isArray(raw.proxies) ? raw.proxies.map(item => {
       const member = String(item)
-      return builtin.has(member) ? member : nodeLookup.get(member) ?? originalGroup(member, new Set(path).add(name))
+      if (builtin.has(member)) return member
+      if (rawGroups.has(member)) return originalGroup(member, new Set(path).add(name))
+      return nodeLookup.get(member) ?? (userSet ? active : undefined)
     }) : []
     if (!members.length || members.some(item => !item)) throw new Error(tr('规则引用的节点或分组不存在'))
     const alias = 'AirRuleGroup-' + (materialized.size + 1)
     materialized.set(name, alias)
     labels[alias] = name
-    proxyGroups.push({ ...raw, name:alias, proxies:members })
+    proxyGroups.push({ ...raw, name:alias, proxies:userSet ? [...new Set(members)] : members })
     return alias
   }
   const lookupPolicy = (policy: string, seen = new Set<string>()): string | undefined => {
@@ -525,7 +527,7 @@ export function compile(library: Library, model = readLibrary(library), previewS
       const members = Array.isArray(raw.proxies)
         ? raw.proxies.filter((p): p is string => typeof p === 'string').map(p => p.trim()).filter(Boolean)
         : []
-      if (raw.type !== 'select') return userSet ? 'GLOBAL' : originalGroup(name)
+      if (raw.type !== 'select') return originalGroup(name)
       const first = members[0]
       if (first === 'DIRECT') return 'DIRECT'
       if (first === 'REJECT' || first === 'REJECT-DROP') return first

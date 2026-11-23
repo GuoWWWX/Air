@@ -14,7 +14,8 @@ fn an_explicit_invalid_chain_never_compiles_as_a_direct_outbound() {
     )
     .unwrap();
     let target = StartTarget::Chain {
-        id: None, inherit_exit_rules: None,
+        id: None,
+        inherit_exit_rules: None,
         name: "Sample chain".into(),
         hops: vec![source.nodes[0].id.clone(), "deleted-node".into()],
     };

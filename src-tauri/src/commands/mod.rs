@@ -142,7 +142,9 @@ mod subscription_deletion_tests {
         let before = file.load().unwrap();
         file.save(
             &RoutingConfig {
-                rule_library: None, match_fallback: None, subscription_id: Some("remove".into()),
+                rule_library: None,
+                match_fallback: None,
+                subscription_id: Some("remove".into()),
                 inherit_rules: true,
                 fallback: Target::Subscription,
                 ..before.routing
@@ -155,7 +157,14 @@ mod subscription_deletion_tests {
         assert_eq!(library.sources.len(), 1);
         assert_eq!(library.sources[0].id, "keep");
         assert_eq!(library.nodes().count(), 1);
-        assert_eq!(file.load().unwrap().routing.compile(&library.sources).unwrap(), ["MATCH,GLOBAL"]);
+        assert_eq!(
+            file.load()
+                .unwrap()
+                .routing
+                .compile(&library.sources)
+                .unwrap(),
+            ["MATCH,GLOBAL"]
+        );
     }
 }
 
@@ -321,13 +330,36 @@ impl App {
     fn compile_target(&self, mode: Mode, routing: &RoutingConfig, library: &Library, target: &StartTarget) -> AirResult<ProxyConfig> {
         let mut adjusted;
         let target = if let StartTarget::Group { id, .. } = target {
-            let group = custom_groups::load(&self.directory)?.into_iter().find(|g| &g.id == id).ok_or("分组已不存在")?;
-            adjusted = StartTarget::Group { id:group.id, name:group.name, members:group.members };
+            let group = custom_groups::load(&self.directory)?
+                .into_iter()
+                .find(|g| &g.id == id)
+                .ok_or("分组已不存在")?;
+            adjusted = StartTarget::Group {
+                id: group.id,
+                name: group.name,
+                members: group.members,
+            };
             &adjusted
-        } else if let StartTarget::Node { id, group_id: Some(group_id) } = target {
-            if custom_groups::load(&self.directory)?.iter().any(|g| &g.id == group_id && g.members.contains(id)) { target }
-            else { adjusted = target.clone(); if let StartTarget::Node { group_id, .. } = &mut adjusted { *group_id = None; } &adjusted }
-        } else { target };
+        } else if let StartTarget::Node {
+            id,
+            group_id: Some(group_id),
+        } = target
+        {
+            if custom_groups::load(&self.directory)?
+                .iter()
+                .any(|g| &g.id == group_id && g.members.contains(id))
+            {
+                target
+            } else {
+                adjusted = target.clone();
+                if let StartTarget::Node { group_id, .. } = &mut adjusted {
+                    *group_id = None;
+                }
+                &adjusted
+            }
+        } else {
+            target
+        };
         let yaml = match (target, &routing.subscription_id) {
             (StartTarget::Routing, Some(id)) => self.store.effective_source_yaml(id)?,
             _ => None,
@@ -1071,8 +1103,18 @@ pub async fn subscription_yaml(state: State<'_, Arc<App>>, id: String, runtime: 
     let node = library.sources.iter().find(|s| s.id == id).ok_or("订阅已不存在")?.nodes.iter()
         .find(|node| !node.is_subscription_notice()).ok_or("订阅没有可用的节点")?;
     let session = state.store.startup_proxy()?;
-    let config = state.compile_target(session.mode, &file.load()?.routing, &library, &StartTarget::Node { group_id: None, id: node.id.clone() })?;
-    config.preview_yaml(&file.network()?.settings, session.mode, session.tun).map(|yaml| format!("# 按当前设置生成的订阅预览\n{yaml}"))
+    let config = state.compile_target(
+        session.mode,
+        &file.load()?.routing,
+        &library,
+        &StartTarget::Node {
+            group_id: None,
+            id: node.id.clone(),
+        },
+    )?;
+    config
+        .preview_yaml(&file.network()?.settings, session.mode, session.tun)
+        .map(|yaml| format!("# 按当前设置生成的订阅预览\n{yaml}"))
 }
 
 #[tauri::command]
@@ -1400,10 +1442,17 @@ pub async fn delete_custom_group(state: State<'_, Arc<App>>, id: String) -> AirR
     let file = RoutingFile::new(&state.directory);
     let previous = file.load()?;
     let mut routing = previous.routing.clone();
-    let detached = routing.rule_library.as_mut().and_then(|lib| lib.bindings.remove(&format!("group:{id}")));
-    let saved = detached.map(|_| file.save(&routing, &previous.revision)).transpose()?;
+    let detached = routing
+        .rule_library
+        .as_mut()
+        .and_then(|lib| lib.bindings.remove(&format!("group:{id}")));
+    let saved = detached
+        .map(|_| file.save(&routing, &previous.revision))
+        .transpose()?;
     if let Err(error) = custom_groups::delete(&state.directory, &id) {
-        if let Some(doc) = saved { file.save(&previous.routing, &doc.revision)?; }
+        if let Some(doc) = saved {
+            file.save(&previous.routing, &doc.revision)?;
+        }
         return Err(error);
     }
     Ok(())
@@ -1530,9 +1579,18 @@ pub async fn preview_routing(
     let target = active.or(target).unwrap_or(StartTarget::Routing);
     let library = state.library.read().await;
     let file = RoutingFile::new(&state.directory);
-    let network = runtime.active_network().cloned().unwrap_or(file.network()?.settings);
-    let mode = if runtime.active_target().is_some() { runtime.mode() } else { Mode::Direct };
-    state.compile_target(mode, &config, &library, &target)?.preview_rules(&network)
+    let network = runtime
+        .active_network()
+        .cloned()
+        .unwrap_or(file.network()?.settings);
+    let mode = if runtime.active_target().is_some() {
+        runtime.mode()
+    } else {
+        Mode::Direct
+    };
+    state
+        .compile_target(mode, &config, &library, &target)?
+        .preview_rules(&network)
 }
 
 #[tauri::command]
@@ -1642,7 +1700,11 @@ pub async fn proxy_control(
             }
         }
         ProxyAction::SelectGroup { id } => {
-            let target = StartTarget::Group { id, name:String::new(), members:vec![] };
+            let target = StartTarget::Group {
+                id,
+                name: String::new(),
+                members: vec![],
+            };
             let config = state.proxy_config(runtime.mode(), &target).await?;
             runtime.select_node(config).await?;
             session.target = Some(target);

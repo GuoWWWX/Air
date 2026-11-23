@@ -147,6 +147,14 @@ export function normalizeProcessRuleValue(
   return caseSensitiveProcess ? next : next.toLowerCase()
 }
 
+export function processScopesOverlap(a: Pick<PolicyRuleLike, 'matcher' | 'value'>, b: Pick<PolicyRuleLike, 'matcher' | 'value'>, caseSensitive = false) {
+  if (![a, b].every(rule => rule.matcher === 'processName' || rule.matcher === 'processPath')) return false
+  const left = normalizeProcessRuleValue(a.matcher, a.value, caseSensitive)
+  const right = normalizeProcessRuleValue(b.matcher, b.value, caseSensitive)
+  if (a.matcher === b.matcher) return left === right
+  return left.split('\\').at(-1) === right.split('\\').at(-1)
+}
+
 export function normalizeHostRuleValue(matcher: PolicyHostMatcher, value: string): string {
   const trimmed = value.trim()
   if (matcher === 'ip') return trimmed
@@ -217,14 +225,6 @@ export function mergeAppPolicyRules<
     params.caseSensitiveProcess,
   )
 
-  const remaining = existingRules.filter(rule => {
-    if (rule.matcher !== params.processMatcher) return true
-    return (
-      normalizeProcessRuleValue(rule.matcher, rule.value, params.caseSensitiveProcess) !==
-      targetProc
-    )
-  })
-
   const dedupedFine = new Map<string, Rule>()
   for (const item of params.fineRules) {
     const cleanHost = item.hostValue.trim()
@@ -244,17 +244,32 @@ export function mergeAppPolicyRules<
     (a, b) => finePriority(a.hostMatcher!) - finePriority(b.hostMatcher!),
   )
 
-  const nextAppRules: Rule[] = [...orderedFine]
-  if (params.coarseTarget) {
-    nextAppRules.push({
-      enabled: true,
-      matcher: params.processMatcher,
-      value: params.processValue.trim(),
-      target: params.coarseTarget,
-    } as Rule)
-  }
+  const defaultRule = params.coarseTarget ? [{
+    enabled: true,
+    matcher: params.processMatcher,
+    value: params.processValue.trim(),
+    target: params.coarseTarget,
+  } as Rule] : []
 
-  return [...nextAppRules, ...remaining]
+  const exceptions: Rule[] = []
+  const remaining: Rule[] = []
+  const scope = { matcher: params.processMatcher, value: params.processValue }
+  for (const rule of existingRules) {
+    const sameScope = rule.matcher === scope.matcher
+      && normalizeProcessRuleValue(rule.matcher, rule.value, params.caseSensitiveProcess) === targetProc
+    if (sameScope) {
+      const replaced = rule.hostMatcher
+        ? dedupedFine.has(rule.hostMatcher + ':' + normalizeHostRuleValue(rule.hostMatcher, rule.hostValue ?? ''))
+        : Boolean(params.coarseTarget)
+      if (rule.enabled || replaced) continue
+    }
+    if (params.coarseTarget && rule.hostMatcher && processScopesOverlap(rule, scope, params.caseSensitiveProcess)) {
+      exceptions.push(rule)
+    } else {
+      remaining.push(rule)
+    }
+  }
+  return [...orderedFine, ...exceptions, ...defaultRule, ...remaining]
 }
 
 export function findStandaloneHostRule<Rule extends PolicyRuleLike>(

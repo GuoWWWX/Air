@@ -15,9 +15,17 @@ pub(super) struct RuleOutbounds {
     pub proxies: Vec<Value>,
     pub groups: Vec<Value>,
     loaded: HashSet<String>,
+    template_outbound: Option<String>,
 }
 
 impl RuleOutbounds {
+    pub fn new(template_outbound: Option<String>) -> Self {
+        Self {
+            template_outbound,
+            ..Self::default()
+        }
+    }
+
     pub fn group(&mut self, source: &Source, name: &str) -> AirResult<String> {
         self.member(source, name, &mut HashSet::new())
     }
@@ -48,6 +56,12 @@ impl RuleOutbounds {
             }
             return Ok(alias);
         }
+        if source.id.starts_with("user:") && !source.groups.iter().any(|g| g.name == name) {
+            return Ok(self
+                .template_outbound
+                .clone()
+                .unwrap_or_else(|| "GLOBAL".into()));
+        }
         let alias = Target::group_alias(&source.id, name);
         if self.loaded.contains(&alias) {
             return Ok(alias);
@@ -72,6 +86,10 @@ impl RuleOutbounds {
                 visiting,
             )?));
         }
+        if source.id.starts_with("user:") {
+            let mut seen = HashSet::new();
+            members.retain(|item| seen.insert(item.as_str().unwrap_or_default().to_owned()));
+        }
         group["name"] = alias.clone().into();
         group["proxies"] = members.into();
         visiting.remove(&alias);
@@ -85,7 +103,11 @@ impl RuleOutbounds {
         // A direct/reject group keeps that decision. Fixed nodes and automatic groups retain their own target.
         let mut current = name;
         let mut seen = HashSet::new();
-        while let Some(group) = source.groups.iter().find(|g| g.name == current && g.strategy == "select") {
+        while let Some(group) = source
+            .groups
+            .iter()
+            .find(|g| g.name == current && g.strategy == "select")
+        {
             if !seen.insert(current) {
                 return Err("订阅分组包含循环引用".into());
             }
@@ -98,7 +120,12 @@ impl RuleOutbounds {
                 break;
             }
         }
-        if source.id.starts_with("user:") && !matches!(name, "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS") { return Ok(Some("GLOBAL".into())); }
+        if source.id.starts_with("user:")
+            && !source.groups.iter().any(|group| group.name == name)
+            && !matches!(name, "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS")
+        {
+            return Ok(Some("GLOBAL".into()));
+        }
         if source
             .groups
             .iter()

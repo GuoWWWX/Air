@@ -1,4 +1,4 @@
-import { normalizeProcessRuleValue, type PolicyRuleLike } from './connection-policy'
+import { normalizeProcessRuleValue, processScopesOverlap, type PolicyRuleLike } from './connection-policy'
 
 export function applicationRule(rule: PolicyRuleLike) {
   return rule.matcher === 'processName' || rule.matcher === 'processPath'
@@ -25,9 +25,7 @@ export function replaceRuleRows<R extends PolicyRuleLike>(rules: R[], indices: n
   for (let index = 0; index < ordered.length; index++) {
     const rule = ordered[index]
     if (!applicationRule(rule) || !rule.hostMatcher) continue
-    const value = normalizeProcessRuleValue(rule.matcher, rule.value)
-    const earlier = ordered.findIndex((item, i) => i < index && !item.hostMatcher && applicationRule(item)
-      && normalizeProcessRuleValue(item.matcher, item.value) === (item.matcher === 'processName' ? value.split('\\').at(-1) : value))
+    const earlier = ordered.findIndex((item, i) => i < index && !item.hostMatcher && processScopesOverlap(item, rule))
     if (earlier >= 0) ordered.splice(earlier, 0, ...ordered.splice(index, 1))
   }
   if (!indices.length) return [...rules, ...ordered]

@@ -314,7 +314,7 @@ export function RoutingSettings({ sources, groups, nodes, target, apps, ownerNam
             >
               <fieldset disabled={busy} className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0">
                 <div className="flex flex-col gap-1.5">
-                  <Label>{tr("订阅规则来源")}</Label>
+                  <Label>{tr("当前生效规则集")}</Label>
                   <span className="text-sm">{target.kind === 'group' || target.kind === 'chain' ? target.name : nodes.find(node => node.id === exitId)?.name ?? tr('当前代理出口')} → {sourceName ?? tr('无')}</span>
                 </div>
                 <RuleLibraryManager catalog={draft.ruleLibrary} owners={ownerNames} overlay={ruleDialog} exportYaml={downloadSubscription}
