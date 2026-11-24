@@ -102,6 +102,8 @@ export function App() {
   const [loadError, setLoadError] = useState('')
   const [status, setStatus] = useState(emptyStatus)
   const [exitInfo, setExitInfo] = useState<ExitInfo>()
+  const [exitChecking, setExitChecking] = useState(false)
+  const [exitFailed, setExitFailed] = useState(false)
   const [history, setHistory] = useState<Connection[]>([])
   const [chainMeasurement, setChainMeasurement] = useState<ChainMeasurement>()
   const [busy, setBusy] = useState(false)
@@ -406,13 +408,30 @@ export function App() {
   }, [running, status.startedAt])
 
   useEffect(() => {
-    if (!running) { setExitInfo(undefined); prevConnSample.current = null; return }
+    if (!running) {
+      outboundRevision.current++
+      setExitInfo(undefined)
+      setExitChecking(false)
+      setExitFailed(false)
+      prevConnSample.current = null
+      return
+    }
     const revision = ++outboundRevision.current
     setExitInfo(undefined)
+    setExitChecking(true)
+    setExitFailed(false)
     prevConnSample.current = null
-    void native<ExitInfo>('exit', { mode: library.mode }).then(result => {
-      if (revision === outboundRevision.current) setExitInfo(result)
-    }).catch(() => undefined)
+    void native<ExitInfo>('exit', { mode: library.mode })
+      .then(result => {
+        if (revision !== outboundRevision.current) return
+        setExitInfo(result)
+        setExitChecking(false)
+      })
+      .catch(() => {
+        if (revision !== outboundRevision.current) return
+        setExitFailed(true)
+        setExitChecking(false)
+      })
     return () => { outboundRevision.current++ }
   }, [running, status.startedAt, library.mode, choice?.id])
 
@@ -595,10 +614,23 @@ export function App() {
   }
 
   function detect() {
-    void task(async () => {
-      const value = await native<ExitInfo>('exit', { mode: library.mode })
-      setExitInfo(value)
-    })
+    if (!running) return
+    const revision = ++outboundRevision.current
+    setExitChecking(true)
+    setExitFailed(false)
+    void native<ExitInfo>('exit', { mode: library.mode })
+      .then(value => {
+        if (revision !== outboundRevision.current) return
+        setExitInfo(value)
+      })
+      .catch(error => {
+        if (revision !== outboundRevision.current) return
+        setExitFailed(true)
+        showMessage({ type: 'error', title: errorText(error) })
+      })
+      .finally(() => {
+        if (revision === outboundRevision.current) setExitChecking(false)
+      })
   }
 
   useEffect(() => {
@@ -809,7 +841,11 @@ export function App() {
   }
 
   function nextNode(node: Node, base = current.current): Library {
-    if (node.sourceId !== 'custom') return { ...base, sources: pauseSource(node.sourceId, base), edits: { ...base.edits, [node.id]: node.config } }
+    if (node.sourceId !== 'custom') {
+      const existing = readLibrary(base).nodesById.get(node.id)
+      if (existing && JSON.stringify(existing.config) === JSON.stringify(node.config)) return base
+      return { ...base, sources: pauseSource(node.sourceId, base), edits: { ...base.edits, [node.id]: node.config } }
+    }
     const exists = base.nodes.some(old => old.id === node.id)
     return { ...base, nodes: exists ? base.nodes.map(old => old.id === node.id ? node : old) : [...base.nodes, node] }
   }
@@ -1303,7 +1339,7 @@ export function App() {
             />
           }
         />
-          <Home status={status} pending={powerPending} library={library} model={model} choice={choice} exit={exitInfo} rows={history} labels={compiled.labels} busy={busy}
+          <Home status={status} pending={powerPending} library={library} model={model} choice={choice} exit={exitInfo} exitChecking={exitChecking} exitFailed={exitFailed} rows={history} labels={compiled.labels} busy={busy}
             detect={detect} mode={switchMode}
             select={() => choice?.type === 'chain' ? setDialog({ kind: 'chain' }) : go('nodes')}
             openGroups={() => { setTab('nodes'); setScreen(undefined); setNodesSelecting(false); setChecked([]); setDialog({ kind: 'scope' }) }}
@@ -1311,7 +1347,7 @@ export function App() {
             importSub={importSub} toggle={togglePower}
             openGroup={group => setDialog({ kind: 'group', group })}
             openConnection={conn => setDialog({ kind: 'connection', id: conn.id, snapshot: conn })}
-            copyIp={ip => void copySubscriptionText(ip).then(() => notice(tr('出口 IP 已复制'))).catch(() => showMessage({ type: 'error', title: tr('复制失败') }))}
+            copyIp={ip => copySubscriptionText(ip).then(() => { notice(tr('出口 IP 已复制')); return true }).catch(() => { showMessage({ type: 'error', title: tr('复制失败') }); return false })}
             headerPowerProgress={homePowerProgress} /></>
         break
       }
@@ -1354,10 +1390,10 @@ export function App() {
     const node = dialog.node
     sheetTitle = node ? tr('编辑节点') : tr('添加自定义节点')
     sheet = <NodeEditor node={node} library={library} busy={busy} save={saveNode} test={draft => void task(() => measure([draft.id], nextNode(draft), false, { notify: 'nodeTest' }))}
-      reset={node && library.edits[node.id] ? () => void task(async () => {
+      reset={node && (library.edits[node.id] || library.routing.ruleLibrary?.bindings['node:' + node.id]) ? () => void task(async () => {
         await commit(latest => {
           const edits = { ...latest.edits }; delete edits[node.id]
-          return { ...latest, edits }
+          return withBinding({ ...latest, edits }, 'node:' + node.id, '')
         })
         setDialog(undefined); notice(tr('已恢复订阅值'))
       }) : undefined}
@@ -1463,7 +1499,8 @@ export function App() {
       const openTool = (data: SubscriptionToolData) => {
         setDialog({ kind: 'tool', key: `${source.id}:${data.kind}`, name: source.name, data })
       }
-      sheet = <>{subscriptionBinding(source.id)}<SourceActionsSheet
+      sheet = <SourceActionsSheet
+        bindingField={subscriptionBinding(source.id)}
         source={source}
         copied={copied === source.id}
         isRefreshing={refreshing.includes(source.id)}
@@ -1503,7 +1540,7 @@ export function App() {
         })}
         onMove={delta => { moveSource(source.id, delta); setDialog(undefined) }}
         onDelete={() => setDialog({ kind: 'deleteSource', id: source.id })}
-      /></>
+      />
     }
   } else if (dialog?.kind === 'tool') {
     sheetTitle = `${subscriptionToolLabels[dialog.data.kind]} · ${dialog.name}`
@@ -1599,8 +1636,9 @@ export function App() {
   </div></MotionConfig>
 }
 
-function SourceActionsSheet({ source, copied, isRefreshing, canMoveUp, canMoveDown, onEditImport, onEditYaml, onExtension, onPolicy, onRefresh, onRuntime, onCopyLink, onQr, onExport, onMove, onDelete }: {
+function SourceActionsSheet({ source, bindingField, copied, isRefreshing, canMoveUp, canMoveDown, onEditImport, onEditYaml, onExtension, onPolicy, onRefresh, onRuntime, onCopyLink, onQr, onExport, onMove, onDelete }: {
   source: Subscription
+  bindingField?: ReactNode
   copied: boolean
   isRefreshing: boolean
   canMoveUp: boolean
@@ -1620,6 +1658,7 @@ function SourceActionsSheet({ source, copied, isRefreshing, canMoveUp, canMoveDo
   const [expanded, setExpanded] = useState(false)
   return (
     <div className="sheet-form">
+      {bindingField}
       <div className="panel settings-panel">
         <Row icon={CloudDownload} title={tr("编辑订阅")} onClick={onEditImport} />
         <Row icon={FileCode2} title={tr("编辑 YAML")} onClick={onEditYaml} />

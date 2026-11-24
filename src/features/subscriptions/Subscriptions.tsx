@@ -240,18 +240,18 @@ export function Subscriptions({
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-3 px-5 py-4">
-      <header className="flex min-h-11 shrink-0 items-center justify-between gap-3">
-        <div className="flex items-center gap-4 whitespace-nowrap">
-          <div className="flex items-center gap-2.5">
+      <header className="@container flex min-h-11 shrink-0 items-center justify-between gap-2.5">
+        <div className="flex min-w-0 items-center gap-4 whitespace-nowrap">
+          <div className="flex shrink-0 items-center gap-2.5">
             <PageHeaderIcon kind="subscriptions" animateKey={visitKey} />
-            <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("订阅")}</h1>
+            <h1 className="shrink-0 whitespace-nowrap text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("订阅")}</h1>
           </div>
-          <TraceLines variant="subscriptions" />
+          <TraceLines variant="subscriptions" className="sm:hidden @[46rem]:block" />
         </div>
         <div
           role="group"
           aria-label={tr('订阅常用操作')}
-          className="inline-flex h-8.5 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 shadow-xs"
+          className="inline-flex h-8.5 shrink-0 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 whitespace-nowrap shadow-xs"
         >
           <motion.button
             type="button"

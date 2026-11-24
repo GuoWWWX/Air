@@ -261,7 +261,7 @@ export function SettingsView({
                 />
                 <Separator />
                 <SettingRow
-                  icon={<Settings />}
+                  icon={<Settings className="transition-[rotate] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:rotate-180 motion-reduce:transition-none" />}
                   title={tr("诊断内核")}
                   description={tr("配置本机 Mihomo 可执行文件路径")}
                   trailing={

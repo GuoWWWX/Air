@@ -245,6 +245,7 @@ export interface GroupEdit {
 type NodeEdit = Pick<NodeRecord, 'id' | 'name' | 'server' | 'port'>
 
 export interface StartupSettings { login: boolean; proxy: boolean }
+export interface ResolvedAppIdentity { executable?: string; path?: string; name?: string; icon?: string }
 
 import type { SubscriptionExtension } from "@/shared/proxy/subscription-extension"
 
@@ -300,6 +301,8 @@ const tauriAir = {
   installTunService: () => invoke<ProxyStatus>('install_tun_service'),
   proxyExit: (sessionId: string) => invoke<ProxyExit>('proxy_exit', { sessionId }),
   proxyTelemetry: () => invoke<ProxyTelemetry | null>('proxy_telemetry'),
+  resolveApplications: (queries: string[]) =>
+    invoke<ResolvedAppIdentity[]>('resolve_applications', { queries }),
   proxyControl: (request: ProxyAction) => invoke<ProxyStatus>('proxy_control', { request }),
   clearConnectionLogs: () => invoke<void>('clear_connection_logs'),
   closeMatchingConnections: (processName?: string, host?: string) =>

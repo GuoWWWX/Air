@@ -28,6 +28,28 @@ export function validateRuleLibrary(value: unknown): asserts value is RuleLibrar
   for (const set of lib.sets) {
     if (!set?.id || ids.has(set.id) || !set.name?.trim() || !Array.isArray(set.profile?.rules)
       || set.profile.rules.some(line => typeof line !== 'string' || !line.trim().includes(','))) throw new Error(tr('规则集格式无效'))
+    const groups = set.profile['proxy-groups']
+    if (groups) {
+      if (!Array.isArray(groups)) throw new Error(tr('规则集格式无效'))
+      const byName = new Map<string, string[]>()
+      for (const group of groups) {
+        if (!group || typeof group.name !== 'string' || typeof group.type !== 'string'
+          || (group.proxies !== undefined && (!Array.isArray(group.proxies) || group.proxies.some(member => typeof member !== 'string')))) {
+          throw new Error(tr('规则集格式无效'))
+        }
+        byName.set(group.name, group.proxies ?? [])
+      }
+      const visit = (name: string, stack: Set<string>) => {
+        if (stack.has(name)) throw new Error(tr('订阅分组包含循环引用'))
+        const members = byName.get(name)
+        if (!members) return
+        const next = new Set(stack).add(name)
+        for (const member of members) {
+          if (byName.has(member)) visit(member, next)
+        }
+      }
+      for (const name of byName.keys()) visit(name, new Set())
+    }
     ids.add(set.id)
   }
   for (const [owner, ref] of Object.entries(lib.bindings)) {

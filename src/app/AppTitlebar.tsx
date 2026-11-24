@@ -75,13 +75,13 @@ export function AppTitlebar({
   )
 
   return (
-    <header className="flex h-10.5 shrink-0 items-center border-b border-border bg-shell pl-3.5 select-none">
+    <header className="@container flex h-10.5 shrink-0 items-center overflow-hidden border-b border-border bg-shell pl-3.5 select-none">
       {nodeName && (
         <div
           role="status"
           aria-label={tr("当前节点：{0}", nodeName)}
           title={nodeName}
-          className="flex min-w-0 max-w-72 items-center gap-2 text-xs font-medium text-secondary-foreground"
+          className="hidden min-w-0 max-w-72 items-center gap-2 text-xs font-medium text-secondary-foreground @[42rem]:flex"
         >
           {onClearNode ? (
             <DropdownMenu>
@@ -153,7 +153,7 @@ export function AppTitlebar({
               )}
             >
               <Icon className="size-3.5 shrink-0" />
-              <span>{label}</span>
+              <span className="hidden @[30rem]:inline">{label}</span>
               {status.running && checked && (
                 <span aria-hidden="true" className="size-1.5 rounded-full bg-current motion-safe:animate-pulse" />
               )}

@@ -4,7 +4,8 @@ use crate::mihomo::ConnectionsSnapshot;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    env,
     hash::{Hash, Hasher},
     mem::size_of,
     net::{Ipv4Addr, SocketAddrV4},
@@ -12,7 +13,7 @@ use std::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    path::{Component, Path, Prefix},
+    path::{Component, Path, PathBuf, Prefix},
     ptr::{null_mut, NonNull},
     slice,
     sync::{LazyLock, Mutex},
@@ -29,13 +30,18 @@ use windows_sys::Win32::{
     },
     Networking::WinSock::AF_INET,
     Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
-    System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    System::{
+        ProcessStatus::EnumProcesses,
+        Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
     },
     UI::{
         Shell::{ExtractIconExW, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON},
         WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON},
     },
+};
+use winreg::{
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
+    RegKey,
 };
 
 const ICON_SIZE: usize = 32;
@@ -45,6 +51,7 @@ const CACHE_LIMIT: usize = 256;
 struct Executable {
     name: String,
     file: String,
+    path: String,
     icon_key: String,
     icon: Option<String>,
     checked: Instant,
@@ -113,23 +120,7 @@ pub(super) fn sample(
             continue;
         };
         let full_path = path.to_string_lossy().into_owned();
-        let key = full_path.to_lowercase();
-        if cache.len() >= CACHE_LIMIT && !cache.contains_key(&key) {
-            if let Some(oldest) = cache
-                .iter()
-                .min_by_key(|(_, item)| item.accessed)
-                .map(|(key, _)| key.clone())
-            {
-                cache.remove(&oldest);
-            }
-        }
-        let executable = cache
-            .entry(key.clone())
-            .or_insert_with(|| Executable::read(path, &key));
-        if executable.icon.is_none() && executable.checked.elapsed() >= Duration::from_secs(60) {
-            *executable = Executable::read(path, &key);
-        }
-        executable.accessed = Instant::now();
+        let executable = cached_executable(&mut cache, path);
         let icon_key = executable.icon.as_ref().map(|icon| {
             applications
                 .icons
@@ -151,6 +142,150 @@ pub(super) fn sample(
     applications
 }
 
+pub(super) fn resolve_queries(queries: &[String]) -> Vec<super::ResolvedApplication> {
+    let Ok(mut cache) = CACHE.lock() else {
+        return Vec::new();
+    };
+    let mut visited = HashSet::new();
+    let mut running_paths: Option<Vec<PathBuf>> = None;
+    let mut resolved = Vec::new();
+
+    for raw in queries {
+        if visited.len() >= 128 {
+            break;
+        }
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || !visited.insert(trimmed.to_lowercase()) {
+            continue;
+        }
+        if let Some(path) = local_executable(trimmed).filter(|candidate| candidate.is_file()) {
+            let executable = cached_executable(&mut cache, path);
+            resolved.push(super::ResolvedApplication {
+                executable: Some(executable.file.clone()),
+                path: Some(executable.path.clone()),
+                name: executable.name.clone(),
+                icon: executable.icon.clone(),
+            });
+            continue;
+        }
+        if !trimmed.contains('\\')
+            && !trimmed.contains('/')
+            && Path::new(trimmed)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        {
+            if let Some(key) = cache
+                .iter()
+                .filter(|(_, item)| item.file.eq_ignore_ascii_case(trimmed))
+                .max_by_key(|(_, item)| item.accessed)
+                .map(|(key, _)| key.clone())
+            {
+                let path = PathBuf::from(&cache[&key].path);
+                let executable = cached_executable(&mut cache, &path);
+                resolved.push(super::ResolvedApplication {
+                    executable: Some(executable.file.clone()),
+                    path: Some(executable.path.clone()),
+                    name: executable.name.clone(),
+                    icon: executable.icon.clone(),
+                });
+                continue;
+            }
+            let processes = running_paths.get_or_insert_with(running_process_paths);
+            if let Some(path) = find_executable_by_name(trimmed, processes) {
+                let executable = cached_executable(&mut cache, &path);
+                resolved.push(super::ResolvedApplication {
+                    executable: Some(executable.file.clone()),
+                    path: Some(executable.path.clone()),
+                    name: executable.name.clone(),
+                    icon: executable.icon.clone(),
+                });
+            }
+        }
+    }
+
+    resolved
+}
+
+fn cached_executable<'a>(cache: &'a mut HashMap<String, Executable>, path: &Path) -> &'a Executable {
+    let full_path = path.to_string_lossy().into_owned();
+    let key = full_path.to_lowercase();
+    if cache.len() >= CACHE_LIMIT && !cache.contains_key(&key) {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, item)| item.accessed)
+            .map(|(key, _)| key.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    let executable = cache
+        .entry(key.clone())
+        .or_insert_with(|| Executable::read(path, &full_path, &key));
+    if executable.icon.is_none() && executable.checked.elapsed() >= Duration::from_secs(60) {
+        *executable = Executable::read(path, &full_path, &key);
+    }
+    executable.accessed = Instant::now();
+    executable
+}
+
+fn find_executable_by_name(name: &str, processes: &[PathBuf]) -> Option<PathBuf> {
+    if let Some(found) = processes.iter().find(|path| {
+        path.file_name()
+            .is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+            && path.is_file()
+    }) {
+        return Some(found.clone());
+    }
+    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let subkey = format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{name}");
+        if let Ok(key) = RegKey::predef(root).open_subkey(&subkey) {
+            if let Ok(value) = key.get_value::<String, _>("") {
+                let cleaned = value.trim().trim_matches('"').trim();
+                if let Some(path) = local_executable(cleaned).filter(|candidate| candidate.is_file())
+                {
+                    return Some(path.to_path_buf());
+                }
+            }
+        }
+    }
+    if let Some(path_var) = env::var_os("PATH") {
+        for dir in env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    env::var_os("SystemRoot")
+        .map(|root| PathBuf::from(root).join(name))
+        .filter(|candidate| candidate.is_file())
+}
+
+fn running_process_paths() -> Vec<PathBuf> {
+    let mut pids = vec![0u32; 1024];
+    let mut needed = 0u32;
+    for _ in 0..3 {
+        let size = (pids.len() * size_of::<u32>()) as u32;
+        if unsafe { EnumProcesses(pids.as_mut_ptr(), size, &mut needed) } == 0 {
+            return Vec::new();
+        }
+        if (needed as usize) < pids.len() * size_of::<u32>() {
+            break;
+        }
+        pids.resize(pids.len() * 2, 0);
+    }
+    let count = (needed as usize / size_of::<u32>()).min(pids.len());
+    pids[..count]
+        .iter()
+        .copied()
+        .filter(|pid| *pid != 0)
+        .filter_map(|pid| {
+            let raw = process_path(pid)?;
+            local_executable(&raw).map(Path::to_path_buf)
+        })
+        .collect()
+}
+
 fn local_executable(value: &str) -> Option<&Path> {
     let path = Path::new(value);
     let Some(Component::Prefix(prefix)) = path.components().next() else {
@@ -165,7 +300,7 @@ fn local_executable(value: &str) -> Option<&Path> {
 }
 
 impl Executable {
-    fn read(path: &Path, key: &str) -> Self {
+    fn read(path: &Path, full_path: &str, key: &str) -> Self {
         let wide: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
         let file = path
             .file_name()
@@ -178,6 +313,7 @@ impl Executable {
         Self {
             name,
             file,
+            path: full_path.to_owned(),
             icon_key: format!("{:x}", hasher.finish()),
             icon: embedded_icon(&wide)
                 .or_else(|| package_logo::read(path))
@@ -478,7 +614,8 @@ mod tests {
     fn reads_a_real_windows_executables_display_name_and_transparent_icon() {
         let root = std::env::var_os("SystemRoot").expect("Windows system directory");
         let path = PathBuf::from(root).join("explorer.exe");
-        let app = Executable::read(&path, path.to_str().unwrap());
+        let full = path.to_string_lossy().into_owned();
+        let app = Executable::read(&path, &full, &full.to_lowercase());
         let icon = app.icon.unwrap();
         let data = STANDARD
             .decode(icon.strip_prefix("data:image/png;base64,").unwrap())
@@ -488,5 +625,24 @@ mod tests {
         assert!(pixels.pixels().any(|pixel| pixel[3] == 0));
         assert!(pixels.pixels().any(|pixel| pixel[3] == 255));
         assert_ne!(app.name, app.file);
+    }
+
+    #[test]
+    fn resolves_saved_executable_queries_by_path_and_name() {
+        let root = std::env::var_os("SystemRoot").expect("Windows system directory");
+        let path = PathBuf::from(root).join("explorer.exe");
+        let full = path.to_string_lossy().into_owned();
+        let by_path = resolve_queries(&[full.clone()]);
+        assert_eq!(by_path.len(), 1);
+        assert_eq!(by_path[0].executable.as_deref(), Some("explorer.exe"));
+        assert!(by_path[0]
+            .icon
+            .as_deref()
+            .is_some_and(|icon| icon.starts_with("data:image/png;base64,")));
+
+        let by_name = resolve_queries(&["explorer.exe".into()]);
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].executable.as_deref(), Some("explorer.exe"));
+        assert_eq!(by_name[0].name, by_path[0].name);
     }
 }

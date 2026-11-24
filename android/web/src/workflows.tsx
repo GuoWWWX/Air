@@ -184,10 +184,11 @@ function CameraScanner({ onValue, onError }: { onValue: (value: string) => void;
 export function NodeEditor({ node, library, busy, save, test, remove, reset }: {
   node?: Node; library: Library; busy: boolean; save: (node: Node, binding?: string) => void; test: (node: Node) => void; remove?: () => void; reset?: () => void
 }) {
+  const initialType = protocol(node ?? { id: '', sourceId: '', config: { name: '', server: '', port: 443, type: 'http', tls: true } })
   const [name, setName] = useState(node?.config.name ?? '')
   const [server, setServer] = useState(node?.config.server ?? '')
   const [port, setPort] = useState(String(node?.config.port ?? 443))
-  const [type, setType] = useState(protocol(node ?? { id: '', sourceId: '', config: { name: '', server: '', port: 443, type: 'http', tls: true } }))
+  const [type, setType] = useState(initialType)
   const [username, setUsername] = useState(String(node?.config.username ?? ''))
   const [password, setPassword] = useState(String(node?.config.password ?? ''))
   const [stableId] = useState(() => node?.id ?? id())
@@ -195,7 +196,17 @@ export function NodeEditor({ node, library, busy, save, test, remove, reset }: {
   const proxyType = node?.config.type ?? (type === 'SOCKS5' ? 'socks5' : 'http')
   const isHttp = !node || proxyType === 'http' || proxyType === 'socks5'
   const valid = name.trim() && server.trim() && Number.isInteger(Number(port)) && Number(port) > 0 && Number(port) <= 65535
+  const unchanged = Boolean(
+    node &&
+    name.trim() === node.config.name &&
+    server.trim() === node.config.server &&
+    Number(port) === node.config.port &&
+    type === initialType &&
+    username === String(node.config.username ?? '') &&
+    password === String(node.config.password ?? ''),
+  )
   function value(): Node {
+    if (unchanged && node) return node
     const config: Proxy = { ...node?.config, name: name.trim(), server: server.trim(), port: Number(port), type: proxyType }
     if (isHttp) {
       config.type = type === 'SOCKS5' ? 'socks5' : 'http'

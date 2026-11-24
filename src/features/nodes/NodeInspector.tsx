@@ -27,6 +27,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
   const [server, setServer] = useState(node.server)
   const [port, setPort] = useState(String(node.port))
   const [busy, setBusy] = useState(false)
+  const nodeChanged = name.trim() !== node.name || server.trim() !== node.server || Number(port) !== node.port
 
   useEffect(() => {
     setName(node.name)
@@ -37,10 +38,15 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
   async function save(reset = false) {
     setBusy(true)
     try {
-      if (reset) await air.resetNode(node.id)
-      else await air.editNode({ id: node.id, name, server, port: Number(port) })
-      if (!reset) await binding.save(node.id)
-      showMessage({ type: 'success', title: reset ? tr('已恢复订阅值') : tr('节点覆写已保存') })
+      if (reset) {
+        await air.resetNode(node.id)
+        await binding.reset(node.id)
+        showMessage({ type: 'success', title: tr('已恢复订阅值') })
+      } else {
+        if (nodeChanged) await air.editNode({ id: node.id, name, server, port: Number(port) })
+        await binding.save(node.id)
+        showMessage({ type: 'success', title: nodeChanged ? tr('节点覆写已保存') : tr('分流规则已保存') })
+      }
       onSaved()
     } catch (error) {
       onError(error)
@@ -147,7 +153,7 @@ export function NodeInspector({ node, onClose, onSaved, onYaml, onError, embedde
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
         <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => void save(true)}>
           <RotateCcw data-icon="inline-start" />{tr("恢复订阅值")}</Button>
-        <Button type="submit" variant="default" size="sm" disabled={busy}>{tr("保存覆写")}</Button>
+        <Button type="submit" variant="default" size="sm" disabled={busy}>{nodeChanged ? tr("保存覆写") : tr("保存节点")}</Button>
       </div>
     </form>
   )

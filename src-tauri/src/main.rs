@@ -295,6 +295,7 @@ fn main() {
             #[cfg(windows)]
             commands::install_tun_service,
             commands::proxy_telemetry,
+            commands::resolve_applications,
             commands::proxy_control,
             commands::clear_connection_logs,
             commands::close_matching_connections,

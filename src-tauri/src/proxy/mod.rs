@@ -1,5 +1,5 @@
 mod config;
-mod subscription_rules;
+pub(crate) mod subscription_rules;
 pub mod exit;
 mod runtime_kernel;
 mod loopback;
@@ -171,6 +171,27 @@ struct ConnectionView {
     path: Vec<String>,
     upload_bytes: u64,
     download_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedApplication {
+    pub executable: Option<String>,
+    pub path: Option<String>,
+    pub name: String,
+    pub icon: Option<String>,
+}
+
+pub fn resolve_applications(queries: &[String]) -> Vec<ResolvedApplication> {
+    #[cfg(all(windows, feature = "desktop"))]
+    {
+        return windows_apps::resolve_queries(queries);
+    }
+    #[cfg(not(all(windows, feature = "desktop")))]
+    {
+        let _ = queries;
+        Vec::new()
+    }
 }
 
 #[derive(Default)]

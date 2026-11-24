@@ -984,7 +984,7 @@ export const browserAir = {
   },
 
   proxyExit: async (sessionId: string): Promise<ProxyExit> => {
-    await sleep(350)
+    await sleep(1400)
     if (proxyState.sessionId !== sessionId) throw new Error('代理会话已变更')
     return { ip: '203.0.113.24', countryCode: 'JP', city: 'Tokyo', kind: 'datacenter', quality: 'mediumRisk' }
   },
@@ -1227,6 +1227,8 @@ export const browserAir = {
     const config = await previewConfig()
     return { path: routingDoc.path, routing, revision: config.saveSection(routingDoc.routing, 'routing', routing, revision) }
   },
+
+  resolveApplications: async () => [],
 }
 
 const demoConnections: ProxyConnection[] = [

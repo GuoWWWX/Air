@@ -1738,6 +1738,18 @@
     "请输入有效域名，例如 example.com": "Enter a valid domain such as example.com",
     "请输入有效的 HTTP 或 HTTPS 订阅链接": "Enter a valid HTTP or HTTPS subscription URL",
     "近期访问的域名（点击快速添加）：": "Recently visited domains (select to add)",
-    "当前生效规则集": "Effective rule set"
+    "当前生效规则集": "Effective rule set",
+    "当前自动出站": "Active automatic outbound",
+    "自动分组": "Automatic group",
+    "已设为当前自动出站：{0}": "Set \"{0}\" as automatic outbound",
+    "暂无域名或 IP 例外规则": "No domain or IP exceptions configured",
+    "选择已识别应用：": "Pick a detected app:",
+    "调整「{0}」列宽": "Resize \"{0}\" column",
+    "拖动调整列宽，双击重置": "Drag to resize column, double-click to reset",
+    "目标主机": "Target host",
+    "目标 IP": "Target IP",
+    "进程文件": "Process file",
+    "复制程序路径": "Copy executable path",
+    "复制进程名": "Copy process name"
   }
 }

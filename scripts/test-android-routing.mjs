@@ -164,8 +164,12 @@ test('borrowed automatic groups preserve DIRECT members and original health-chec
   assert.deepEqual(copiedGroup.proxies,['DIRECT','AirNode-2'])
 })
 test('deleting a user template unbinds every referencing object and keeps unrelated bindings', async () => {
-  const {dropBinding} = await vite.ssrLoadModule('@/shared/proxy/rule-library.ts')
+  const { dropBinding, validateRuleLibrary } = await vite.ssrLoadModule('@/shared/proxy/rule-library.ts')
   const catalog = {sets:[{id:'a'},{id:'b'}],bindings:{'node:X':'user:a','group:G':'user:a','chain:C':'user:a','subscription:S':'user:a','node:Y':'none'}}
   assert.deepEqual(dropBinding(catalog,'user:a'),{sets:[{id:'b'}],bindings:{'node:Y':'none'}})
-  assert.equal(Object.keys(catalog.bindings).length,5)
+  assert.equal(Object.keys(catalog.bindings).length, 5)
+  assert.throws(() => validateRuleLibrary({
+    sets: [{ id: 'loop', name: 'Loop', profile: { rules: ['MATCH,A'], 'proxy-groups': [{ name: 'A', type: 'select', proxies: ['B'] }, { name: 'B', type: 'fallback', proxies: ['A'] }] } }],
+    bindings: {},
+  }))
 })

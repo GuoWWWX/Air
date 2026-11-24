@@ -1,6 +1,7 @@
 import { tr } from '@/shared/i18n/messages'
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { air, type ProxyAction, type ProxyExit, type ProxyStatus, type ProxyTelemetry } from '@/platform/desktop/air'
+import { waitForProxyPowerAnimation } from '@/shared/ui/ProxyPowerButton'
 
 const initial: ProxyStatus = {
   running: false, mode: 'rule', port: null, systemProxy: false, tun: false, tunServiceReady: null, sessionId: null, outbound: null,
@@ -191,6 +192,7 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
 
   function control(action: ProxyAction) {
     const isPower = action.action === 'start' || action.action === 'stop'
+    const startedAt = isPower ? performance.now() : 0
     if ((action.action === 'selectNode' || action.action === 'selectGroup')) {
       if (powerBusy.current || nodeBusy.current) return Promise.resolve(undefined)
       nodeBusy.current = true
@@ -212,6 +214,10 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
       try {
         const next = await air.proxyControl(action)
         if (!mounted.current) return
+        if (isPower && !document.hidden && (action.action === 'stop' || next.running)) {
+          await waitForProxyPowerAnimation(action.action, startedAt)
+          if (!mounted.current) return
+        }
         if (revision.current === version) {
           setStatus(next)
         } else {

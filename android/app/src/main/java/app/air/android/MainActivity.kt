@@ -264,6 +264,9 @@ class MainActivity : ComponentActivity() {
                 "connections" -> work(message, requests) {
                     withApplicationIcons(AirVpnService.connections())
                 }
+                "applications" -> work(message, requests) {
+                    resolveApplications(data.optJSONArray("packages"))
+                }
                 "closeConnection" -> work(message, Core.worker) {
                     if (AirVpnService.running()) Core.action("closeConnection", data.getString("id"))
                     true
@@ -271,7 +274,10 @@ class MainActivity : ComponentActivity() {
                 "exit" -> work(message, networkRequests) {
                     check(AirVpnService.running()) { "启动代理后可以检测出口" }
                     val result = jsonResult(Core.action("probeCurrentProxyIp", data.optString("mode")))
-                    check(result.has("ip")) { "无法验证当前出口 IP" }
+                    val ip = result.optString("ip").trim()
+                    check(ip.isNotEmpty()) { "无法验证当前出口 IP" }
+                    val proxyPort = AirVpnService.snapshot().optInt("port", 0)
+                    fetchExitMetadata(ip, proxyPort)?.let { mergeExitMetadata(result, it) }
                     result
                 }
                 "theme" -> {
@@ -302,6 +308,43 @@ class MainActivity : ComponentActivity() {
     private fun appVersion() = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"
 
     @Suppress("DEPRECATION")
+    private fun resolveApplication(pkg: String, cacheEmpty: Boolean = true): JSONObject {
+        val cached = applications.get(pkg)
+        if (cached != null && (cacheEmpty || cached.has("name"))) return cached
+        return runCatching {
+            val item = packageManager.getApplicationInfo(pkg, 0)
+            val name = packageManager.getApplicationLabel(item).toString()
+            val icon = packageManager.getApplicationIcon(item)
+            val bitmap = Bitmap.createBitmap(48, 48, Bitmap.Config.ARGB_8888)
+            try {
+                icon.setBounds(0, 0, bitmap.width, bitmap.height)
+                icon.draw(Canvas(bitmap))
+                val png = ByteArrayOutputStream().use { stream ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                    Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+                }
+                JSONObject().put("name", name).put("icon", "data:image/png;base64,$png")
+            } finally { bitmap.recycle() }
+        }.getOrDefault(JSONObject()).also {
+            if (cacheEmpty || it.has("name")) applications.put(pkg, it)
+        }
+    }
+
+    private fun resolveApplications(packages: JSONArray?): JSONObject {
+        val apps = JSONObject()
+        if (packages == null) return apps
+        val visited = mutableSetOf<String>()
+        val limit = minOf(packages.length(), 128)
+        for (index in 0 until limit) {
+            val pkg = packages.optString(index).trim()
+            if (pkg.isBlank() || !visited.add(pkg)) continue
+            val info = resolveApplication(pkg, cacheEmpty = false)
+            if (info.has("name")) apps.put(pkg, info)
+        }
+        return apps
+    }
+
+    @Suppress("DEPRECATION")
     private fun withApplicationIcons(data: JSONObject): JSONObject {
         val connections = data.optJSONArray("connections") ?: return data
         val visible = JSONArray()
@@ -321,21 +364,7 @@ class MainActivity : ComponentActivity() {
             } else connection
             visible.put(identified)
             if (pkg.isBlank() || visited.size >= 128 || !visited.add(pkg)) continue
-            val info = applications.get(pkg) ?: runCatching {
-                val item = packageManager.getApplicationInfo(pkg, 0)
-                val name = packageManager.getApplicationLabel(item).toString()
-                val icon = packageManager.getApplicationIcon(item)
-                val bitmap = Bitmap.createBitmap(48, 48, Bitmap.Config.ARGB_8888)
-                try {
-                    icon.setBounds(0, 0, bitmap.width, bitmap.height)
-                    icon.draw(Canvas(bitmap))
-                    val png = ByteArrayOutputStream().use { stream ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                        Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
-                    }
-                    JSONObject().put("name", name).put("icon", "data:image/png;base64,$png")
-                } finally { bitmap.recycle() }
-            }.getOrDefault(JSONObject()).also { applications.put(pkg, it) }
+            val info = resolveApplication(pkg, cacheEmpty = true)
             if (info.has("name")) apps.put(pkg, info)
         }
         return data.put("connections", visible).put("applications", apps)

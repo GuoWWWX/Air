@@ -11,7 +11,7 @@ use std::collections::HashSet;
 /// Materialize only the nodes and groups referenced by rules. Their kernel names include
 /// the source identity, so a global rule can still use group A after switching to source B.
 #[derive(Default)]
-pub(super) struct RuleOutbounds {
+pub(crate) struct RuleOutbounds {
     pub proxies: Vec<Value>,
     pub groups: Vec<Value>,
     loaded: HashSet<String>,
@@ -19,7 +19,7 @@ pub(super) struct RuleOutbounds {
 }
 
 impl RuleOutbounds {
-    pub fn new(template_outbound: Option<String>) -> Self {
+    pub(crate) fn new(template_outbound: Option<String>) -> Self {
         Self {
             template_outbound,
             ..Self::default()

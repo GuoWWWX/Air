@@ -4,7 +4,7 @@ import { downloadSubscription } from '@/shared/proxy/subscription-extension'
 import { GlobalRuleList, type AppIdentity } from '@/shared/ui/GlobalRuleList'
 import { LanguagePicker } from '@/shared/i18n/LanguagePicker'
 import { savePreviewLanguage, tr } from '@/shared/i18n/messages'
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 let savedSettingsScrollTop = 0
 import { Activity, ArrowDown, ArrowUp, Check, FileCode2, GitBranch, Globe, Info, Monitor, Moon, Network, Palette, Plug, Plus, RefreshCw, Save, Search, Settings, Sun, Trash2, Waypoints } from 'lucide-react'
@@ -101,11 +101,46 @@ export function ThemeSettings({ value, onChange }: { value: Theme; onChange: (th
 
 function targetKey(target: RouteTarget) { return 'id' in target ? target.kind + ':' + target.id : target.kind }
 
+const sheetOverlay = (title: string, close: () => void, content: ReactNode) => (
+  <Sheet open title={title} close={close}><div className="sheet-form">{content}</div></Sheet>
+)
+
 export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
   library: Library; model: Model; busy: boolean; sdk: number; apps: AppIdentity[]; save: (routing: MobileRouting) => Promise<boolean>
 }) {
   const [draft, setDraft] = useState(library.routing)
   const [preview, setPreview] = useState<string[]>()
+  const [resolvedApps, setResolvedApps] = useState<Record<string, AppIdentity>>({})
+  const [queriedPkg, setQueriedPkg] = useState('')
+  const requestedPkgsRef = useRef(new Set<string>())
+  const mountedRef = useRef(true)
+  useEffect(() => () => { mountedRef.current = false }, [])
+  const pkgQueries = [...new Set([
+    ...draft.rules.filter(rule => rule.matcher === 'processName').map(rule => rule.value.trim()),
+    queriedPkg.trim(),
+  ].filter(Boolean))].sort().join('\n')
+  useEffect(() => {
+    if (!onAndroid || !pkgQueries) return
+    const missing = pkgQueries.split('\n').filter(pkg => !requestedPkgsRef.current.has(pkg))
+    if (!missing.length) return
+    for (const pkg of missing) requestedPkgsRef.current.add(pkg)
+    void native<Record<string, { name: string; icon?: string }>>('applications', { packages: missing })
+      .then(result => {
+        if (!mountedRef.current || !result) return
+        const entries = Object.entries(result)
+        if (!entries.length) return
+        setResolvedApps(prev => {
+          const next = { ...prev }
+          for (const [pkg, info] of entries) {
+            if (info?.name) next[pkg] = { executable: pkg, name: info.name, icon: info.icon }
+          }
+          return next
+        })
+      })
+      .catch(() => {
+        for (const pkg of missing) requestedPkgsRef.current.delete(pkg)
+      })
+  }, [pkgQueries])
   const sourceNames = new Map(library.sources.map(source => [source.id, source.name]))
   const reference = resolvedRuleSet({ ...library, routing: draft }, model)
   const sourceName = reference.startsWith('subscription:') ? sourceNames.get(reference.slice(13))
@@ -151,21 +186,23 @@ export function RoutingSettings({ library, model, busy, sdk, save, apps }: {
         <section className="panel settings-form">
           <h2 className="settings-form-title">{tr("订阅规则与默认出口")}</h2>
           <div className="field"><span>{tr("当前生效规则集")}</span><strong>{selectionName(selection(library,model),model,library) ?? tr('无')} → {sourceName ?? tr('无')}</strong></div>
-          <RuleLibraryManager catalog={draft.ruleLibrary} overlay={(title, close, content) => <Sheet open title={title} close={close}>{content}</Sheet>}
-            sources={library.sources.map(s => ({ id:s.id,name:s.name,updated:s.updated,
-              read:async () => readRuleProfile(model.profiles.get(s.id)?.profile) }))}
-            owners={Object.fromEntries([...library.sources.map(s => ['subscription:' + s.id,s.name]),
-              ...model.nodes.map(n => ['node:' + n.id,n.config.name]), ...library.groups.map(g => ['group:' + g.id,g.name]),
-              ...library.chains.map(c => ['chain:' + c.id,c.name])])}
-            save={async ruleLibrary => { const next = { ...draft,ruleLibrary }; if (!await save(next)) return false; change(next); return true }}
-            exportYaml={(name,text) => onAndroid ? native('export', { name:name + '.yaml',text }) : downloadSubscription(name,text)} />
+          <RuleLibraryManager catalog={draft.ruleLibrary} overlay={sheetOverlay}
+            sources={library.sources.map(s => ({ id: s.id, name: s.name, updated: s.updated,
+              read: async () => readRuleProfile(model.profiles.get(s.id)?.profile) }))}
+            owners={Object.fromEntries([...library.sources.map(s => ['subscription:' + s.id, s.name]),
+              ...model.nodes.map(n => ['node:' + n.id, n.config.name]), ...library.groups.map(g => ['group:' + g.id, g.name]),
+              ...library.chains.map(c => ['chain:' + c.id, c.name])])}
+            save={async ruleLibrary => { const next = { ...draft, ruleLibrary }; if (!await save(next)) return false; change(next); return true }}
+            importYaml={onAndroid ? async () => (await native<{ text?: string } | null>('file', { type: 'yaml' }))?.text ?? null : undefined}
+            exportYaml={(name, text) => onAndroid ? native('export', { name: name + '.yaml', text }) : downloadSubscription(name, text)} />
           {selectTarget(tr('默认出口'), draft.fallback, fallback => change({ ...draft, fallback }))}
         </section>
         <section className="panel settings-form">
-          <GlobalRuleList<RouteRule> android rules={draft.rules} apps={apps}
+          <GlobalRuleList<RouteRule> android rules={draft.rules} apps={[...Object.values(resolvedApps), ...apps]}
+            onInspectApp={setQueriedPkg}
             matchers={ruleMatchers.map(item => ({ ...item, disabled: item.value === 'processName' && sdk < 29 }))}
             targets={targets} newRule={() => ({ enabled: true, matcher: 'domainSuffix', value: '', target: { kind: 'direct' } })}
-            overlay={(title, close, content) => <Sheet open title={title} close={close}>{content}</Sheet>}
+            overlay={sheetOverlay}
             save={async rules => {
               const next = { ...draft, rules }
               validateRouting(next)

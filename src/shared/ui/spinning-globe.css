@@ -1,0 +1,39 @@
+@keyframes air-globe-meridian {
+  0% {
+    transform: scaleX(-0.98);
+    opacity: 0.45;
+  }
+  49.9% {
+    transform: scaleX(-0.02);
+    opacity: 1;
+  }
+  50.1% {
+    transform: scaleX(0.02);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(0.98);
+    opacity: 0.45;
+  }
+}
+
+.air-globe-meridian {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  animation: air-globe-meridian 1.2s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  will-change: transform, opacity;
+}
+
+.air-globe-meridian-1 { animation-delay: 0s; }
+.air-globe-meridian-2 { animation-delay: -0.4s; }
+.air-globe-meridian-3 { animation-delay: -0.8s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .air-globe-meridian {
+    animation: none !important;
+  }
+
+  .air-globe-meridian-1 { transform: scaleX(0.42); opacity: 1; }
+  .air-globe-meridian-2 { transform: scaleX(-0.42); opacity: 1; }
+  .air-globe-meridian-3 { opacity: 0; }
+}

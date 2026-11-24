@@ -3,6 +3,7 @@ import { preferences } from '@/shared/lib/preferences'
 import {
   Activity,
   AlertCircle,
+  AppWindow,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -17,7 +18,7 @@ import {
   X,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { cn, formatBytes, formatDateTime, formatProtocol } from '@/shared/lib/utils'
 import { AirSelect } from '@/shared/ui/AirSelect'
 import { Badge } from '@/shared/ui/badge'
@@ -67,6 +68,88 @@ const logPageSizes = [20, 50, 100].map(size => ({
   get label() { return tr('每页 {0} 条', size) },
 }))
 
+type ColumnKey = 'app' | 'target' | 'chain' | 'time' | 'status' | 'traffic'
+
+const connectionColumns: readonly {
+  key: ColumnKey
+  get label(): string
+  defaultWidth: number
+  minWidth: number
+  maxWidth: number
+}[] = [
+  { key: 'app', get label() { return tr('来源 / 应用') }, defaultWidth: 118, minWidth: 88, maxWidth: 360 },
+  { key: 'target', get label() { return tr('出口目标') }, defaultWidth: 134, minWidth: 100, maxWidth: 480 },
+  { key: 'chain', get label() { return tr('链路路径') }, defaultWidth: 102, minWidth: 80, maxWidth: 360 },
+  { key: 'time', get label() { return tr('时间') }, defaultWidth: 144, minWidth: 130, maxWidth: 220 },
+  { key: 'status', get label() { return tr('状态') }, defaultWidth: 68, minWidth: 64, maxWidth: 130 },
+  { key: 'traffic', get label() { return tr('累计流量') }, defaultWidth: 74, minWidth: 70, maxWidth: 160 },
+]
+
+function clampColumnWidth(key: ColumnKey, value: number) {
+  const col = connectionColumns.find(item => item.key === key)!
+  return Math.round(Math.min(col.maxWidth, Math.max(col.minWidth, value)))
+}
+
+function loadColumnWidths(): Record<ColumnKey, number> {
+  const defaults: Record<ColumnKey, number> = {
+    app: 118,
+    target: 134,
+    chain: 102,
+    time: 144,
+    status: 68,
+    traffic: 74,
+  }
+  try {
+    const raw = preferences.getItem('air.connectionsColumnWidths')
+    if (!raw) return defaults
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return defaults
+    for (const col of connectionColumns) {
+      const value = Reflect.get(parsed, col.key)
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        defaults[col.key] = clampColumnWidth(col.key, value)
+      }
+    }
+  } catch { /* Ignore invalid saved column widths. */ }
+  return defaults
+}
+
+function DetailItem({
+  label,
+  copyValue,
+  copyLabel,
+  onCopy,
+  children,
+}: {
+  label: string
+  copyValue?: string
+  copyLabel?: string
+  onCopy?: (value: string, label: string) => void
+  children: ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
+        {copyValue && copyLabel && onCopy && (
+          <button
+            type="button"
+            aria-label={copyLabel}
+            title={copyLabel}
+            onClick={() => onCopy(copyValue, label)}
+            className="grid size-5 shrink-0 place-items-center rounded-[5px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <Copy className="size-3" />
+          </button>
+        )}
+      </div>
+      <div className="min-w-0 font-medium text-foreground select-text break-all [overflow-wrap:anywhere]">
+        {children}
+      </div>
+    </div>
+  )
+}
+
 function formatLogTime(start?: string) {
   return formatDateTime(start, { seconds: true })
 }
@@ -104,6 +187,80 @@ export function ConnectionsPage({
     preferences.setItem('air.connectionsPageSize', String(pageSize))
   }, [pageSize])
   const [selectedId, setSelectedId] = useState<string>('')
+  const [colWidths, setColWidths] = useState<Record<ColumnKey, number>>(loadColumnWidths)
+  const [resizingKey, setResizingKey] = useState<ColumnKey | null>(null)
+  const colWidthsRef = useRef(colWidths)
+  colWidthsRef.current = colWidths
+  const dragCleanupRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => dragCleanupRef.current?.(), [])
+
+  function startResize(key: ColumnKey, event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    dragCleanupRef.current?.()
+
+    const header = event.currentTarget.closest('th')
+    const tableRow = header?.parentElement
+    const startX = event.clientX
+    let baseWidths = colWidthsRef.current
+    if (tableRow) {
+      const cells = Array.from(tableRow.querySelectorAll<HTMLTableCellElement>('th[data-col]'))
+      if (cells.length === connectionColumns.length) {
+        const snapshot = { ...baseWidths }
+        for (const cell of cells) {
+          const cellKey = cell.dataset.col as ColumnKey | undefined
+          if (cellKey) snapshot[cellKey] = clampColumnWidth(cellKey, cell.getBoundingClientRect().width)
+        }
+        baseWidths = snapshot
+      }
+    }
+    const startWidth = header ? Math.round(header.getBoundingClientRect().width) : baseWidths[key]
+    const prevCursor = document.body.style.cursor
+    const prevSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    setResizingKey(key)
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - startX
+      if (Math.abs(delta) < 1) return
+      const nextWidth = clampColumnWidth(key, startWidth + delta)
+      const next = { ...baseWidths, [key]: nextWidth }
+      colWidthsRef.current = next
+      setColWidths(next)
+    }
+
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = prevSelect
+      dragCleanupRef.current = null
+    }
+
+    const finish = () => {
+      cleanup()
+      setResizingKey(null)
+      preferences.setItem('air.connectionsColumnWidths', JSON.stringify(colWidthsRef.current))
+    }
+
+    dragCleanupRef.current = cleanup
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+  }
+
+  function resetColumnWidth(key: ColumnKey) {
+    const col = connectionColumns.find(item => item.key === key)
+    if (!col) return
+    setColWidths(current => {
+      const next = { ...current, [key]: col.defaultWidth }
+      colWidthsRef.current = next
+      preferences.setItem('air.connectionsColumnWidths', JSON.stringify(next))
+      return next
+    })
+  }
   function toggleSearch() {
     setSearchOpen(open => {
       if (open) {
@@ -190,6 +347,24 @@ export function ConnectionsPage({
     ? hopNodes.map((node, index) => node?.name ?? tr("第 {0} 跳待选", index + 1)).join(' → ')
     : proxy.running ? proxy.mode === 'direct' ? tr('直连模式') : tr('按分流规则') : tr('尚未配置多跳链路'))
 
+  const totalWidth = connectionColumns.reduce((sum, col) => sum + colWidths[col.key], 0)
+  const rawConn = activeConnection?.rawConnection
+  const processLabel = rawConn?.processName ?? activeConnection?.appExecutable
+  const modeLabel = proxy.mode === 'rule' ? tr('规则') : proxy.mode === 'global' ? tr('全局') : tr('直连')
+  const detailBadge: { variant: 'default' | 'success' | 'danger'; label: string } = activeConnection
+    ? activeConnection.rejected
+      ? { variant: 'danger', label: tr('已拒绝') }
+      : activeConnection.closed
+        ? { variant: 'default', label: tr('已结束') }
+        : { variant: 'success', label: tr('活跃') }
+    : showingProbe
+      ? active?.ok
+        ? { variant: 'success', label: tr('已连通') }
+        : { variant: 'danger', label: tr('探测失败') }
+      : verified
+        ? { variant: 'success', label: tr('已验证') }
+        : { variant: 'default', label: tr('待验证') }
+
   function copyText(text: string, label: string) {
     if (!navigator.clipboard) {
       showMessage({ type: 'error', title: tr('当前环境不支持剪贴板') })
@@ -205,21 +380,21 @@ export function ConnectionsPage({
 
   return (
     <section className="air-scroll flex h-full min-h-0 flex-col gap-3 overflow-y-auto px-5 py-4 lg:overflow-hidden">
-      <header className="flex min-h-11 shrink-0 items-center justify-between gap-3">
+      <header className="@container flex min-h-11 shrink-0 items-center justify-between gap-2.5">
         <div className="flex min-w-0 items-center gap-4 whitespace-nowrap">
-          <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex shrink-0 items-center gap-2.5">
             <PageHeaderIcon kind="connections" animateKey={visitKey} />
-            <h1 className="truncate text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("连接日志")}</h1>
+            <h1 className="shrink-0 whitespace-nowrap text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("连接日志")}</h1>
           </div>
-          <TraceLines variant="connections" className="sm:hidden xl:block" />
+          <TraceLines variant="connections" className="sm:hidden @[46rem]:block" />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <AnimatePresence initial={false}>
             {searchOpen && (
               <motion.div
                 key="conn-search-box"
                 initial={{ opacity: 0, width: 0, x: 14, scale: 0.94 }}
-                animate={{ opacity: 1, width: 204, x: 0, scale: 1 }}
+                animate={{ opacity: 1, width: 'auto', x: 0, scale: 1 }}
                 exit={{ opacity: 0, width: 0, x: 12, scale: 0.94 }}
                 transition={{
                   width: { type: 'spring', stiffness: 420, damping: 32 },
@@ -229,7 +404,7 @@ export function ConnectionsPage({
                 }}
                 className="-m-0.5 overflow-hidden p-0.5"
               >
-                <div className="relative w-[196px]">
+                <div className="relative w-[152px] @[36rem]:w-[196px]">
                   <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-primary/80" />
                   <Input
                     ref={searchInput}
@@ -270,16 +445,19 @@ export function ConnectionsPage({
           <div
             role="group"
             aria-label={tr('连接常用操作')}
-            className="inline-flex h-8.5 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 shadow-xs"
+            className="inline-flex h-8.5 shrink-0 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 whitespace-nowrap shadow-xs"
           >
-            <span className="inline-flex h-7 items-center gap-1.5 px-2 text-xs font-medium text-foreground">
+            <span
+              title={proxy.running ? tr('内核运行中') : tr('内核未启动')}
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 px-2 text-xs font-medium whitespace-nowrap text-foreground"
+            >
               <span
                 className={cn(
                   'size-1.5 rounded-full',
                   proxy.running ? 'bg-success motion-safe:animate-pulse' : 'bg-icon-muted',
                 )}
               />
-              <span>{proxy.running ? tr('内核运行中') : tr('内核未启动')}</span>
+              <span className="hidden @[30rem]:inline">{proxy.running ? tr('内核运行中') : tr('内核未启动')}</span>
             </span>
 
             <Separator orientation="vertical" className="mx-0.5 h-4 bg-border" />
@@ -376,19 +554,20 @@ export function ConnectionsPage({
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(18rem,1fr)_auto] gap-3 lg:grid-cols-[minmax(0,1fr)_336px] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="min-h-0 min-w-0 gap-3 p-4">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Activity className="size-4 text-primary" />
-              <CardTitle>{telemetry?.stale ? tr('探测与最近采样') : tr('探测与连接记录')}</CardTitle>
-              <Badge variant="default" className="mono">
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_auto] gap-3 lg:grid-cols-[minmax(0,1fr)_336px] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <Card className="min-h-[21rem] min-w-0 gap-3 p-4 lg:min-h-0">
+          <CardHeader className="flex-wrap gap-2">
+            <div className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+              <Activity className="size-4 shrink-0 text-primary" />
+              <CardTitle className="truncate">{telemetry?.stale ? tr('探测与最近采样') : tr('探测与连接记录')}</CardTitle>
+              <Badge variant="default" className="mono shrink-0">
                 {visible.length}
               </Badge>
             </div>
             <Segmented
               layoutId="connections-filter"
               ariaLabel={tr("连接状态筛选")}
+              className="shrink-0"
               value={filter}
               options={filterOptions}
               onChange={next => {
@@ -401,15 +580,43 @@ export function ConnectionsPage({
           <ContextMenu>
             <ContextMenuTrigger render={<CardContent className="min-h-0 min-w-0 flex-1" />}>
               {paged.length > 0 ? (
-                <Table aria-label={tr("探测与连接记录")} containerClassName="min-h-0 flex-1" className="min-w-[40rem] table-fixed">
+                <Table
+                  aria-label={tr("探测与连接记录")}
+                  containerClassName="min-h-0 flex-1"
+                  className="table-fixed"
+                  style={{ width: totalWidth, minWidth: '100%' }}
+                >
+                  <colgroup>
+                    {connectionColumns.map(col => (
+                      <col key={col.key} style={{ width: colWidths[col.key] }} />
+                    ))}
+                  </colgroup>
                   <TableHeader>
                     <TableRow className="[&>th]:text-center">
-                      <TableHead className="w-[19%] px-2.5">{tr("来源 / 应用")}</TableHead>
-                      <TableHead className="w-[21%] px-2.5">{tr("出口目标")}</TableHead>
-                      <TableHead className="px-2.5">{tr("链路路径")}</TableHead>
-                      <TableHead className="w-[10.5rem] px-2.5">{tr("时间")}</TableHead>
-                      <TableHead className="w-[5.5rem] px-2.5">{tr("状态")}</TableHead>
-                      <TableHead className="w-[5.75rem] px-2.5">{tr("累计流量")}</TableHead>
+                      {connectionColumns.map(col => (
+                        <TableHead key={col.key} data-col={col.key} className="relative px-2.5">
+                          <span className="block truncate">{col.label}</span>
+                          <div
+                            role="separator"
+                            aria-orientation="vertical"
+                            aria-label={tr('调整「{0}」列宽', col.label)}
+                            title={tr('拖动调整列宽，双击重置')}
+                            onPointerDown={event => startResize(col.key, event)}
+                            onDoubleClick={event => {
+                              event.stopPropagation()
+                              resetColumnWidth(col.key)
+                            }}
+                            className="group/resize absolute top-0 -right-1.5 z-20 flex h-full w-3 cursor-col-resize items-center justify-center select-none touch-none"
+                          >
+                            <span
+                              className={cn(
+                                'h-4 w-px rounded-full bg-border/80 transition-[width,height,background-color] duration-150 group-hover/resize:h-5 group-hover/resize:w-[2px] group-hover/resize:bg-primary',
+                                resizingKey === col.key && 'h-5 w-[2px] bg-primary',
+                              )}
+                            />
+                          </div>
+                        </TableHead>
+                      ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -447,7 +654,7 @@ export function ConnectionsPage({
                                     onConfigureConnection(row.rawConnection)
                                   }
                                 }}
-                                className="cursor-pointer outline-none focus-visible:bg-accent-soft/50"
+                                className="cursor-pointer outline-none focus-visible:bg-primary/15 [&[data-selected=true]>td:first-child]:shadow-[inset_3px_0_0_var(--primary)] [&[data-selected=true]>td]:border-b-primary/20"
                               >
                                 <TableCell className="px-2.5">
                                   <ConnectionApp name={row.app} executable={row.appExecutable} icon={row.appIcon} />
@@ -494,7 +701,7 @@ export function ConnectionsPage({
                   </TableBody>
                 </Table>
               ) : (
-                <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-[9px] border border-dashed border-border bg-muted/25 p-8 text-center">
+                <div className="flex min-h-[15rem] flex-1 flex-col items-center justify-center gap-3 rounded-[9px] border border-dashed border-border bg-muted/25 p-5 text-center sm:p-6">
                   <div className="grid size-11 place-items-center rounded-full bg-accent-soft text-primary">
                     <Waypoints className="size-5" />
                   </div>
@@ -580,83 +787,165 @@ export function ConnectionsPage({
           <CardHeader>
             <div className="flex items-center gap-2">
               <Globe className="size-4 text-primary" />
-              <CardTitle>{tr("连接诊断")}</CardTitle>
+              <CardTitle>{activeConnection ? tr('连接详情') : tr('连接诊断')}</CardTitle>
             </div>
-            <Badge variant={active ? (active.ok ? 'success' : 'danger') : verified ? 'success' : 'default'}>
-              {active
-                ? active.ok
-                  ? tr('已验证')
-                  : active.rejected
-                    ? tr('已拒绝')
-                    : tr('异常')
-                : verified
-                  ? tr('已验证')
-                  : tr('待验证')}
+            <Badge variant={detailBadge.variant}>
+              {detailBadge.label}
             </Badge>
           </CardHeader>
 
           <div className="flex items-center gap-3 rounded-[9px] border border-border bg-muted/55 p-3 dark:bg-[#252730]">
-            <div className="grid size-8 shrink-0 place-items-center rounded-[7px] bg-accent-soft text-primary">
-              <Layers className="size-4" />
-            </div>
+            {activeConnection ? (
+              <div className="grid size-9 shrink-0 place-items-center rounded-[8px] border border-border/80 bg-background/85">
+                {activeConnection.appIcon ? (
+                  <img src={activeConnection.appIcon} alt="" draggable={false} className="size-6 object-contain" />
+                ) : (
+                  <AppWindow aria-hidden="true" className="size-4.5 text-muted-foreground" />
+                )}
+              </div>
+            ) : (
+              <div className="grid size-9 shrink-0 place-items-center rounded-[8px] bg-accent-soft text-primary">
+                <Layers className="size-4" />
+              </div>
+            )}
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <strong
                 className="truncate text-xs font-semibold text-foreground"
-                title={active ? `${active.app} · ${active.target}` : pathText}
+                title={activeConnection ? activeConnection.app : active ? `${active.app} · ${active.target}` : pathText}
               >
-                {active ? `${active.app} · ${active.target}` : pathText}
+                {activeConnection ? activeConnection.app : active ? `${active.app} · ${active.target}` : pathText}
               </strong>
               <span
-                className="truncate text-xs text-muted-foreground"
-                title={active?.rule || (proxy.running ? proxy.outbound?.name : chainName) || pathText}
+                className={cn(
+                  'truncate text-xs text-muted-foreground',
+                  activeConnection && 'mono',
+                )}
+                title={activeConnection ? activeConnection.target : (active?.rule || (proxy.running ? proxy.outbound?.name : chainName) || pathText)}
               >
-                {active?.rule || (proxy.running ? proxy.outbound?.name : chainName) || pathText}
+                {activeConnection ? activeConnection.target : (active?.rule || (proxy.running ? proxy.outbound?.name : chainName) || pathText)}
               </span>
             </div>
           </div>
-
-          <Separator />
-
-          <div className="flex flex-col gap-2.5 text-xs">
-            <div className="flex items-center justify-between gap-2">
-              <span className="shrink-0 whitespace-nowrap text-muted-foreground">{activeConnection ? tr('路径节点') : tr('总跳数')}</span>
-              <span className="mono font-medium text-foreground">
-                {activeConnection ? activeConnection.path.length || '—' : tr("{0} / {1} 跳", filledCount, hopNodes.length)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="shrink-0 whitespace-nowrap text-muted-foreground">{tr("末跳出口")}</span>
-              <span className="truncate font-medium text-foreground">
-                <FlagText
-                  text={
-                    activeConnection
-                      ? activeConnection.path.at(-1) ?? '—'
-                      : exitNode
-                        ? `${exitNode.name} (${exitNode.source})`
-                        : tr('未选择')
-                  }
-                />
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="shrink-0 whitespace-nowrap text-muted-foreground">{tr("当前模式")}</span>
-              <span className="font-medium text-foreground">
-                {proxy.mode === 'rule' ? tr('规则') : proxy.mode === 'global' ? tr('全局') : tr('直连')}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="shrink-0 whitespace-nowrap text-muted-foreground">
-                {activeConnection ? tr('流量统计') : tr('探测出口 IP')}
-              </span>
-              <span className="mono font-semibold text-foreground">
-                {activeConnection ? activeConnection.traffic : showingProbe && verified ? verified.ip : '—'}
-              </span>
-            </div>
-          </div>
-
-          <Separator />
 
           <div className="air-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-0.5">
+            {activeConnection ? (
+              <div className="flex flex-col divide-y divide-border-subtle rounded-[9px] border border-border bg-muted/25 px-3 py-0.5 text-xs dark:bg-muted/20">
+                <DetailItem
+                  label={tr('来源 / 应用')}
+                  copyValue={processLabel && processLabel !== activeConnection.app ? processLabel : undefined}
+                  copyLabel={tr('复制进程名')}
+                  onCopy={copyText}
+                >
+                  <span>{activeConnection.app}</span>
+                  {processLabel && processLabel !== activeConnection.app && (
+                    <span className="mono mt-0.5 block text-[11px] font-normal text-muted-foreground">
+                      {tr('进程文件')}：{processLabel}
+                    </span>
+                  )}
+                </DetailItem>
+
+                {rawConn?.processPath && (
+                  <DetailItem
+                    label={tr('程序路径')}
+                    copyValue={rawConn.processPath}
+                    copyLabel={tr('复制程序路径')}
+                    onCopy={copyText}
+                  >
+                    <span className="mono text-[11px]">{rawConn.processPath}</span>
+                  </DetailItem>
+                )}
+
+                <DetailItem
+                  label={tr('出口目标')}
+                  copyValue={activeConnection.target}
+                  copyLabel={tr('复制目标地址')}
+                  onCopy={copyText}
+                >
+                  <span className="mono">{activeConnection.target}</span>
+                </DetailItem>
+
+                {rawConn?.host && rawConn.host !== activeConnection.target && (
+                  <DetailItem label={tr('目标主机')}>
+                    <span className="mono">{rawConn.host}</span>
+                  </DetailItem>
+                )}
+
+                {rawConn?.destinationIp &&
+                  rawConn.destinationIp !== rawConn.host &&
+                  rawConn.destinationIp !== activeConnection.target && (
+                    <DetailItem label={tr('目标 IP')}>
+                      <span className="mono">{rawConn.destinationIp}</span>
+                    </DetailItem>
+                  )}
+
+                {rawConn?.network && (
+                  <DetailItem label={tr('网络协议')}>
+                    <span className="mono">{rawConn.network.toUpperCase()}</span>
+                  </DetailItem>
+                )}
+
+                <DetailItem label={tr('状态')}>
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <Badge variant={detailBadge.variant}>{detailBadge.label}</Badge>
+                    <span className="text-muted-foreground">
+                      {tr('当前模式')}：{modeLabel}
+                    </span>
+                  </div>
+                </DetailItem>
+
+                <DetailItem label={tr('命中规则')}>
+                  <span>{activeConnection.rule || '—'}</span>
+                </DetailItem>
+
+                <DetailItem
+                  label={tr('链路路径')}
+                  copyValue={activeConnection.chain}
+                  copyLabel={tr('复制链路路径')}
+                  onCopy={copyText}
+                >
+                  <FlagText text={activeConnection.chain} />
+                  <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-normal text-muted-foreground">
+                    <span>{tr('路径节点')}：<b className="mono font-medium text-foreground">{activeConnection.path.length || '—'}</b></span>
+                    <span className="min-w-0 truncate">
+                      {tr('末跳出口')}：<FlagText text={activeConnection.path.at(-1) ?? '—'} />
+                    </span>
+                  </div>
+                </DetailItem>
+
+                <DetailItem label={tr('时间')}>
+                  <span className="mono">{formatLogTime(activeConnection.start)}</span>
+                </DetailItem>
+
+                <DetailItem label={tr('累计流量')}>
+                  <span className="mono font-semibold">{formatBytes(activeConnection.totalBytes ?? 0)}</span>
+                  <span className="mono mt-0.5 block text-[11px] font-normal text-muted-foreground">
+                    {activeConnection.traffic}
+                  </span>
+                </DetailItem>
+              </div>
+            ) : (
+              <div className="flex flex-col divide-y divide-border-subtle rounded-[9px] border border-border bg-muted/25 px-3 py-0.5 text-xs dark:bg-muted/20">
+                <DetailItem label={showingProbe ? tr('探测出口 IP') : tr('目标地址')}>
+                  <span className="mono">{showingProbe && verified ? verified.ip : active?.target ?? '—'}</span>
+                </DetailItem>
+                <DetailItem label={tr('状态')}>
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <Badge variant={detailBadge.variant}>{detailBadge.label}</Badge>
+                    <span className="text-muted-foreground">{tr('当前模式')}：{modeLabel}</span>
+                  </div>
+                </DetailItem>
+                <DetailItem label={tr('总跳数')}>
+                  <span className="mono">{tr('{0} / {1} 跳', filledCount, hopNodes.length)}</span>
+                </DetailItem>
+                <DetailItem label={tr('末跳出口')}>
+                  <FlagText text={exitNode ? `${exitNode.name} (${exitNode.source})` : tr('未选择')} />
+                </DetailItem>
+                <DetailItem label={tr('链路路径')}>
+                  <FlagText text={pathText} />
+                </DetailItem>
+              </div>
+            )}
+
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               {activeConnection ? tr('内核报告的出站路径') : tr('链路诊断阶段')}
             </span>

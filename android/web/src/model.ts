@@ -134,7 +134,15 @@ export type VpnStatus = {
   traffic: { up?: number; down?: number }
   totals?: { up?: number; down?: number }
 }
-export type ExitInfo = { ip: string; country?: string; city?: string; region?: string; org?: string }
+export type ExitInfo = {
+  ip: string
+  country?: string
+  city?: string
+  region?: string
+  org?: string
+  kind?: 'datacenter' | 'residential' | 'mobile' | 'gateway'
+  quality?: 'noEvidence' | 'lowRisk' | 'mediumRisk' | 'highRisk'
+}
 export type Connection = {
   id: string; upload: number; download: number; start: string; rule: string; rulePayload: string; chains: string[]
   upRate?: number; downRate?: number

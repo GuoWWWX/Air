@@ -31,6 +31,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { TraceLines } from '@/shared/ui/TraceLines'
 import { PageHeaderIcon } from '@/shared/ui/PageHeaderIcon'
 import { DashboardPowerButton } from '@/shared/ui/DashboardPowerButton'
+import { SpinningGlobeIcon } from '@/shared/ui/SpinningGlobeIcon'
 import { idleHeights, TrafficBars, trafficHeights } from '@/shared/ui/TrafficBars'
 import type { ExitVerification, ProxyConnection, ProxyModeAction, ProxyHop, ProxyStatus } from '@/platform/desktop/air'
 import type { Nodes } from '../nodes/useNodes'
@@ -67,7 +68,9 @@ function ExitSummary({ exit, verification, checking, failed, copied, onCopy, onR
   const fullLocation = [...new Set([country, exit?.region, exit?.city].filter(Boolean))].join(' · ')
   const kind = exit?.kind && exitKinds[exit.kind]
   const quality = exit?.quality && exitQuality[exit.quality]
-  const flagIcon = flag ?? <Globe className="size-4 text-muted-foreground" />
+  const flagIcon = checking
+    ? <SpinningGlobeIcon spinning className="size-4 text-primary" />
+    : flag ?? <SpinningGlobeIcon className="size-4 text-muted-foreground" />
   const flagClass = 'grid h-7 w-6 shrink-0 place-items-center rounded text-xl leading-none'
   const retryLabel = fullLocation ? tr("{0}出口，点击重新检测", fullLocation) : tr('重新检测出口 IP')
 
@@ -78,6 +81,7 @@ function ExitSummary({ exit, verification, checking, failed, copied, onCopy, onR
           type="button"
           className={cn(flagClass, 'cursor-pointer outline-none transition-colors hover:bg-card focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-wait')}
           aria-label={retryLabel}
+          aria-busy={checking || undefined}
           title={retryLabel}
           disabled={checking}
           onClick={onRefresh}
@@ -127,6 +131,7 @@ export function Dashboard({
   exitLookup,
   telemetry,
   preferredNode,
+  outboundGroupName,
   verified: draftVerification,
   hops,
   chainName: draftName,
@@ -147,6 +152,7 @@ export function Dashboard({
   exitLookup: ExitLookup
   telemetry?: TelemetryHistory
   preferredNode?: ProxyHop
+  outboundGroupName?: string
   verified?: ExitVerification
   hops: string[]
   chainName: string
@@ -165,8 +171,11 @@ export function Dashboard({
   const nodeById = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
   const draftHops = hops.map(id => nodeById.get(id))
   const runningHops = proxy.mode === 'direct' ? [] : proxy.outbound?.hops ?? []
-  const hopNodes = proxy.running ? runningHops : preferredNode ? [preferredNode] : draftHops
+  const hopNodes = proxy.running ? runningHops : preferredNode ? [preferredNode] : outboundGroupName ? [] : draftHops
   const singleNode = hopNodes.length === 1 ? hopNodes[0] : undefined
+  const activeGroupName = proxy.running
+    ? (proxy.mode !== 'direct' && proxy.target?.kind === 'group' ? (proxy.outbound?.name || proxy.target.name) : undefined)
+    : (!singleNode ? outboundGroupName : undefined)
   const sourceId = singleNode && nodeById.get(singleNode.id)?.sourceId
   const selectedSource = sources.find(source => source.id === sourceId)
   const sourceUsage = selectedSource?.details?.usage
@@ -258,21 +267,24 @@ export function Dashboard({
 
   return (
     <section className="air-scroll flex h-full flex-col gap-3.5 overflow-y-auto px-5 py-4">
-      <header className="flex min-h-11 shrink-0 items-center justify-between gap-3">
+      <header className="@container flex min-h-11 shrink-0 items-center justify-between gap-2.5">
         <div className="flex min-w-0 items-center gap-4 whitespace-nowrap">
-          <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex shrink-0 items-center gap-2.5">
             <PageHeaderIcon kind="home" animateKey={visitKey} />
-            <h1 className="truncate text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("仪表盘")}</h1>
+            <h1 className="shrink-0 whitespace-nowrap text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("仪表盘")}</h1>
           </div>
-          <TraceLines variant="dashboard" className="sm:hidden lg:block" />
+          <TraceLines variant="dashboard" className="sm:hidden @[46rem]:block" />
         </div>
 
         <div
           role="group"
           aria-label={tr('运行概况与快捷跳转')}
-          className="inline-flex h-8.5 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 shadow-xs"
+          className="inline-flex h-8.5 shrink-0 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 whitespace-nowrap shadow-xs"
         >
-          <span className="inline-flex h-7 items-center gap-1.5 px-2 text-xs font-medium text-foreground">
+          <span
+            title={proxy.running ? tr('代理运行中') : store.kernelPath ? tr('内核已就绪') : tr('未配置内核')}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 px-2 text-xs font-medium whitespace-nowrap text-foreground"
+          >
             <span
               className={cn(
                 'size-1.5 rounded-full',
@@ -283,7 +295,7 @@ export function Dashboard({
                     : 'bg-icon-muted',
               )}
             />
-            <span>{proxy.running ? tr('代理运行中') : store.kernelPath ? tr('内核已就绪') : tr('未配置内核')}</span>
+            <span className="hidden @[34rem]:inline">{proxy.running ? tr('代理运行中') : store.kernelPath ? tr('内核已就绪') : tr('未配置内核')}</span>
           </span>
 
           <Separator orientation="vertical" className="mx-0.5 h-4 bg-border" />
@@ -295,11 +307,11 @@ export function Dashboard({
             whileHover={{ scale: 1.03 }}
             whileTap={{ scale: 0.94 }}
             transition={{ type: 'spring', stiffness: 520, damping: 28 }}
-            className="inline-flex h-7 items-center gap-1.5 rounded-[6px] px-2 text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent-soft/80 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[6px] px-2 text-xs font-medium whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-accent-soft/80 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             <Network className="size-3.5 text-primary" />
             <span className="mono font-semibold text-foreground">{nodes.length}</span>
-            <span>{tr("节点")}</span>
+            <span className="hidden @[24rem]:inline">{tr("节点")}</span>
           </motion.button>
 
           <Separator orientation="vertical" className="mx-0.5 h-4 bg-border" />
@@ -311,11 +323,11 @@ export function Dashboard({
             whileHover={{ scale: 1.03 }}
             whileTap={{ scale: 0.94 }}
             transition={{ type: 'spring', stiffness: 520, damping: 28 }}
-            className="inline-flex h-7 items-center gap-1.5 rounded-[6px] px-2 text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent-soft/80 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[6px] px-2 text-xs font-medium whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-accent-soft/80 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             <CloudDownload className="size-3.5 text-primary" />
             <span className="mono font-semibold text-foreground">{subscriptionSources.length}</span>
-            <span>{tr("订阅")}</span>
+            <span className="hidden @[24rem]:inline">{tr("订阅")}</span>
           </motion.button>
         </div>
       </header>
@@ -325,8 +337,8 @@ export function Dashboard({
           <CardHeader className="relative z-10 col-start-1 row-start-1 mb-1 min-w-0 justify-start gap-2">
             <div className="flex shrink-0 items-center gap-1.5">
               <Globe className="size-4 shrink-0 text-primary" />
-              <CardTitle>{singleNode ? tr('当前节点') : proxy.running && proxy.mode === 'direct' ? tr('直连出口') : tr('链路出口')}</CardTitle>
-              {!singleNode && (
+              <CardTitle>{singleNode ? tr('当前节点') : activeGroupName ? tr('自动分组') : proxy.running && proxy.mode === 'direct' ? tr('直连出口') : tr('链路出口')}</CardTitle>
+              {!singleNode && !activeGroupName && (
                 <Badge
                   variant={verified ? 'success' : 'default'}
                   className={!verified ? 'border-(--exit-border) bg-(--exit-chip-bg)' : undefined}
@@ -349,14 +361,14 @@ export function Dashboard({
 
           <button
             type="button"
-            onClick={singleNode ? onNodes : onChain}
-            title={singleNode ? singleNode.name : pathText}
+            onClick={singleNode || activeGroupName ? onNodes : onChain}
+            title={singleNode ? singleNode.name : activeGroupName ?? pathText}
             className="group relative z-10 col-start-1 row-start-2 flex min-w-0 max-w-full items-center gap-1.5 justify-self-start rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             <strong className="min-w-0 truncate text-lg leading-7 font-bold tracking-tight text-foreground transition-colors group-hover:text-primary @[26rem]:text-[21px]">
-              <FlagText text={singleNode?.name ?? (chainName || (proxy.running ? pathText : tr('尚未配置')))} />
+              <FlagText text={singleNode?.name ?? activeGroupName ?? (chainName || (proxy.running ? pathText : tr('尚未配置')))} />
             </strong>
-            {!singleNode && hopNodes.length > 1 && (
+            {!singleNode && !activeGroupName && hopNodes.length > 1 && (
               <Badge variant="accent" className="mono">{filledCount}/{hopNodes.length}{tr(" 跳")}</Badge>
             )}
             <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70 transition-[transform,color] duration-150 group-hover:translate-x-0.5 group-hover:text-primary" />

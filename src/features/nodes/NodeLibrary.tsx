@@ -82,6 +82,7 @@ interface Props {
   store: Nodes
   proxy: ProxyStatus
   preferredNodeId: string
+  outboundGroupId?: string
   selectingNodeId?: string
   powerPending: boolean
   onChooseGroup: (id: string) => void
@@ -164,6 +165,7 @@ export function NodeLibrary({
   store,
   proxy,
   preferredNodeId,
+  outboundGroupId,
   selectingNodeId,
   powerPending,
   onChooseGroup,
@@ -787,16 +789,16 @@ export function NodeLibrary({
 
   return (
     <section className="relative flex h-full min-h-0 min-w-0 flex-col gap-3 px-5 py-4">
-      <header className="flex min-h-11 shrink-0 items-center justify-between gap-3">
-        <div className="flex items-center gap-4 whitespace-nowrap">
-          <div className="flex items-center gap-2.5">
+      <header className="@container flex min-h-11 shrink-0 items-center justify-between gap-2.5">
+        <div className="flex min-w-0 items-center gap-4 whitespace-nowrap">
+          <div className="flex shrink-0 items-center gap-2.5">
             <PageHeaderIcon kind="nodes" animateKey={visitKey} />
-            <h1 className="text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("节点库")}</h1>
+            <h1 className="shrink-0 whitespace-nowrap text-[26px] font-bold leading-tight tracking-tight text-foreground">{tr("节点库")}</h1>
           </div>
-          <TraceLines />
+          <TraceLines className="sm:hidden @[46rem]:block" />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <AnimatePresence initial={false}>
             {searchOpen && (
               <motion.div
@@ -857,7 +859,7 @@ export function NodeLibrary({
           <div
             role="group"
             aria-label={tr("节点常用操作")}
-            className="inline-flex h-8.5 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 shadow-xs"
+            className="inline-flex h-8.5 shrink-0 items-center gap-0.5 rounded-[8px] border border-border bg-secondary p-0.5 whitespace-nowrap shadow-xs"
           >
             <motion.button
               ref={searchButton}
@@ -1172,8 +1174,23 @@ export function NodeLibrary({
                   <h2 className="min-w-0 truncate text-[15px] font-semibold text-foreground" title={scopeTitle}>
                     <FlagText text={scopeTitle} />
                   </h2>
-                  {activeCustomGroup && <Button type="button" size="sm" variant="outline" disabled={!activeCustomGroup.members.length || nodeActionDisabled}
-                    onClick={() => onChooseGroup(activeCustomGroup.id)}>{tr('设为自动出站')}</Button>}
+                  {activeCustomGroup && (() => {
+                    const isCurrent = proxy.running
+                      ? proxy.mode !== 'direct' && proxy.target?.kind === 'group' && proxy.target.id === activeCustomGroup.id
+                      : !preferredNodeId && outboundGroupId === activeCustomGroup.id
+                    return (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={isCurrent ? 'subtle' : 'outline'}
+                        disabled={!activeCustomGroup.members.length || nodeActionDisabled || isCurrent}
+                        onClick={() => onChooseGroup(activeCustomGroup.id)}
+                      >
+                        {isCurrent && <Check data-icon="inline-start" />}
+                        {isCurrent ? tr('当前自动出站') : tr('设为自动出站')}
+                      </Button>
+                    )
+                  })()}
                   <span className="mono text-xs text-muted-foreground">{filtered.length}</span>
                   {scope.kind !== 'all' && (
                     <Button

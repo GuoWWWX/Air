@@ -148,6 +148,41 @@ export function RoutingSettings({ sources, groups, nodes, target, apps, ownerNam
   const [revision, setRevision] = useState(() => cachedRoutingDoc?.revision ?? '')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<string[]>()
+  const [resolvedApps, setResolvedApps] = useState<AppIdentity[]>([])
+  const [queriedApp, setQueriedApp] = useState('')
+  const requestedAppsRef = useRef(new Set<string>())
+  const mountedRef = useRef(true)
+  useEffect(() => () => { mountedRef.current = false }, [])
+  const appQueries = [...new Set([
+    ...(draft?.rules.filter(rule => rule.matcher === 'processName' || rule.matcher === 'processPath').map(rule => rule.value.trim()) ?? []),
+    queriedApp.trim(),
+  ].filter(Boolean))].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())).join('\n')
+  useEffect(() => {
+    if (!appQueries) return
+    const missing: string[] = []
+    for (const query of appQueries.split('\n')) {
+      const key = query.toLowerCase()
+      if (!key || requestedAppsRef.current.has(key)) continue
+      requestedAppsRef.current.add(key)
+      missing.push(query)
+    }
+    if (!missing.length) return
+    void air.resolveApplications(missing)
+      .then(items => {
+        if (!mountedRef.current || !items.length) return
+        setResolvedApps(prev => {
+          const map = new Map(prev.map(item => [(item.path || item.executable || '').toLowerCase(), item]))
+          for (const item of items) {
+            const key = (item.path || item.executable || '').toLowerCase()
+            if (key) map.set(key, item)
+          }
+          return [...map.values()]
+        })
+      })
+      .catch(() => {
+        for (const query of missing) requestedAppsRef.current.delete(query.toLowerCase())
+      })
+  }, [appQueries])
   const draftRef = useRef(draft)
   const revisionRef = useRef(revision)
   const pathRef = useRef(path)
@@ -327,7 +362,8 @@ export function RoutingSettings({ sources, groups, nodes, target, apps, ownerNam
                     fallback: !automatic && value.kind !== 'subscription' ? value : current.fallback }))} />
                 <Separator />
 
-                <GlobalRuleList<RouteRule> rules={draft.rules} matchers={matcherOptions} apps={apps}
+                <GlobalRuleList<RouteRule> rules={draft.rules} matchers={matcherOptions} apps={[...resolvedApps, ...apps]}
+                  onInspectApp={setQueriedApp}
                   targets={routeChoices(groups, nodes)} newRule={() => newRule(bindApplication)} overlay={ruleDialog}
                   save={async rules => {
                     const document = await air.saveRouting({ ...draft, rules }, revision, target)

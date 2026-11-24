@@ -77,6 +77,15 @@ impl RuleLibrary {
             {
                 return Err("规则集格式无效".into());
             }
+            let source = set.source();
+            for group in &source.groups {
+                if !group.members.is_empty() {
+                    crate::proxy::subscription_rules::RuleOutbounds::new(Some("GLOBAL".into()))
+                        .group(&source, &group.name)?;
+                }
+            }
+            crate::proxy::subscription_rules::RuleOutbounds::new(Some("GLOBAL".into()))
+                .inherit(&source, &mut Vec::new(), &mut Mapping::new())?;
         }
         for (owner, binding) in &self.bindings {
             if !owner.split_once(':').is_some_and(|(kind, id)| {
@@ -114,5 +123,30 @@ impl RuleLibrary {
         keys.iter()
             .find_map(|key| self.bindings.get(key).cloned())
             .or_else(|| owner.map(|id| format!("subscription:{id}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_cyclic_proxy_groups_in_user_rule_sets() {
+        let lib = RuleLibrary {
+            sets: vec![UserRuleSet {
+                id: "loop".into(),
+                name: "Loop".into(),
+                profile: RuleProfile {
+                    rules: vec!["MATCH,A".into()],
+                    rule_providers: Mapping::new(),
+                    proxy_groups: vec![
+                        serde_yaml::from_str("name: A\ntype: select\nproxies: [B]").unwrap(),
+                        serde_yaml::from_str("name: B\ntype: fallback\nproxies: [A]").unwrap(),
+                    ],
+                },
+            }],
+            bindings: BTreeMap::new(),
+        };
+        assert_eq!(lib.validate().unwrap_err(), "订阅分组包含循环引用");
     }
 }

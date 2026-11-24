@@ -40,6 +40,7 @@ export async function native<T>(
       return true as T
     }
     if (action === 'status') return { phase: 'idle', traffic: {}, startedAt: 0 } as T
+    if (action === 'applications') return {} as T
     if (action === 'theme' || action === 'ready' || action === 'cancelProbe') return true as T
     throw new Error(tr('请在 Android 版 Air 中使用此功能'))
   }

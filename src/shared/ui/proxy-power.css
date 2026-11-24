@@ -1,6 +1,7 @@
 [data-proxy-power] {
   --proxy-power-color: #343b44;
   --proxy-power-highlight: color-mix(in srgb, var(--proxy-power-color), white 14%);
+  --proxy-power-ring: color-mix(in srgb, var(--proxy-power-color), white 36%);
   --proxy-power-depth: color-mix(in srgb, var(--proxy-power-color), black 28%);
   --proxy-power-surface: color-mix(in srgb, var(--proxy-power-color) 18%, var(--card, var(--surface)));
   --proxy-power-ink: color-mix(in srgb, var(--proxy-power-color) 58%, var(--foreground, var(--ink)));
@@ -15,6 +16,7 @@
 [data-theme="dark"] [data-proxy-power] {
   --proxy-power-color: #4f5868;
   --proxy-power-highlight: color-mix(in srgb, var(--proxy-power-color), white 22%);
+  --proxy-power-ring: color-mix(in srgb, var(--proxy-power-color), white 46%);
   --proxy-power-depth: color-mix(in srgb, var(--proxy-power-color), black 22%);
   --proxy-power-surface: color-mix(in srgb, var(--proxy-power-color) 24%, var(--card, var(--surface)));
   --proxy-power-ink: color-mix(in srgb, var(--proxy-power-color) 42%, var(--foreground, var(--ink)));
@@ -27,3 +29,142 @@
 [data-theme="dark"] [data-proxy-power="system-proxy"] { --proxy-power-color: #3f72f5; }
 .dark [data-proxy-power="tun"],
 [data-theme="dark"] [data-proxy-power="tun"] { --proxy-power-color: #0fa38b; }
+
+@keyframes air-power-spin-cw {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes air-power-spin-ccw {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes air-power-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(var(--power-breathe-scale, 1.045)); }
+}
+
+@keyframes air-power-ripple {
+  0% {
+    transform: scale(0.82);
+    opacity: 0;
+  }
+  4% {
+    transform: scale(0.85);
+    opacity: 0.48;
+  }
+  100% {
+    transform: scale(1.72);
+    opacity: 0;
+  }
+}
+
+@keyframes air-power-sheen-loop {
+  0% {
+    transform: translateX(-65px);
+    opacity: 0.95;
+  }
+  79% {
+    transform: translateX(135px);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateX(135px);
+    opacity: 0;
+  }
+}
+
+@keyframes air-power-sheen-once {
+  0% {
+    transform: translateX(-65px);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateX(135px);
+    opacity: 0;
+  }
+}
+
+@keyframes air-power-wave {
+  0%, 100% { transform: scaleY(var(--wave-low, 0.28)); }
+  33% { transform: scaleY(var(--wave-high, 0.72)); }
+  66% { transform: scaleY(var(--wave-mid, 0.48)); }
+  85% { transform: scaleY(var(--wave-peak2, 0.64)); }
+}
+
+@keyframes air-power-ring-blink {
+  0% {
+    opacity: 0;
+  }
+  16% {
+    opacity: var(--power-ring-peak, 0.36);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.air-power-spin-cw {
+  transform-origin: center;
+  animation: air-power-spin-cw var(--power-spin-duration, 22s) linear infinite;
+  will-change: transform;
+}
+
+.air-power-spin-ccw {
+  transform-origin: center;
+  animation: air-power-spin-ccw var(--power-spin-duration, 24s) linear infinite;
+  will-change: transform;
+}
+
+.air-power-breathe {
+  transform-origin: center;
+  animation: air-power-breathe var(--power-breathe-duration, 3s) ease-in-out infinite;
+  will-change: transform;
+}
+
+.air-power-ripple {
+  transform-origin: center;
+  animation: air-power-ripple 1.25s cubic-bezier(0.16, 1, 0.3, 1) infinite both;
+  will-change: transform, opacity;
+}
+
+.air-power-ring-blink {
+  transform-origin: center;
+  animation: air-power-ring-blink var(--power-ring-duration, 1.5s) cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  will-change: opacity;
+}
+
+.air-power-sheen-loop {
+  animation: air-power-sheen-loop 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.air-power-sheen-once {
+  animation: air-power-sheen-once 0.62s cubic-bezier(0.22, 1, 0.36, 1) 1 forwards;
+}
+
+.air-power-wave-bar {
+  transform-origin: center;
+  animation: air-power-wave var(--wave-duration, 1.05s) ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .air-power-spin-cw,
+  .air-power-spin-ccw,
+  .air-power-breathe,
+  .air-power-ripple,
+  .air-power-ring-blink,
+  .air-power-sheen-loop,
+  .air-power-sheen-once,
+  .air-power-wave-bar {
+    animation: none !important;
+  }
+
+  .air-power-ripple,
+  .air-power-ring-blink,
+  .air-power-sheen-loop,
+  .air-power-sheen-once {
+    opacity: 0;
+  }
+}

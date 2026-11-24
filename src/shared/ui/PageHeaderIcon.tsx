@@ -89,7 +89,7 @@ export function HeartbeatIcon({
             d={ACTIVITY_PATH}
             initial={{ pathLength: 0 }}
             animate={{ pathLength: 1 }}
-            transition={{ duration: 0.56, delay, ease: EASE_OUT }}
+            transition={{ duration: 0.9, delay, ease: EASE_OUT }}
           />
           <motion.path
             d={ACTIVITY_PATH}
@@ -100,7 +100,7 @@ export function HeartbeatIcon({
               pathOffset: [0, 0.14, 0.72, 1],
               opacity: [0, 1, 0.95, 0],
             }}
-            transition={{ duration: 0.58, delay, ease: [0.25, 0.8, 0.35, 1] }}
+            transition={{ duration: 0.94, delay, ease: [0.25, 0.8, 0.35, 1] }}
           />
         </>
       ) : (
@@ -195,8 +195,8 @@ const downloadPreset: IconPreset = {
 
 const gearPreset: IconPreset = {
   icon: Settings,
-  animate: { rotate: [-120, 10, 0], scale: [0.88, 1.08, 1] },
-  transition: { duration: 0.62, ease: EASE_OUT },
+  animate: { rotate: [-240, 14, 0], scale: [0.88, 1.08, 1] },
+  transition: { duration: 0.78, times: [0, 0.78, 1], ease: EASE_OUT },
 }
 
 const docPreset: IconPreset = {
@@ -286,6 +286,8 @@ export function PageHeaderIcon({
     )
   }
 
+  const isGear = kind === 'settings' || kind === 'kernel'
+
   return (
     <motion.span
       key={triggerKey}
@@ -294,12 +296,18 @@ export function PageHeaderIcon({
       animate={{ scale: 1, opacity: 1 }}
       transition={{ type: 'spring', stiffness: 460, damping: 28 }}
       className={cn(
-        'relative grid shrink-0 place-items-center border border-accent-border/60 bg-accent-soft/85 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-accent-border/75 dark:bg-accent-soft/90 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]',
+        'group relative grid shrink-0 place-items-center border border-accent-border/60 bg-accent-soft/85 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-accent-border/75 dark:bg-accent-soft/90 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]',
         styles.box,
         className,
       )}
     >
-      {glyph}
+      {isGear ? (
+        <span className="grid place-items-center transition-[rotate] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:rotate-180 motion-reduce:transition-none">
+          {glyph}
+        </span>
+      ) : (
+        glyph
+      )}
     </motion.span>
   )
 }

@@ -56,7 +56,7 @@ type TrayAction =
 const NAV_ICON_HOVER: Partial<Record<Page, string>> = {
   nodes: 'group-hover:scale-110 group-hover:rotate-6',
   subscriptions: 'group-hover:translate-y-0.5 group-hover:scale-105',
-  settings: 'group-hover:rotate-45 group-hover:scale-105',
+  settings: 'group-hover:rotate-180 group-hover:scale-105 duration-500',
 }
 
 function SidebarNavButton({
@@ -73,7 +73,7 @@ function SidebarNavButton({
   const [playCount, setPlayCount] = useState(0)
   const Icon = item.icon
   const iconClassName = cn(
-    'size-5 shrink-0 stroke-[1.9] transition-[transform,color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
+    'size-5 shrink-0 stroke-[1.9] transition-[transform,translate,scale,rotate,color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
     active
       ? 'text-primary'
       : 'text-secondary-foreground/75 group-hover:text-primary',
@@ -93,7 +93,7 @@ function SidebarNavButton({
       }
       onClick={onClick}
       className={cn(
-        'group relative z-10 flex h-10 w-full items-center justify-start overflow-hidden rounded-[8px] px-0 text-sm outline-none transition-[transform,color,background-color] duration-150 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none',
+        'group relative z-10 flex h-10 w-full items-center justify-start overflow-hidden rounded-[8px] px-0 text-sm outline-none transition-[transform,scale,color,background-color] duration-150 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none',
         active
           ? 'font-semibold text-primary'
           : 'font-medium text-secondary-foreground/80 hover:bg-accent-soft/85 hover:text-primary',
@@ -115,7 +115,7 @@ function SidebarNavButton({
       <span
         aria-hidden={collapsed}
         className={cn(
-          'relative z-10 whitespace-nowrap pr-3 transition-[opacity,transform] duration-150 motion-reduce:transition-none',
+          'relative z-10 whitespace-nowrap pr-3 transition-[opacity,transform,translate] duration-150 motion-reduce:transition-none',
           collapsed ? 'pointer-events-none -translate-x-1 opacity-0' : 'translate-x-0 opacity-100',
         )}
       >
@@ -148,15 +148,15 @@ function SidebarKernelButton({
       title={collapsed ? kernelLabel : undefined}
       aria-label={kernelLabel}
       onClick={onClick}
-      className="group relative flex h-11 w-full items-center overflow-hidden rounded-[9px] border border-border-subtle bg-muted/45 px-0 text-left text-secondary-foreground/80 outline-none transition-[transform,color,background-color,border-color] duration-150 active:scale-[0.97] hover:border-accent-border hover:bg-accent-soft/85 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none"
+      className="group relative flex h-11 w-full items-center overflow-hidden rounded-[9px] border border-border-subtle bg-muted/45 px-0 text-left text-secondary-foreground/80 outline-none transition-[transform,scale,color,background-color,border-color] duration-150 active:scale-[0.97] hover:border-accent-border hover:bg-accent-soft/85 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none"
     >
       <span className="grid h-11 w-10 shrink-0 place-items-center">
-        <Cpu className="size-5 stroke-[1.9] text-secondary-foreground/75 transition-[transform,color] duration-150 group-hover:scale-110 group-hover:text-primary" />
+        <Cpu className="size-5 stroke-[1.9] text-secondary-foreground/75 transition-[transform,scale,color] duration-150 group-hover:scale-110 group-hover:text-primary motion-reduce:transition-none" />
       </span>
       <div
         aria-hidden={collapsed}
         className={cn(
-          'min-w-0 flex-1 pr-4 transition-[opacity,transform] duration-150 motion-reduce:transition-none',
+          'min-w-0 flex-1 pr-4 transition-[opacity,transform,translate] duration-150 motion-reduce:transition-none',
           collapsed ? 'pointer-events-none -translate-x-1 opacity-0' : 'translate-x-0 opacity-100',
         )}
       >
@@ -189,7 +189,7 @@ function SidebarCollapseButton({
       aria-label={collapsed ? tr('展开侧栏') : tr('收起侧栏')}
       title={collapsed ? tr('展开侧栏') : tr('收起侧栏')}
       onClick={onClick}
-      className="group flex h-10 w-full items-center overflow-hidden rounded-[8px] px-0 text-secondary-foreground/80 outline-none transition-[transform,color,background-color] duration-150 active:scale-[0.97] hover:bg-accent-soft/85 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none"
+      className="group flex h-10 w-full items-center overflow-hidden rounded-[8px] px-0 text-secondary-foreground/80 outline-none transition-[transform,scale,color,background-color] duration-150 active:scale-[0.97] hover:bg-accent-soft/85 hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/60 motion-reduce:transition-none"
     >
       <span className="grid size-10 shrink-0 place-items-center">
         <span
@@ -208,7 +208,7 @@ function SidebarCollapseButton({
       <span
         aria-hidden={collapsed}
         className={cn(
-          'whitespace-nowrap pr-3 text-sm font-medium transition-[opacity,transform] duration-150 motion-reduce:transition-none',
+          'whitespace-nowrap pr-3 text-sm font-medium transition-[opacity,transform,translate] duration-150 motion-reduce:transition-none',
           collapsed ? 'pointer-events-none -translate-x-1 opacity-0' : 'translate-x-0 opacity-100',
         )}
       >
@@ -298,7 +298,7 @@ const AppSidebar = memo(function AppSidebar({
             <strong
               aria-hidden={collapsed}
               className={cn(
-                'whitespace-nowrap text-[15px] leading-none font-bold tracking-tight text-foreground transition-[opacity,transform] duration-150 motion-reduce:transition-none',
+                'whitespace-nowrap text-[15px] leading-none font-bold tracking-tight text-foreground transition-[opacity,transform,translate] duration-150 motion-reduce:transition-none',
                 collapsed ? '-translate-x-1 opacity-0' : 'translate-x-0 opacity-100',
               )}
             >
@@ -341,7 +341,7 @@ const AppSidebar = memo(function AppSidebar({
             <span
               aria-hidden={collapsed}
               className={cn(
-                'whitespace-nowrap pr-3 transition-[opacity,transform] duration-150 motion-reduce:transition-none',
+                'whitespace-nowrap pr-3 transition-[opacity,transform,translate] duration-150 motion-reduce:transition-none',
                 collapsed ? 'pointer-events-none -translate-x-1 opacity-0' : 'translate-x-0 opacity-100',
               )}
             >
@@ -482,6 +482,7 @@ export function App() {
       : undefined
   const subscriptionItem = store.library.nodes.find(node => node.id === subscriptionNode)
   const preferredNode = store.library.nodes.find(node => node.id === preferredNodeId)
+  const outboundGroup = outboundGroupId ? store.customGroups.find(group => group.id === outboundGroupId) : undefined
   const activeTheme = theme === 'system' ? (systemDark ? 'dark' : 'light') : theme
   const running = store.progress?.running
   const probeKey = JSON.stringify(hops.map(id => [id, store.library.nodes.find(node => node.id === id)?.probeRevision]))
@@ -927,10 +928,13 @@ export function App() {
 
   async function chooseGroup(id: string) {
     if (proxy.pending || proxy.selectingNodeId) return
-    if (proxy.status.running && !await proxy.control({ action:'selectGroup', id })) return
+    const group = store.customGroups.find(item => item.id === id)
+    if (!group?.members.length) return
+    if (proxy.status.running && !await proxy.control({ action: 'selectGroup', id })) return
     clearPreferredNode()
     setOutboundGroupId(id)
     preferences.setItem('air.outboundGroupId', id)
+    showMessage({ type: 'success', title: tr('已设为当前自动出站：{0}', group.name) })
   }
 
   function selectedProxyTarget(): ProxyTarget {
@@ -1056,7 +1060,7 @@ export function App() {
           <AppTitlebar
             onError={onError}
             status={proxy.status}
-            outboundName={activeOutbound?.name ?? titlebarNode?.name}
+            outboundName={proxy.status.running ? (proxy.status.mode !== 'direct' ? (activeOutbound?.name ?? proxy.status.outbound?.name) : undefined) : (titlebarNode?.name ?? outboundGroup?.name)}
             outboundLatency={titlebarNode && (
               <NodeLatencyButton
                 node={titlebarNode}
@@ -1065,7 +1069,7 @@ export function App() {
                 onMeasure={() => void store.measure(titlebarNode.id).catch(onError)}
               />
             )}
-            onClearNode={!proxy.status.running && !proxy.pending && preferredNodeId ? clearPreferredNode : undefined}
+            onClearNode={!proxy.status.running && !proxy.pending && (preferredNodeId || Boolean(outboundGroup)) ? clearPreferredNode : undefined}
             traffic={proxy.telemetry?.stale ? undefined : proxy.telemetry}
             pending={proxy.pending}
             onControl={controlProxy}
@@ -1083,6 +1087,7 @@ export function App() {
                   exitLookup={proxy.exitLookup}
                   telemetry={proxy.telemetry}
                   preferredNode={preferredNode}
+                  outboundGroupName={outboundGroup?.name}
                   verified={verified}
                   hops={hops}
                   chainName={chainName}
@@ -1107,6 +1112,7 @@ export function App() {
                   store={store}
                   proxy={proxy.status}
                   preferredNodeId={preferredNodeId}
+                  outboundGroupId={outboundGroupId}
                   selectingNodeId={proxy.selectingNodeId}
                   powerPending={Boolean(proxy.pending)}
                   onChooseGroup={id => void chooseGroup(id)}

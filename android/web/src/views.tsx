@@ -3,19 +3,32 @@ import { diagnostic, tr } from '@/shared/i18n/messages'
 import { formatDateTime } from '@/shared/lib/utils'
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion, useMotionValueEvent, useReducedMotion, useTransform, type MotionValue } from 'motion/react'
-import { Activity, ArrowDown, ArrowUp, Bookmark, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, CloudDownload, Copy, Folder, FolderOpen, Globe2, Grid2X2, Layers, List, ListFilter, Loader2, Network, Pencil, Plus, RefreshCw, Search, Server, ShieldCheck, Trash2, Waypoints, X, Zap } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, Bookmark, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, CloudDownload, Copy, Folder, FolderOpen, Globe2, Grid2X2, Layers, List, ListFilter, Loader2, Network, Pencil, Pin, Plus, RefreshCw, Search, Server, Trash2, Waypoints, X, Zap } from 'lucide-react'
 import { Segmented } from '@/shared/ui/segmented'
 import { proxyModes } from '@/shared/proxy/modes'
 import { NodeLatencyButton } from '@/shared/ui/NodeLatencyButton'
 import { ConnectionApp } from '@/shared/ui/ConnectionApp'
 import { ProxyPowerButton } from '@/shared/ui/ProxyPowerButton'
 import { DashboardPowerButton } from '@/shared/ui/DashboardPowerButton'
+import { SpinningGlobeIcon } from '@/shared/ui/SpinningGlobeIcon'
 import { idleHeights, TrafficBars, trafficHeights } from '@/shared/ui/TrafficBars'
 import { Button } from '@/shared/ui/button'
-import { bytes, formatDuration, membersOf, protocol, selectionName, stats, usage, type Choice, type Connection, type ExitInfo, type Group, type Library, type Mode, type Node, type Subscription, type VpnStatus, type readLibrary } from './model'
+import { bytes, membersOf, protocol, selectionName, stats, usage, type Choice, type Connection, type ExitInfo, type Group, type Library, type Mode, type Node, type Subscription, type VpnStatus, type readLibrary } from './model'
 import { Empty, Tag } from './ui'
 
 export const policyLabels = { get select() { return tr('手动选择') }, get 'url-test'() { return tr('自动择优') }, get fallback() { return tr('故障转移') }, get 'load-balance'() { return tr('负载均衡') } }
+const exitKinds = {
+  datacenter: { get label() { return tr('机房') }, tone: 'blue' as const },
+  residential: { get label() { return tr('住宅') }, tone: 'green' as const },
+  mobile: { get label() { return tr('移动网络') }, tone: 'amber' as const },
+  gateway: { get label() { return tr('网关') }, tone: 'gray' as const },
+}
+const exitQuality = {
+  noEvidence: { get label() { return tr('未见风险') }, tone: 'gray' as const },
+  lowRisk: { get label() { return tr('低风险') }, tone: 'green' as const },
+  mediumRisk: { get label() { return tr('中风险') }, tone: 'amber' as const },
+  highRisk: { get label() { return tr('高风险') }, tone: 'red' as const },
+}
 export type Model = ReturnType<typeof readLibrary>
 export type ChainMeasurement = { name: string; hops: string[]; delay: number }
 
@@ -103,12 +116,12 @@ export function HomeHeaderPower({
   )
 }
 
-export function Home({ status, pending, library, model, choice, exit, rows, labels, busy, detect, mode, select, openGroups, connections, importSub, toggle, openGroup, openConnection, copyIp, headerPowerProgress }: {
-  status: VpnStatus; library: Library; model: Model; choice?: Choice; exit?: ExitInfo; busy: boolean
+export function Home({ status, pending, library, model, choice, exit, exitChecking = false, exitFailed = false, rows, labels, busy, detect, mode, select, openGroups, connections, importSub, toggle, openGroup, openConnection, copyIp, headerPowerProgress }: {
+  status: VpnStatus; library: Library; model: Model; choice?: Choice; exit?: ExitInfo; exitChecking?: boolean; exitFailed?: boolean; busy: boolean
   pending?: 'start' | 'stop'; rows: Connection[]; labels: Record<string, string>
   detect: () => void; mode: (mode: Mode) => void; select: () => void; openGroups: () => void; connections: () => void
   importSub: () => void; toggle: () => void; openGroup: (group: Group) => void
-  openConnection: (conn: Connection) => void; copyIp: (ip: string) => void
+  openConnection: (conn: Connection) => void; copyIp: (ip: string) => Promise<boolean> | void
   headerPowerProgress?: MotionValue<number>
 }) {
   const running = status.phase === 'running'
@@ -119,12 +132,32 @@ export function Home({ status, pending, library, model, choice, exit, rows, labe
   const source = library.sources.find(s => s.id === (node?.sourceId ?? group?.sourceId))
   const waveformPending = pending ?? (status.phase === 'starting' ? 'start' : status.phase === 'stopping' ? 'stop' : undefined)
   const [samples, setSamples] = useState<{ session: number; up: number[]; down: number[] }>({ session: 0, up: [], down: [] })
-  const [now, setNow] = useState(() => Date.now())
+  const [copiedIp, setCopiedIp] = useState(false)
+  const copiedTimerRef = useRef<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const connListRef = useRef<HTMLDivElement>(null)
   const powerAnchorRef = useRef<HTMLDivElement>(null)
   const interactiveRef = useRef(true)
   const [cardInteractive, setCardInteractive] = useState(true)
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    setCopiedIp(false)
+  }, [exit?.ip])
+
+  async function handleCopyIp(ip: string) {
+    const ok = await Promise.resolve(copyIp(ip))
+    if (ok === false) return
+    setCopiedIp(true)
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = window.setTimeout(() => {
+      copiedTimerRef.current = null
+      setCopiedIp(false)
+    }, 1500)
+  }
 
   useEffect(() => {
     const container = scrollRef.current
@@ -166,14 +199,10 @@ export function Home({ status, pending, library, model, choice, exit, rows, labe
       down: [...(previous.session === status.startedAt ? previous.down.slice(-16) : []), status.traffic.down ?? 0],
     }))
   }, [status])
-  useEffect(() => {
-    if (!running) return
-    setNow(Date.now())
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [running, status.startedAt])
   const flag = exit?.country && /^[A-Z]{2}$/.test(exit.country)
     ? [...exit.country].map(c => String.fromCodePoint(127397 + c.charCodeAt(0))).join('') : ''
+  const exitKindInfo = exit?.kind ? exitKinds[exit.kind] : undefined
+  const exitQualityInfo = exit?.quality ? exitQuality[exit.quality] : undefined
   const activeCount = rows.filter(row => !row.closed).length
   const liveConnections = rows
     .filter(row => !row.closed)
@@ -334,17 +363,95 @@ export function Home({ status, pending, library, model, choice, exit, rows, labe
   return <div ref={scrollRef} className="page-scroll home">
     <section className="panel dashboard-node">
       <div className="dashboard-node-body">
-        <h2 className="flex items-center gap-2"><Globe2 size={16} className="text-primary" />{tr("当前节点")}</h2>
-        {(source || node || group || chain) && <div className="flex flex-wrap gap-1.5">
-          {source && <Tag tone="gray" className="tag-truncate">{source.name}</Tag>}
-          {node && <Tag tone="gray">{protocol(node)}</Tag>}
-          {group && <Tag tone="gray">{policyLabels[group.type]}</Tag>}
-          {chain && <Tag tone="gray">{chain.hops.length}{tr(" 跳链路")}</Tag>}
-        </div>}
+        <div className="dashboard-node-head">
+          <Globe2 size={15} className="shrink-0 text-primary" />
+          <h2>{node ? tr('当前节点') : group ? tr('自动分组') : chain ? tr('链路出口') : running && library.mode === 'direct' ? tr('直连出口') : tr('当前节点')}</h2>
+          {(source || node || group || chain) && (
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
+              {source && <Tag tone="gray" className="tag-truncate exit-chip">{source.name}</Tag>}
+              {node && <Tag tone="gray" className="mono exit-chip">{protocol(node)}</Tag>}
+              {group && <Tag tone="gray" className="exit-chip">{policyLabels[group.type]}</Tag>}
+              {chain && <Tag tone="gray" className="exit-chip">{chain.hops.length}{tr(" 跳链路")}</Tag>}
+            </div>
+          )}
+        </div>
         <button className="dashboard-node-pick" type="button" onClick={chosen ? select : importSub}>
-          <span className="truncate">{chosen ?? tr('导入订阅')}</span><ChevronRight size={15} className="shrink-0" />
+          <span className="truncate">{chosen ?? (running && library.mode === 'direct' ? tr('直连模式') : tr('导入订阅'))}</span>
+          <ChevronRight size={15} className="shrink-0 text-muted-foreground" />
         </button>
-        <small className="fine-print">{running ? tr('虚拟网卡 · 已接管') : tr('启动后使用')}</small>
+        <div className="dashboard-exit-row">
+          <button
+            className="dashboard-exit-flag"
+            type="button"
+            aria-label={tr('重新检测出口 IP')}
+            aria-busy={exitChecking || undefined}
+            title={tr('重新检测出口 IP')}
+            disabled={!running || exitChecking}
+            onClick={detect}
+          >
+            {exitChecking ? (
+              <SpinningGlobeIcon spinning className="size-[15px] text-primary" />
+            ) : flag ? (
+              <span aria-hidden="true">{flag}</span>
+            ) : (
+              <SpinningGlobeIcon className="size-[15px] text-muted-foreground" />
+            )}
+          </button>
+          {exit?.ip ? (
+            <>
+              <button
+                type="button"
+                className="dashboard-exit-ip"
+                aria-label={tr("复制出口 IP · {0}", exit.ip)}
+                title={tr("复制出口 IP · {0}", exit.ip)}
+                onClick={() => void handleCopyIp(exit.ip)}
+              >
+                <span className="mono truncate">{exit.ip}</span>
+                {copiedIp ? (
+                  <Check size={13} className="shrink-0 text-success" aria-hidden="true" />
+                ) : (
+                  <Copy size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                )}
+              </button>
+              {running && (
+                <button
+                  type="button"
+                  className="dashboard-exit-refresh"
+                  aria-label={tr("刷新出口 IP")}
+                  title={tr("刷新出口 IP")}
+                  disabled={exitChecking}
+                  onClick={detect}
+                >
+                  <RefreshCw size={12} className={exitChecking ? 'motion-safe:animate-spin text-primary' : undefined} aria-hidden="true" />
+                </button>
+              )}
+              {exitKindInfo && <Tag tone={exitKindInfo.tone}>{exitKindInfo.label}</Tag>}
+              {exitQualityInfo && (
+                <Tag tone={exitQualityInfo.tone} className={exitQualityInfo.tone === 'gray' ? 'exit-quality-outline' : undefined}>
+                  {exitQualityInfo.label}
+                </Tag>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">
+                {tr("出口 IP · ")}{running ? (exitChecking ? tr('正在检测…') : exitFailed ? tr('暂时无法检测') : tr('正在检测…')) : tr('启动后检测')}
+              </span>
+              {running && (
+                <button
+                  type="button"
+                  className="dashboard-exit-refresh"
+                  aria-label={tr("刷新出口 IP")}
+                  title={tr("刷新出口 IP")}
+                  disabled={exitChecking}
+                  onClick={detect}
+                >
+                  <RefreshCw size={12} className={exitChecking ? 'motion-safe:animate-spin text-primary' : undefined} aria-hidden="true" />
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
       <div
         ref={powerAnchorRef}
@@ -356,31 +463,6 @@ export function Home({ status, pending, library, model, choice, exit, rows, labe
           telemetry={running ? { uploadRate: status.traffic.up ?? 0, downloadRate: status.traffic.down ?? 0 } : undefined}
           disabled={busy} onToggle={toggle} />
       </div>
-    </section>
-    <section className="panel exit-card">
-      <div className="flex min-w-0 items-center gap-2.5">
-        <span className={running ? 'status-icon connected' : 'status-icon'}><ShieldCheck size={18} /></span>
-        <strong className="min-w-0 truncate">{running ? tr('代理运行中') : status.phase === 'starting' ? tr('正在建立 VPN') : status.phase === 'error' ? tr('连接失败') : tr('代理已停止')}</strong>
-        <span className="ml-auto shrink-0"><Tag tone={running ? 'green' : 'gray'}>{running ? tr('虚拟网卡已接管') : tr('等候启动')}</Tag></span>
-      </div>
-      <div className="exit-label">{tr("当前出口 IP")}</div>
-      <div className="flex items-center gap-2.5 min-w-0">
-        {flag && <button className="exit-flag" type="button" aria-label={tr('检测出口 IP · ') + exit?.country} disabled={busy} onClick={detect}>{flag}</button>}
-        {exit?.ip ? (
-          <button type="button" className="exit-ip-btn" aria-label={tr("复制出口 IP {0}", exit.ip)} onClick={() => copyIp(exit.ip)}>
-            <strong className="exit-ip">{exit.ip}</strong>
-            <Copy size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          </button>
-        ) : (
-          <strong className="exit-ip">—</strong>
-        )}
-        {running && <Button size="icon-sm" variant="ghost" className="ml-auto shrink-0" aria-label={tr("刷新出口 IP")} disabled={busy} onClick={detect}><RefreshCw /></Button>}
-      </div>
-      {(() => {
-        const loc = [exit?.city || exit?.region, exit?.org].filter(Boolean).join(' · ')
-        return exit?.ip && loc ? <div className="exit-location">{loc}</div> : null
-      })()}
-      <div className="exit-bottom"><span>{tr("运行时长")}</span><b>{running ? formatDuration(now - status.startedAt) : '00:00:00'}</b></div>
     </section>
     <div className="grid grid-cols-2 gap-2">{([
       { label: tr('上传'), icon: ArrowUp, direction: 'up' }, { label: tr('下载'), icon: ArrowDown, direction: 'down' },
@@ -916,6 +998,19 @@ export function Nodes({
   const selecting = controlledSelecting ?? localSelecting
   const setSelecting = setControlledSelecting ?? setLocalSelecting
   const selectAllRef = useRef<HTMLInputElement>(null)
+  const longPressTimerRef = useRef<number | null>(null)
+  const longPressOriginRef = useRef<{ x: number; y: number } | null>(null)
+  const longPressTriggeredAtRef = useRef(0)
+
+  function clearLongPress() {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+    longPressOriginRef.current = null
+  }
+
+  useEffect(() => clearLongPress, [])
   const resolved = resolveNodeScope(scope, sources, includeCustom, model)
   const allowedNodeIds = new Set(nodes.map(node => node.id))
   const validChecked = checked.filter(id => allowedNodeIds.has(id))
@@ -1330,8 +1425,39 @@ export function Nodes({
           className="panel node-card"
           data-selected={selecting ? chosenForGroup : chosen}
           data-selecting={selecting || undefined}
-          onContextMenu={event => { event.preventDefault(); openNode(node) }}
+          onContextMenu={event => {
+            event.preventDefault()
+            if (Date.now() - longPressTriggeredAtRef.current < 650) return
+            openNode(node)
+          }}
+          onTouchStart={event => {
+            if (selecting || event.touches.length !== 1) return
+            if (event.target instanceof Element && event.target.closest('.node-metrics button, input[type="checkbox"]')) return
+            clearLongPress()
+            const touch = event.touches[0]
+            longPressOriginRef.current = { x: touch.clientX, y: touch.clientY }
+            longPressTimerRef.current = window.setTimeout(() => {
+              longPressTimerRef.current = null
+              longPressOriginRef.current = null
+              longPressTriggeredAtRef.current = Date.now()
+              openNode(node)
+            }, 480)
+          }}
+          onTouchMove={event => {
+            const origin = longPressOriginRef.current
+            if (!origin || event.touches.length !== 1) {
+              clearLongPress()
+              return
+            }
+            const touch = event.touches[0]
+            if (Math.abs(touch.clientX - origin.x) > 10 || Math.abs(touch.clientY - origin.y) > 10) {
+              clearLongPress()
+            }
+          }}
+          onTouchEnd={clearLongPress}
+          onTouchCancel={clearLongPress}
           onClick={() => {
+            if (Date.now() - longPressTriggeredAtRef.current < 650) return
             if (busy) return
             if (selecting) toggleSelect()
             else choose({ type: 'node', id: node.id, groupId: activeGroup && !activeGroup.sourceId ? activeGroup.id : undefined })
@@ -1356,21 +1482,18 @@ export function Nodes({
               <strong>{node.config.name}</strong>
               <small className="node-source-meta truncate">{node.sourceId === 'custom' ? tr('自定义节点') : library.sources.find(s => s.id === node.sourceId)?.name}{' · '}{protocol(node)}</small>
             </button>
-            {chosen && <Tag className="node-chosen-tag">{tr("已选")}</Tag>}
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              className="node-more-btn"
-              aria-label={tr('节点操作 ') + node.config.name}
-              onClick={event => {
-                event.stopPropagation()
-                openNode(node)
-              }}
-            >···</Button>
           </div>
+          {chosen && !selecting && (
+            <Pin data-slot="node-outbound-marker" aria-hidden="true" className="node-chosen-pin" />
+          )}
           <div className="node-metrics">
-            <span><small>{tr("24h 可用率")}</small><b>{result.percent === undefined ? '—' : result.percent + '%'}</b></span>
-            <span><small>{tr("24h 平均")}</small><b>{result.average === undefined ? '—' : result.average + ' ms'}</b></span>
+            <span className="node-metric-availability">
+              <small>{tr("24h 可用率")}</small>
+              <b data-healthy={result.percent !== undefined && result.percent >= 98 ? 'true' : undefined}>
+                {result.percent === undefined ? '—' : result.percent + '%'}
+              </b>
+            </span>
+            <span className="node-metric-average"><small>{tr("24h 平均")}</small><b>{result.average === undefined ? '—' : result.average + ' ms'}</b></span>
             <NodeLatencyButton
               node={{ name: node.config.name, latestMs: result.latest && result.latest > 0 ? result.latest : null,
                 status: result.latest === -1 ? 'timeout' : null }}

@@ -1610,7 +1610,14 @@ pub async fn save_routing(
         if let Some(selected) = target.filter(|t| !matches!(t, StartTarget::Routing)) {
             state.compile_target(Mode::Rule, &config, &library, &selected)?;
         } else {
-            config.compile(&library.sources)?;
+            let mut validation = config.clone();
+            if validation.subscription_id.is_none() {
+                validation.inherit_rules = false;
+                if matches!(validation.fallback, Target::Subscription) {
+                    validation.fallback = Target::Selected;
+                }
+            }
+            validation.compile(&library.sources)?;
         }
         None
     };
@@ -1677,6 +1684,15 @@ pub async fn proxy_exit(state: State<'_, Arc<App>>, session_id: String) -> AirRe
 #[tauri::command]
 pub async fn proxy_telemetry(state: State<'_, Arc<App>>) -> AirResult<Option<TelemetrySnapshot>> {
     Ok(state.proxy.lock().await.telemetry())
+}
+
+#[tauri::command]
+pub async fn resolve_applications(
+    queries: Vec<String>,
+) -> AirResult<Vec<air::proxy::ResolvedApplication>> {
+    tokio::task::spawn_blocking(move || air::proxy::resolve_applications(&queries))
+        .await
+        .map_err(|_| "无法读取应用信息".to_string())
 }
 
 #[tauri::command]

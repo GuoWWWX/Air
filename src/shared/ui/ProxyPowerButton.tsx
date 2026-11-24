@@ -1,13 +1,16 @@
 import { tr } from '@/shared/i18n/messages'
 import { Play, Square } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { cn, formatCompactRate } from '@/shared/lib/utils'
 import type { ProxyTraffic } from '@/shared/proxy/state'
 
 const minimumMotionTime = { start: 650, stop: 320 }
 
 export function waitForProxyPowerAnimation(action: 'start' | 'stop', startedAt: number) {
+  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    return Promise.resolve()
+  }
   const remaining = minimumMotionTime[action] - (performance.now() - startedAt)
   return remaining <= 0 ? Promise.resolve() : new Promise<void>(resolve => {
     window.setTimeout(resolve, remaining)
@@ -16,12 +19,11 @@ export function waitForProxyPowerAnimation(action: 'start' | 'stop', startedAt: 
 
 function OrbitRing({ duration }: { duration: number }) {
   return (
-    <motion.svg
+    <svg
       viewBox="0 0 20 20"
-      className="size-4"
+      className="air-power-spin-cw size-4"
+      style={{ '--power-spin-duration': `${duration}s` } as CSSProperties}
       aria-hidden="true"
-      animate={{ rotate: 360 }}
-      transition={{ duration, ease: 'linear', repeat: Infinity }}
     >
       <circle
         cx="10"
@@ -42,7 +44,7 @@ function OrbitRing({ duration }: { duration: number }) {
         strokeLinecap="round"
         strokeDasharray="15 29"
       />
-    </motion.svg>
+    </svg>
   )
 }
 
@@ -55,8 +57,6 @@ function RunningWaveform({ level }: { level: number }) {
     { weight: 0.56, delay: 0.22 },
   ] as const
 
-  const duration = 1.25 - level * 0.5
-
   return (
     <span className="flex h-3.5 items-center justify-center gap-[2.5px]" aria-hidden="true">
       {columns.map((col, index) => {
@@ -64,16 +64,16 @@ function RunningWaveform({ level }: { level: number }) {
         const high = Math.min(1, 0.34 + level * 0.66 * col.weight)
         const mid = (low + high) * 0.56
         return (
-          <motion.span
+          <span
             key={index}
-            animate={{ scaleY: [low, high, mid, high * 0.88] }}
-            transition={{
-              duration,
-              repeat: Infinity,
-              ease: 'easeInOut',
-              delay: col.delay,
-            }}
-            className="h-3.5 w-[2px] origin-center rounded-full bg-current"
+            style={{
+              '--wave-low': String(low),
+              '--wave-high': String(high),
+              '--wave-mid': String(mid),
+              '--wave-peak2': String(high * 0.88),
+              animationDelay: `${col.delay}s`,
+            } as CSSProperties}
+            className="air-power-wave-bar h-3.5 w-[2px] origin-center rounded-full bg-current"
           />
         )
       })}
