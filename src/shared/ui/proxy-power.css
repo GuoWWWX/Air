@@ -1,7 +1,7 @@
 [data-proxy-power] {
   --proxy-power-color: #343b44;
   --proxy-power-highlight: color-mix(in srgb, var(--proxy-power-color), white 14%);
-  --proxy-power-ring: color-mix(in srgb, var(--proxy-power-color), white 36%);
+  --proxy-power-ring: color-mix(in srgb, var(--proxy-power-color), white 40%);
   --proxy-power-depth: color-mix(in srgb, var(--proxy-power-color), black 28%);
   --proxy-power-surface: color-mix(in srgb, var(--proxy-power-color) 18%, var(--card, var(--surface)));
   --proxy-power-ink: color-mix(in srgb, var(--proxy-power-color) 58%, var(--foreground, var(--ink)));
@@ -16,7 +16,7 @@
 [data-theme="dark"] [data-proxy-power] {
   --proxy-power-color: #4f5868;
   --proxy-power-highlight: color-mix(in srgb, var(--proxy-power-color), white 22%);
-  --proxy-power-ring: color-mix(in srgb, var(--proxy-power-color), white 46%);
+  --proxy-power-ring: color-mix(in srgb, var(--proxy-power-color), white 28%);
   --proxy-power-depth: color-mix(in srgb, var(--proxy-power-color), black 22%);
   --proxy-power-surface: color-mix(in srgb, var(--proxy-power-color) 24%, var(--card, var(--surface)));
   --proxy-power-ink: color-mix(in srgb, var(--proxy-power-color) 42%, var(--foreground, var(--ink)));
@@ -50,9 +50,17 @@
     transform: scale(0.82);
     opacity: 0;
   }
-  4% {
-    transform: scale(0.85);
-    opacity: 0.48;
+  10% {
+    transform: scale(0.89);
+    opacity: 0.32;
+  }
+  45% {
+    transform: scale(1.24);
+    opacity: 0.18;
+  }
+  78% {
+    transform: scale(1.56);
+    opacity: 0.06;
   }
   100% {
     transform: scale(1.72);
@@ -96,11 +104,29 @@
 @keyframes air-power-ring-blink {
   0% {
     opacity: 0;
+    animation-timing-function: cubic-bezier(0.32, 0, 0.25, 1);
   }
-  16% {
-    opacity: var(--power-ring-peak, 0.36);
+  12% {
+    opacity: var(--power-ring-peak, 0.22);
+    animation-timing-function: cubic-bezier(0.28, 0.08, 0.45, 1);
   }
-  100% {
+  22% {
+    opacity: calc(var(--power-ring-peak, 0.22) * 0.68);
+    animation-timing-function: linear;
+  }
+  32% {
+    opacity: calc(var(--power-ring-peak, 0.22) * 0.4);
+    animation-timing-function: linear;
+  }
+  42% {
+    opacity: calc(var(--power-ring-peak, 0.22) * 0.18);
+    animation-timing-function: cubic-bezier(0.25, 0.1, 0.4, 1);
+  }
+  52% {
+    opacity: calc(var(--power-ring-peak, 0.22) * 0.05);
+    animation-timing-function: ease-out;
+  }
+  58%, 100% {
     opacity: 0;
   }
 }
@@ -131,7 +157,7 @@
 
 .air-power-ring-blink {
   transform-origin: center;
-  animation: air-power-ring-blink var(--power-ring-duration, 1.5s) cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  animation: air-power-ring-blink var(--power-ring-duration, 2s) linear infinite;
   will-change: opacity;
 }
 

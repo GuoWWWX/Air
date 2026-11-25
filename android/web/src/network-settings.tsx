@@ -20,7 +20,7 @@ type FlagKey = { [K in keyof MobileNetwork]: MobileNetwork[K] extends boolean ? 
 const pageFields = {
   dns: ['nameserver', 'defaultNameserver', 'directNameserver', 'proxyServerNameserver', 'fallback', 'fallbackDomains',
     'domainDns', 'enhancedMode', 'fakeIpFilter', 'respectRules', 'dnsIpv6', 'useSystemHosts', 'hosts', 'directFollowPolicy', 'dnsCacheAlgorithm'],
-  tun: ['tunStack', 'tunMtu', 'dnsHijack', 'routeExcludeAddress'],
+  tun: ['tunStack', 'tunMtu', 'dnsHijack', 'bypassLan', 'routeExcludeAddress'],
   inbound: ['mixedPort', 'allowLan', 'ipv6', 'tcpConcurrent', 'blockQuic'],
   monitoring: ['probeUrl', 'probeStatus', 'probeIntervalMinutes'],
 } as const satisfies Record<NetworkPage, readonly (keyof MobileNetwork)[]>
@@ -149,7 +149,7 @@ export function NetworkSettings({ page, library, busy, sdk, backgroundResult, sa
               {flag('respectRules', tr('DNS 连接遵循分流规则'), tr('启用时需要填写节点 DNS。'))}
               {flag('dnsIpv6', tr('返回 IPv6 解析结果'), tr('允许 DNS 返回 AAAA 记录。'), !draft.ipv6)}
               {flag('useSystemHosts', tr('读取系统 hosts'))}
-              {list('hosts', tr('Air 本地 hosts'), '192.168.1.10 nas.home')}
+              {list('hosts', tr('Air Proxy 本地 hosts'), '192.168.1.10 nas.home')}
               {flag('directFollowPolicy', tr('直连 DNS 遵循分域策略'), undefined, !values.directNameserver.length)}
               <div className="field"><span>{tr("DNS 缓存算法")}</span><AirSelect label={tr("DNS 缓存算法")}
                 value={draft.dnsCacheAlgorithm} onChange={value => tune('dnsCacheAlgorithm', value)}
@@ -189,7 +189,8 @@ export function NetworkSettings({ page, library, busy, sdk, backgroundResult, sa
             options={[{ value: 'gvisor', label: 'gVisor' }, { value: 'system', label: tr('系统（System）') }, { value: 'mixed', label: tr('混合（Mixed）') }]} /></div>
           <Field label={tr("最大传输单元（MTU）")}><Input type="number" min={1280} max={9000} placeholder="9000"
             value={draft.tunMtu ?? ''} onChange={event => tune('tunMtu', event.target.value ? Number(event.target.value) : null)} /></Field>
-          {flag('dnsHijack', tr('接管 DNS 请求'), tr('把 Android 系统 DNS 查询交给 Air 解析。'))}
+          {flag('dnsHijack', tr('接管 DNS 请求'), tr('把 Android 系统 DNS 查询交给 Air Proxy 解析。'))}
+          {flag('bypassLan', tr('绕过局域网私网'), tr('自动跳过常见局域网网段，让内网设备和本地服务直连不经 VPN。'))}
           {list('routeExcludeAddress', tr('绕过 TUN 的网段'), '192.168.50.0/24', sdk < 33)}
           {sdk < 33 && <small className="fine-print">{tr("绕过网段需要 Android 13 或更新版本。")}</small>}
         </Section>}

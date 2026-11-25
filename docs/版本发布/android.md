@@ -1,4 +1,4 @@
-# Android 发布
+# Air Proxy Android 发布
 
 Android 版本由 `android/app/build.gradle.kts` 的 `versionCode` 和 `versionName` 管理。覆盖安装必须使用与现有分发包兼容的签名身份，发新版时递增 `versionCode`。发布密钥保存在项目目录以外。[构建配置](../../android/app/build.gradle.kts) · [Android 应用签名](https://developer.android.com/studio/publish/app-signing)
 
@@ -33,7 +33,7 @@ $abi = 'arm64-v8a'
 $unsigned = "android/app/build/outputs/apk/release/app-$abi-release-unsigned.apk"
 $archive = "artifacts/android/$version"
 New-Item -ItemType Directory -Force -Path $archive | Out-Null
-$signed = Join-Path $archive "Air-Android-$version-$abi.apk"
+$signed = Join-Path $archive "Air-Proxy-Android-$version-$abi.apk"
 
 & "$buildTools/zipalign.exe" -c -P 16 4 $unsigned
 if ($LASTEXITCODE -ne 0) { throw 'APK alignment check failed' }

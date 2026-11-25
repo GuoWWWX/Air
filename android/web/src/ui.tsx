@@ -1,8 +1,8 @@
 import { tr } from '@/shared/i18n/messages'
 import { Dialog } from '@base-ui/react/dialog'
 import { ChevronLeft, ChevronRight, type LucideIcon } from 'lucide-react'
-import { AnimatePresence, LayoutGroup, animate, motion, useIsPresent, useMotionValue, useReducedMotion, useTransform, type MotionValue } from 'motion/react'
-import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { AnimatePresence, LayoutGroup, animate, motion, useIsPresent, useMotionValue, useTransform } from 'motion/react'
+import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { BUTTON_SPRING, ICON_SPRING, navigation, type Page } from '@/shared/ui/app-navigation'
 import { Button } from '@/shared/ui/button'
 import { Empty as EmptyState, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/shared/ui/empty'
@@ -12,37 +12,7 @@ import type { VpnStatus } from './model'
 
 const STATUS_DOT_SPRING = { type: 'spring', stiffness: 460, damping: 32 } as const
 
-export function StatusDot({ phase, statusShift }: { phase: VpnStatus['phase']; statusShift?: MotionValue<number> }) {
-  const reducedMotion = useReducedMotion()
-  const shiftX = useMotionValue(statusShift?.get() ?? 0)
-
-  useLayoutEffect(() => {
-    if (statusShift) {
-      const sync = (value: number) => shiftX.set(value)
-      const current = statusShift.get()
-      if (reducedMotion || Math.abs(shiftX.get() - current) <= 0.5) {
-        shiftX.set(current)
-        return statusShift.on('change', sync)
-      }
-      const controls = animate(shiftX, current, STATUS_DOT_SPRING)
-      const unsubscribe = statusShift.on('change', value => {
-        controls.stop()
-        sync(value)
-      })
-      return () => {
-        controls.stop()
-        unsubscribe()
-      }
-    }
-
-    if (reducedMotion || Math.abs(shiftX.get()) <= 0.5) {
-      shiftX.set(0)
-      return
-    }
-    const controls = animate(shiftX, 0, STATUS_DOT_SPRING)
-    return () => controls.stop()
-  }, [statusShift, shiftX, reducedMotion])
-
+export function StatusDot({ phase }: { phase: VpnStatus['phase'] }) {
   const label =
     phase === 'running'
       ? tr('代理运行中')
@@ -58,8 +28,7 @@ export function StatusDot({ phase, statusShift }: { phase: VpnStatus['phase']; s
       transition={STATUS_DOT_SPRING}
       className="header-status-dot-slot"
     >
-      <motion.span
-        style={{ x: shiftX }}
+      <span
         className="header-status-dot"
         data-phase={phase}
         role="status"
@@ -71,17 +40,16 @@ export function StatusDot({ phase, statusShift }: { phase: VpnStatus['phase']; s
           <span className="header-status-dot-ring header-status-dot-ring-delay" aria-hidden="true" />
         )}
         <span className="header-status-dot-core" aria-hidden="true" />
-      </motion.span>
+      </span>
     </motion.span>
   )
 }
 
-export function Header({ title, icon, animateKey, statusPhase, statusShift, back, action }: {
+export function Header({ title, icon, animateKey, statusPhase, back, action }: {
   title: string
   icon?: PageIconKind
   animateKey?: string | number
   statusPhase?: VpnStatus['phase']
-  statusShift?: MotionValue<number>
   back?: () => void
   action?: ReactNode
 }) {
@@ -93,14 +61,16 @@ export function Header({ title, icon, animateKey, statusPhase, statusShift, back
     </div>
     {(statusPhase || action) && (
       <div className="mobile-header-actions">
-        {statusPhase && <StatusDot phase={statusPhase} statusShift={statusShift} />}
+        {statusPhase && <StatusDot phase={statusPhase} />}
         {action}
       </div>
     )}
   </header>
 }
 
-export function BottomNavigation({ page, onChange }: { page: Page; onChange: (page: Page) => void }) {
+export function BottomNavigation({ page, onChange, settingsBadge = false }: {
+  page: Page; onChange: (page: Page) => void; settingsBadge?: boolean
+}) {
   const [visit, setVisit] = useState(0)
   return <nav className="bottom-nav" aria-label={tr("主导航")}>
     <LayoutGroup id="android-navigation">
@@ -126,6 +96,7 @@ export function BottomNavigation({ page, onChange }: { page: Page; onChange: (pa
               animate={active ? hoverAnimate : { rotate: 0, y: 0, scale: 1 }}
               transition={active ? hoverTransition : ICON_SPRING}>
               <Icon size={20} strokeWidth={1.9} aria-hidden />
+              {id === 'settings' && settingsBadge && <span className="bottom-nav-dot" aria-hidden="true" />}
             </motion.span>
           )}
           <span className="relative">{label}</span>
@@ -272,12 +243,13 @@ export function Empty({ icon: Icon, title, description, className, children }: {
   </EmptyState>
 }
 
-export function Row({ icon: Icon, title, description, value, onClick }: {
-  icon: LucideIcon; title: string; description?: string; value?: string; onClick: () => void
+export function Row({ icon: Icon, title, description, value, badge, onClick }: {
+  icon: LucideIcon; title: string; description?: string; value?: string; badge?: ReactNode; onClick: () => void
 }) {
   return <button type="button" className="setting-row" aria-label={[title, value, description].filter(Boolean).join(' · ')} onClick={onClick}>
     <span className="row-icon"><Icon size={17} /></span>
     <span className="row-main"><b>{title}</b>{description && <small>{description}</small>}</span>
+    {badge}
     {value && <small className="shrink-0 whitespace-nowrap">{value}</small>}
     <ChevronRight size={16} className="shrink-0 text-muted-foreground" />
   </button>

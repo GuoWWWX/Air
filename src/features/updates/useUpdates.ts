@@ -74,7 +74,7 @@ export function useUpdates(onError: (error: unknown) => void) {
       const next = await invoke<UpdateStatus>('check_update')
       if (next.version) {
         setOpen(true)
-        showMessage({ type: 'info', title: tr("发现新版本 Air {0}", next.version) })
+        showMessage({ type: 'info', title: tr("发现新版本 Air Proxy {0}", next.version) })
       } else if (next.phase === 'current') {
         showMessage({ type: 'success', title: tr('当前已是最新版本') })
       } else if (next.message) {

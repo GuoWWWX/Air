@@ -355,11 +355,11 @@ function createInitialState() {
         protocol: 'socks5',
         server: 'jp-static.example.net',
         port: 1080,
-        status: null,
-        latestMs: null,
-        averageMs: null,
-        availability: null,
-        continuousMs: null,
+        status: 'available',
+        latestMs: 112,
+        averageMs: 118,
+        availability: 0.994,
+        continuousMs: 2 * DAY + 4 * HOUR,
       },
       baseMs: 112,
       jitter: 18,
@@ -974,7 +974,7 @@ export const browserAir = {
 
   validateChain: async (hops: string[]): Promise<void> => { resolveDemoChain(hops) },
 
-  defaultKernelPath: async (): Promise<string | null> => 'C:\\Program Files\\Air\\mihomo.exe',
+  defaultKernelPath: async (): Promise<string | null> => 'C:\\Program Files\\Air Proxy\\mihomo.exe',
 
   proxyStatus: async (): Promise<ProxyStatus> => ({ ...proxyState }),
 
@@ -986,7 +986,7 @@ export const browserAir = {
   proxyExit: async (sessionId: string): Promise<ProxyExit> => {
     await sleep(1400)
     if (proxyState.sessionId !== sessionId) throw new Error('代理会话已变更')
-    return { ip: '203.0.113.24', countryCode: 'JP', city: 'Tokyo', kind: 'datacenter', quality: 'mediumRisk' }
+    return { ip: '203.0.113.24', countryCode: 'JP', city: 'Tokyo', kind: 'residential', quality: 'lowRisk' }
   },
 
   proxyTelemetry: async (): Promise<ProxyTelemetry | null> => sampleBrowserTelemetry(),
@@ -1118,7 +1118,7 @@ export const browserAir = {
   }),
 
   routingPath: async (): Promise<string> => routingDoc.path,
-  openConfigFolder: async (): Promise<void> => { throw new Error('请在 Air 桌面端打开配置文件夹') },
+  openConfigFolder: async (): Promise<void> => { throw new Error('请在 Air Proxy 桌面端打开配置文件夹') },
   readConfigFile: async () => (await previewConfig()).read(routingDoc.routing),
   validateConfigFile: async (contents: string) => { (await previewConfig()).parse(contents) },
   saveConfigFile: async (contents: string, revision: string) => (await previewConfig()).save(routingDoc.routing, contents, revision),
@@ -1127,8 +1127,8 @@ export const browserAir = {
     const { contents, revision } = config.read(routingDoc.routing)
     return { settings: config.parse(contents).network, revision }
   },
-  subscriptionResolvers: async () => { throw new Error('请在 Air 桌面端读取本机订阅的 DNS 地址') },
-  testDns: async () => { throw new Error('请在 Air 桌面端使用 Mihomo 测试 DNS') },
+  subscriptionResolvers: async () => { throw new Error('请在 Air Proxy 桌面端读取本机订阅的 DNS 地址') },
+  testDns: async () => { throw new Error('请在 Air Proxy 桌面端使用 Mihomo 测试 DNS') },
   saveNetworkSettings: async (settings: NetworkSettings, revision: string) => {
     const config = await previewConfig()
     return { settings, revision: config.saveSection(routingDoc.routing, 'network', settings, revision) }

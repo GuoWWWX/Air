@@ -29,7 +29,9 @@ use windows_sys::Win32::{
     UI::{Shell::{SHGetKnownFolderPath, ShellExecuteExW, FOLDERID_ProgramFiles, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW}, WindowsAndMessaging::SW_HIDE},
 };
 
-pub(super) const RUN: &str = "--air-tun-service-v9";
+pub(super) const RUN: &str = "--air-tun-service-v11";
+pub(super) const V10_RUN: &str = "--air-tun-service-v10";
+pub(super) const V9_RUN: &str = "--air-tun-service-v9";
 pub(super) const V8_RUN: &str = "--air-tun-service-v8";
 pub(super) const V7_RUN: &str = "--air-tun-service-v7";
 pub(super) const V6_RUN: &str = "--air-tun-service-v6";
@@ -54,6 +56,7 @@ const LOADER_SHA256: &str = "8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4
 const WINTUN_SHA256: &str = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce";
 const WINTUN_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wintun.dll"));
 const WINTUN_LICENSE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/Wintun-LICENSE.txt"));
+const SERVICE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/air-tun-service.exe"));
 
 pub(super) fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain([0]).collect()
@@ -74,16 +77,16 @@ fn installation_directory() -> AirResult<PathBuf> {
 }
 
 fn bundled_asset(exe: &Path, name: &str, expected: &str) -> AirResult<Vec<u8>> {
-    let bytes = fs::read(exe.with_file_name(name)).map_err(|_| format!("缺少 {name}，请使用完整的 Air 安装包"))?;
+    let bytes = fs::read(exe.with_file_name(name)).map_err(|_| format!("缺少 {name}，请使用完整的 Air Proxy 安装包"))?;
     if digest(&bytes) != expected {
-        return Err(format!("{name} 校验失败，请使用匹配版本的 Air 安装包"));
+        return Err(format!("{name} 校验失败，请使用匹配版本的 Air Proxy 安装包"));
     }
     Ok(bytes)
 }
 
 fn check_wintun() -> AirResult<()> {
     if WINTUN_LICENSE_BYTES.is_empty() || digest(WINTUN_BYTES) != WINTUN_SHA256 {
-        return Err("Wintun 驱动文件缺失或校验失败，请使用完整的 Air 安装包".into());
+        return Err("Wintun 驱动文件缺失或校验失败，请使用完整的 Air Proxy 安装包".into());
     }
     Ok(())
 }
@@ -127,10 +130,12 @@ pub fn request_install() -> AirResult<()> {
     if current_service_pid().is_some() {
         return Ok(());
     }
-    let exe = std::env::current_exe().map_err(|_| "无法定位 Air 程序")?;
+    let exe = std::env::current_exe().map_err(|_| "无法定位 Air Proxy 程序")?;
     check_wintun()?;
     bundled_asset(&exe, CORE_EXE, CORE_SHA256)?;
-    bundled_asset(&exe, LOADER, LOADER_SHA256)?;
+    if SERVICE_BYTES.is_empty() {
+        bundled_asset(&exe, LOADER, LOADER_SHA256)?;
+    }
     let owner = user_sid().ok_or("无法识别当前 Windows 用户")?;
     elevate(&exe, &format!("{INSTALL} {owner}"))?;
     if current_service_pid().is_none() {
@@ -143,7 +148,7 @@ pub(super) fn request_remove() -> AirResult<()> {
     if super::owned_service().is_none() {
         return Ok(());
     }
-    let exe = std::env::current_exe().map_err(|_| "无法定位 Air 程序")?;
+    let exe = std::env::current_exe().map_err(|_| "无法定位 Air Proxy 程序")?;
     elevate(&exe, REMOVE)
 }
 
@@ -184,11 +189,18 @@ pub(super) fn install(owner: &str) -> AirResult<()> {
     if !valid_sid(owner) {
         return Err("虚拟网卡服务缺少有效的 Windows 用户".into());
     }
-    let source = std::env::current_exe().map_err(|_| "无法定位 Air 程序")?;
+    let source = std::env::current_exe().map_err(|_| "无法定位 Air Proxy 程序")?;
     check_wintun()?;
     let core = bundled_asset(&source, CORE_EXE, CORE_SHA256)?;
-    let loader = bundled_asset(&source, LOADER, LOADER_SHA256)?;
-    let executable = fs::read(&source).map_err(|_| "无法读取 Air 服务程序")?;
+    let standalone = !SERVICE_BYTES.is_empty();
+    let loader = (!standalone)
+        .then(|| bundled_asset(&source, LOADER, LOADER_SHA256))
+        .transpose()?;
+    let executable = if standalone {
+        SERVICE_BYTES.to_vec()
+    } else {
+        fs::read(&source).map_err(|_| "无法读取 Air Proxy 服务程序")?
+    };
     let directory = installation_directory()?;
     let path = wide(&directory);
     let mut security = SecurityDescriptor::new("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")?;
@@ -216,13 +228,31 @@ pub(super) fn install(owner: &str) -> AirResult<()> {
         Err(error) => return Err(service_error(error)),
     };
     write_asset(&directory, CORE_EXE, &core)?;
-    write_asset(&directory, LOADER, &loader)?;
+    if let Some(loader) = loader {
+        write_asset(&directory, LOADER, &loader)?;
+    } else {
+        let _ = fs::remove_file(directory.join(LOADER));
+    }
+    if !crate::mihomo::geodata::GEOSITE_BYTES.is_empty() {
+        write_asset(
+            &directory,
+            crate::mihomo::geodata::GEOSITE_NAME,
+            crate::mihomo::geodata::GEOSITE_BYTES,
+        )?;
+    }
+    if !crate::mihomo::geodata::GEOIP_BYTES.is_empty() {
+        write_asset(
+            &directory,
+            crate::mihomo::geodata::GEOIP_NAME,
+            crate::mihomo::geodata::GEOIP_BYTES,
+        )?;
+    }
     write_asset(&directory, WINTUN_DLL, WINTUN_BYTES)?;
     write_asset(&directory, WINTUN_LICENSE, WINTUN_LICENSE_BYTES)?;
     write_asset(&directory, SERVICE_EXE, &executable)?;
     let info = ServiceInfo {
         name: SERVICE_NAME.into(),
-        display_name: "Air 虚拟网卡服务".into(),
+        display_name: "Air Proxy 虚拟网卡服务".into(),
         service_type: ServiceType::OWN_PROCESS,
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
@@ -254,7 +284,15 @@ pub(super) fn remove() -> AirResult<()> {
     service.delete().map_err(service_error)?;
     drop(service);
     let directory = installation_directory()?;
-    for name in [SERVICE_EXE, CORE_EXE, LOADER, WINTUN_DLL, WINTUN_LICENSE] {
+    for name in [
+        SERVICE_EXE,
+        CORE_EXE,
+        LOADER,
+        WINTUN_DLL,
+        WINTUN_LICENSE,
+        crate::mihomo::geodata::GEOSITE_NAME,
+        crate::mihomo::geodata::GEOIP_NAME,
+    ] {
         let _ = fs::remove_file(directory.join(name));
     }
     let _ = fs::remove_dir(directory);

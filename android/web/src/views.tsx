@@ -1,14 +1,13 @@
 import { preferences } from '@/shared/lib/preferences'
 import { diagnostic, tr } from '@/shared/i18n/messages'
 import { formatDateTime } from '@/shared/lib/utils'
-import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion, useMotionValueEvent, useReducedMotion, useTransform, type MotionValue } from 'motion/react'
-import { Activity, ArrowDown, ArrowUp, Bookmark, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, CloudDownload, Copy, Folder, FolderOpen, Globe2, Grid2X2, Layers, List, ListFilter, Loader2, Network, Pencil, Pin, Plus, RefreshCw, Search, Server, Trash2, Waypoints, X, Zap } from 'lucide-react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
+import { Activity, ArrowDown, ArrowUp, Bookmark, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, CloudDownload, Copy, Folder, FolderOpen, Globe2, Grid2X2, Layers, List, ListFilter, Loader2, Network, Pencil, Pin, Play, Plus, RefreshCw, Search, Server, Trash2, Waypoints, X, Zap } from 'lucide-react'
 import { Segmented } from '@/shared/ui/segmented'
 import { proxyModes } from '@/shared/proxy/modes'
 import { NodeLatencyButton } from '@/shared/ui/NodeLatencyButton'
 import { ConnectionApp } from '@/shared/ui/ConnectionApp'
-import { ProxyPowerButton } from '@/shared/ui/ProxyPowerButton'
 import { DashboardPowerButton } from '@/shared/ui/DashboardPowerButton'
 import { SpinningGlobeIcon } from '@/shared/ui/SpinningGlobeIcon'
 import { idleHeights, TrafficBars, trafficHeights } from '@/shared/ui/TrafficBars'
@@ -53,76 +52,58 @@ export function connectionRoute(c: Connection, labels: Record<string, string>) {
   return { kind: 'proxy' as const, label: exitName, shortLabel: tr('代理'), exitName, tone: 'blue' as const, fullLabel: exitName }
 }
 
-export function PowerButton({ status, pending, busy, toggle }: {
-  status: VpnStatus; pending?: 'start' | 'stop'; busy: boolean; toggle: () => void
-}) {
-  const phase = pending === 'start' ? 'starting' : pending === 'stop' ? 'stopping' : status.phase === 'error' ? 'idle' : status.phase
-  const active = phase === 'running' || phase === 'stopping'
-  return <ProxyPowerButton
-      mobile
-      phase={phase}
-      tone={active ? 'tun' : 'stopped'}
-      traffic={{ uploadRate: status.traffic.up ?? 0, downloadRate: status.traffic.down ?? 0 }}
-      disabled={busy}
-      onToggle={toggle}
-  />
-}
-
-export function HomeHeaderPower({
-  progress,
-  widthMv,
-  status,
-  pending,
-  busy,
-  toggle,
-}: {
-  progress: MotionValue<number>
-  widthMv: MotionValue<number>
-  status: VpnStatus
-  pending?: 'start' | 'stop'
-  busy: boolean
-  toggle: () => void
-}) {
-  const reducedMotion = useReducedMotion()
-  const [interactive, setInteractive] = useState(() => progress.get() >= 0.45)
-
-  useMotionValueEvent(progress, 'change', value => {
-    const next = value >= 0.45
-    setInteractive(prev => (prev === next ? prev : next))
-  })
-
-  const opacity = useTransform(progress, [0, 0.14, 0.5, 0.86, 1], [0, 0.14, 0.5, 0.9, 1])
-  const y = useTransform(progress, [0, 1], [reducedMotion ? 0 : 16, 0])
-  const scale = useTransform(progress, [0, 0.5, 1], [reducedMotion ? 1 : 0.84, reducedMotion ? 1 : 0.94, 1])
-  const clipPath = useTransform([progress, widthMv], ([p, w]: number[]) => {
-    const hClip = Math.max(0, ((w - 36) / 2) * (1 - p))
-    const radius = 18 - 11 * p
-    return `inset(0px ${hClip.toFixed(2)}px 0px ${hClip.toFixed(2)}px round ${radius.toFixed(2)}px)`
-  })
-  const x = useTransform([progress, widthMv], ([p, w]: number[]) =>
-    reducedMotion ? 0 : Math.max(0, ((w - 36) / 2) * (1 - p)),
-  )
-
+function FabOrbitRing({ duration }: { duration: number }) {
   return (
-    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center">
-      <motion.div
-        aria-hidden={!interactive}
-        style={{ opacity, x, y, scale, clipPath: reducedMotion ? undefined : clipPath }}
-        className={interactive ? 'pointer-events-auto flex shrink-0 items-center' : 'pointer-events-none flex shrink-0 items-center'}
-      >
-        <PowerButton status={status} pending={pending} busy={busy} toggle={toggle} />
-      </motion.div>
-    </div>
+    <svg
+      viewBox="0 0 22 22"
+      className="air-power-spin-cw size-[24px]"
+      style={{ '--power-spin-duration': `${duration}s` } as CSSProperties}
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7.5" fill="none" stroke="currentColor" strokeOpacity="0.24" strokeWidth="2.2" />
+      <circle cx="11" cy="11" r="7.5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeDasharray="17 34" />
+    </svg>
   )
 }
 
-export function Home({ status, pending, library, model, choice, exit, exitChecking = false, exitFailed = false, rows, labels, busy, detect, mode, select, openGroups, connections, importSub, toggle, openGroup, openConnection, copyIp, headerPowerProgress }: {
+function FabWaveform({ level }: { level: number }) {
+  const columns = [
+    { weight: 0.62, delay: 0 },
+    { weight: 0.9, delay: 0.14 },
+    { weight: 1, delay: 0.28 },
+    { weight: 0.82, delay: 0.1 },
+    { weight: 0.56, delay: 0.22 },
+  ] as const
+  return (
+    <span className="flex h-[20px] items-center justify-center gap-[3px]" aria-hidden="true">
+      {columns.map((col, index) => {
+        const low = 0.24 + level * 0.2 * col.weight
+        const high = Math.min(1, 0.38 + level * 0.62 * col.weight)
+        const mid = (low + high) * 0.56
+        return (
+          <span
+            key={index}
+            style={{
+              '--wave-low': String(low),
+              '--wave-high': String(high),
+              '--wave-mid': String(mid),
+              '--wave-peak2': String(high * 0.88),
+              animationDelay: `${col.delay}s`,
+            } as CSSProperties}
+            className="air-power-wave-bar h-[20px] w-[3px] origin-center rounded-full bg-current"
+          />
+        )
+      })}
+    </span>
+  )
+}
+
+export function Home({ status, pending, library, model, choice, exit, exitChecking = false, exitFailed = false, rows, labels, busy, detect, mode, select, openGroups, connections, importSub, toggle, openGroup, openConnection, copyIp }: {
   status: VpnStatus; library: Library; model: Model; choice?: Choice; exit?: ExitInfo; exitChecking?: boolean; exitFailed?: boolean; busy: boolean
   pending?: 'start' | 'stop'; rows: Connection[]; labels: Record<string, string>
   detect: () => void; mode: (mode: Mode) => void; select: () => void; openGroups: () => void; connections: () => void
   importSub: () => void; toggle: () => void; openGroup: (group: Group) => void
   openConnection: (conn: Connection) => void; copyIp: (ip: string) => Promise<boolean> | void
-  headerPowerProgress?: MotionValue<number>
 }) {
   const running = status.phase === 'running'
   const chosen = selectionName(choice, model, library)
@@ -131,14 +112,23 @@ export function Home({ status, pending, library, model, choice, exit, exitChecki
   const group = model.groups.find(group => choice?.type === 'group' && group.id === choice.id)
   const source = library.sources.find(s => s.id === (node?.sourceId ?? group?.sourceId))
   const waveformPending = pending ?? (status.phase === 'starting' ? 'start' : status.phase === 'stopping' ? 'stop' : undefined)
+  const powerPhase = waveformPending === 'start' ? 'starting' : waveformPending === 'stop' ? 'stopping' : status.phase === 'error' ? 'idle' : status.phase
+  const powerActiveSurface = powerPhase === 'running' || powerPhase === 'stopping'
+  const powerSwitching = powerPhase === 'starting' || powerPhase === 'stopping'
+  const totalRate = running ? (status.traffic.up ?? 0) + (status.traffic.down ?? 0) : 0
+  const powerActivity = totalRate <= 0 ? 0 : Math.min(1, Math.max(0.16, Math.log10(1 + totalRate / 2048) / 3.6))
+  const powerFabLabel = powerPhase === 'starting'
+    ? tr('正在启动代理…')
+    : powerPhase === 'stopping'
+      ? tr('正在停止代理…')
+      : powerPhase === 'running'
+        ? tr('停止代理')
+        : tr('启动代理')
   const [samples, setSamples] = useState<{ session: number; up: number[]; down: number[] }>({ session: 0, up: [], down: [] })
   const [copiedIp, setCopiedIp] = useState(false)
   const copiedTimerRef = useRef<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const connListRef = useRef<HTMLDivElement>(null)
-  const powerAnchorRef = useRef<HTMLDivElement>(null)
-  const interactiveRef = useRef(true)
-  const [cardInteractive, setCardInteractive] = useState(true)
 
   useEffect(() => () => {
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current)
@@ -158,38 +148,6 @@ export function Home({ status, pending, library, model, choice, exit, exitChecki
       setCopiedIp(false)
     }, 1500)
   }
-
-  useEffect(() => {
-    const container = scrollRef.current
-    const anchor = powerAnchorRef.current
-    if (!container || !anchor) return
-
-    const sync = () => {
-      const cRect = container.getBoundingClientRect()
-      const bRect = anchor.getBoundingClientRect()
-      const startY = cRect.top + 14
-      const span = Math.max(48, bRect.height + 6)
-      const next = Math.min(1, Math.max(0, (startY - bRect.top) / span))
-      headerPowerProgress?.set(next)
-      const interactive = next <= 0.65
-      if (interactive !== interactiveRef.current) {
-        interactiveRef.current = interactive
-        setCardInteractive(interactive)
-      }
-    }
-
-    sync()
-    container.addEventListener('scroll', sync, { passive: true })
-    const observer = new ResizeObserver(sync)
-    observer.observe(container)
-    observer.observe(anchor)
-    return () => {
-      container.removeEventListener('scroll', sync)
-      observer.disconnect()
-      headerPowerProgress?.set(0)
-      interactiveRef.current = true
-    }
-  }, [headerPowerProgress])
 
   useEffect(() => {
     if (status.phase !== 'running') return
@@ -360,18 +318,17 @@ export function Home({ status, pending, library, model, choice, exit, exitChecki
     }
   }, [hasLiveConnections])
 
-  return <div ref={scrollRef} className="page-scroll home">
+  return <div className="page-stage"><div ref={scrollRef} className="page-scroll home has-fab">
     <section className="panel dashboard-node">
       <div className="dashboard-node-body">
         <div className="dashboard-node-head">
           <Globe2 size={15} className="shrink-0 text-primary" />
           <h2>{node ? tr('当前节点') : group ? tr('自动分组') : chain ? tr('链路出口') : running && library.mode === 'direct' ? tr('直连出口') : tr('当前节点')}</h2>
-          {(source || node || group || chain) && (
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
+          {(source || group || chain) && (
+            <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-hidden">
               {source && <Tag tone="gray" className="tag-truncate exit-chip">{source.name}</Tag>}
-              {node && <Tag tone="gray" className="mono exit-chip">{protocol(node)}</Tag>}
-              {group && <Tag tone="gray" className="exit-chip">{policyLabels[group.type]}</Tag>}
-              {chain && <Tag tone="gray" className="exit-chip">{chain.hops.length}{tr(" 跳链路")}</Tag>}
+              {group && <Tag tone="gray" className="exit-chip shrink-0">{policyLabels[group.type]}</Tag>}
+              {chain && <Tag tone="gray" className="exit-chip shrink-0">{chain.hops.length}{tr(" 跳链路")}</Tag>}
             </div>
           )}
         </div>
@@ -379,26 +336,26 @@ export function Home({ status, pending, library, model, choice, exit, exitChecki
           <span className="truncate">{chosen ?? (running && library.mode === 'direct' ? tr('直连模式') : tr('导入订阅'))}</span>
           <ChevronRight size={15} className="shrink-0 text-muted-foreground" />
         </button>
-        <div className="dashboard-exit-row">
-          <button
-            className="dashboard-exit-flag"
-            type="button"
-            aria-label={tr('重新检测出口 IP')}
-            aria-busy={exitChecking || undefined}
-            title={tr('重新检测出口 IP')}
-            disabled={!running || exitChecking}
-            onClick={detect}
-          >
-            {exitChecking ? (
-              <SpinningGlobeIcon spinning className="size-[15px] text-primary" />
-            ) : flag ? (
-              <span aria-hidden="true">{flag}</span>
-            ) : (
-              <SpinningGlobeIcon className="size-[15px] text-muted-foreground" />
-            )}
-          </button>
-          {exit?.ip ? (
-            <>
+        <div className="dashboard-exit">
+          <div className="dashboard-exit-row">
+            <button
+              className="dashboard-exit-flag"
+              type="button"
+              aria-label={tr('重新检测出口 IP')}
+              aria-busy={exitChecking || undefined}
+              title={tr('重新检测出口 IP')}
+              disabled={!running || exitChecking}
+              onClick={detect}
+            >
+              {exitChecking ? (
+                <SpinningGlobeIcon spinning className="size-[15px] text-primary" />
+              ) : flag ? (
+                <span aria-hidden="true">{flag}</span>
+              ) : (
+                <SpinningGlobeIcon className="size-[15px] text-muted-foreground" />
+              )}
+            </button>
+            {exit?.ip ? (
               <button
                 type="button"
                 className="dashboard-exit-ip"
@@ -413,53 +370,26 @@ export function Home({ status, pending, library, model, choice, exit, exitChecki
                   <Copy size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
                 )}
               </button>
-              {running && (
-                <button
-                  type="button"
-                  className="dashboard-exit-refresh"
-                  aria-label={tr("刷新出口 IP")}
-                  title={tr("刷新出口 IP")}
-                  disabled={exitChecking}
-                  onClick={detect}
-                >
-                  <RefreshCw size={12} className={exitChecking ? 'motion-safe:animate-spin text-primary' : undefined} aria-hidden="true" />
-                </button>
-              )}
+            ) : (
+              <span className="min-w-0 truncate text-xs text-muted-foreground">
+                {tr("出口 IP · ")}{running ? (exitChecking ? tr('正在检测…') : exitFailed ? tr('暂时无法检测') : tr('正在检测…')) : tr('启动后检测')}
+              </span>
+            )}
+          </div>
+          {exit?.ip && (exitKindInfo || exitQualityInfo) && (
+            <div className="dashboard-exit-tags">
               {exitKindInfo && <Tag tone={exitKindInfo.tone}>{exitKindInfo.label}</Tag>}
               {exitQualityInfo && (
                 <Tag tone={exitQualityInfo.tone} className={exitQualityInfo.tone === 'gray' ? 'exit-quality-outline' : undefined}>
                   {exitQualityInfo.label}
                 </Tag>
               )}
-            </>
-          ) : (
-            <>
-              <span className="min-w-0 truncate text-xs text-muted-foreground">
-                {tr("出口 IP · ")}{running ? (exitChecking ? tr('正在检测…') : exitFailed ? tr('暂时无法检测') : tr('正在检测…')) : tr('启动后检测')}
-              </span>
-              {running && (
-                <button
-                  type="button"
-                  className="dashboard-exit-refresh"
-                  aria-label={tr("刷新出口 IP")}
-                  title={tr("刷新出口 IP")}
-                  disabled={exitChecking}
-                  onClick={detect}
-                >
-                  <RefreshCw size={12} className={exitChecking ? 'motion-safe:animate-spin text-primary' : undefined} aria-hidden="true" />
-                </button>
-              )}
-            </>
+            </div>
           )}
         </div>
       </div>
-      <div
-        ref={powerAnchorRef}
-        aria-hidden={!cardInteractive}
-        className={cardInteractive ? 'shrink-0' : 'pointer-events-none shrink-0'}
-      >
+      <div className="shrink-0">
         <DashboardPowerButton status={{ running, tun: running, systemProxy: false }} pending={waveformPending}
-          morphProgress={headerPowerProgress}
           telemetry={running ? { uploadRate: status.traffic.up ?? 0, downloadRate: status.traffic.down ?? 0 } : undefined}
           disabled={busy} onToggle={toggle} />
       </div>
@@ -540,6 +470,90 @@ export function Home({ status, pending, library, model, choice, exit, exitChecki
         </button>)}
       </div>
     </section>}
+  </div>
+  <div className="mobile-fab-anchor">
+    <motion.button
+      type="button"
+      className="mobile-fab mobile-fab-power"
+      data-proxy-power={powerActiveSurface ? 'tun' : 'stopped'}
+      data-phase={powerPhase}
+      data-active-surface={powerActiveSurface || undefined}
+      data-high-activity={powerActiveSurface && powerActivity > 0.55 ? 'true' : undefined}
+      aria-label={powerFabLabel}
+      title={powerFabLabel}
+      aria-busy={powerSwitching || undefined}
+      disabled={busy || powerSwitching}
+      whileTap={busy || powerSwitching ? undefined : { scale: 0.91 }}
+      transition={{ type: 'spring', stiffness: 520, damping: 28 }}
+      onClick={toggle}
+    >
+      {powerPhase === 'starting' && (
+        <>
+          <motion.span
+            aria-hidden="true"
+            initial={{ scale: 0.35, opacity: 0.7 }}
+            animate={{ scale: 1.9, opacity: 0 }}
+            transition={{ duration: 0.65, ease: 'easeOut' }}
+            className="pointer-events-none absolute inset-0 rounded-[16px] bg-white/35"
+          />
+          <motion.span
+            aria-hidden="true"
+            initial={{ x: '-140%' }}
+            animate={{ x: '160%' }}
+            transition={{ duration: 0.85, ease: [0.22, 1, 0.36, 1], repeat: Infinity, repeatDelay: 0.2 }}
+            className="pointer-events-none absolute inset-y-0 w-1/2 -skew-x-20 bg-gradient-to-r from-transparent via-white/40 to-transparent"
+          />
+        </>
+      )}
+      <AnimatePresence mode="wait" initial={false}>
+        {powerPhase === 'starting' ? (
+          <motion.span
+            key="starting"
+            initial={{ opacity: 0, scale: 0.72 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.75 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+            className="relative z-10 grid place-items-center"
+          >
+            <FabOrbitRing duration={0.85} />
+          </motion.span>
+        ) : powerPhase === 'stopping' ? (
+          <motion.span
+            key="stopping"
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.65 }}
+            transition={{ duration: 0.14 }}
+            className="relative z-10 grid place-items-center"
+          >
+            <FabOrbitRing duration={0.7} />
+          </motion.span>
+        ) : powerPhase === 'running' ? (
+          <motion.span
+            key="running"
+            initial={{ opacity: 0, scale: 0.85 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.82 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="relative z-10 grid place-items-center"
+          >
+            <FabWaveform level={powerActivity} />
+          </motion.span>
+        ) : (
+          <motion.span
+            key="idle"
+            initial={{ opacity: 0, scale: 0.72, rotate: -18 }}
+            animate={{ opacity: 1, scale: 1, rotate: 0 }}
+            exit={{ opacity: 0, scale: 0.65, rotate: 24 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+            className="relative z-10 grid place-items-center"
+          >
+            <Play size={22} fill="currentColor" className="translate-x-[1px]" aria-hidden="true" />
+          </motion.span>
+        )}
+      </AnimatePresence>
+    </motion.button>
+  </div>
   </div>
 }
 
@@ -1084,9 +1098,12 @@ export function Nodes({
         ? contextSubGroups.length > 0
         : isCustomContext && includeCustom && library.groups.length > 0
   const isProbing = Boolean(batchProgress) || probing.length > 0
+  const reserveProbeFabSpace = !selecting && (current.length > 0 || isProbing)
+  const showProbeFab = !selecting && !isProbing && current.length > 0
 
   return <>
-    <main className="page-scroll">
+    <div className="page-stage">
+    <main className={reserveProbeFabSpace ? 'page-scroll has-fab' : 'page-scroll'}>
     <section className="panel groups">
       <div className="section-title">
         <button
@@ -1507,6 +1524,29 @@ export function Nodes({
       })}
     </div>
   </main>
+  <div className="mobile-fab-anchor">
+    <AnimatePresence initial={false}>
+      {showProbeFab && (
+        <motion.button
+          key="nodes-probe-fab"
+          type="button"
+          className="mobile-fab mobile-fab-probe"
+          disabled={busy}
+          aria-label={tr('批量测速')}
+          title={tr('批量测速')}
+          initial={{ opacity: 0, scale: 0.72, y: 10 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.72, y: 10 }}
+          transition={{ type: 'spring', stiffness: 460, damping: 28 }}
+          whileTap={busy ? undefined : { scale: 0.91 }}
+          onClick={() => probe(current.map(n => n.id))}
+        >
+          <Zap size={22} strokeWidth={2.15} aria-hidden="true" />
+        </motion.button>
+      )}
+    </AnimatePresence>
+  </div>
+  </div>
   {selecting && (
     <footer className="page-action node-selection-bar">
       <span className="node-selection-count">{tr('已选 {0} 项', validChecked.length)}</span>

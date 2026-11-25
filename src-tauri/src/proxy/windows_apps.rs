@@ -16,7 +16,7 @@ use std::{
     path::{Component, Path, PathBuf, Prefix},
     ptr::{null_mut, NonNull},
     slice,
-    sync::{LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -53,7 +53,7 @@ struct Executable {
     file: String,
     path: String,
     icon_key: String,
-    icon: Option<String>,
+    icon: Option<Arc<str>>,
     checked: Instant,
     accessed: Instant,
 }
@@ -65,6 +65,7 @@ pub(super) fn sample(
     snapshot: &ConnectionsSnapshot,
     clients: Option<loopback::ClientMap>,
     mixed_port: u16,
+    mut known: HashMap<String, Arc<super::ConnectionView>>,
 ) -> Applications {
     let mut applications = Applications::default();
     let forwarded = clients.and_then(|clients| clients.lock().ok().map(|map| map.clone()));
@@ -76,6 +77,19 @@ pub(super) fn sample(
     for connection in snapshot.connections.iter().flatten() {
         let metadata = &connection.metadata;
         if metadata.internal() {
+            continue;
+        }
+        if let Some(row) = known.remove(&connection.id) {
+            applications.entries.insert(
+                connection.id.clone(),
+                Application {
+                    name: row.app.clone(),
+                    executable: row.app_executable.clone(),
+                    process_name: row.process_name.clone(),
+                    process_path: row.process_path.clone(),
+                    icon_key: row.app_icon_key.clone(),
+                },
+            );
             continue;
         }
         // The compatibility listener can hide the real source behind Air's own TCP socket.
@@ -164,7 +178,7 @@ pub(super) fn resolve_queries(queries: &[String]) -> Vec<super::ResolvedApplicat
                 executable: Some(executable.file.clone()),
                 path: Some(executable.path.clone()),
                 name: executable.name.clone(),
-                icon: executable.icon.clone(),
+                icon: executable.icon.as_deref().map(str::to_owned),
             });
             continue;
         }
@@ -186,7 +200,7 @@ pub(super) fn resolve_queries(queries: &[String]) -> Vec<super::ResolvedApplicat
                     executable: Some(executable.file.clone()),
                     path: Some(executable.path.clone()),
                     name: executable.name.clone(),
-                    icon: executable.icon.clone(),
+                    icon: executable.icon.as_deref().map(str::to_owned),
                 });
                 continue;
             }
@@ -197,7 +211,7 @@ pub(super) fn resolve_queries(queries: &[String]) -> Vec<super::ResolvedApplicat
                     executable: Some(executable.file.clone()),
                     path: Some(executable.path.clone()),
                     name: executable.name.clone(),
-                    icon: executable.icon.clone(),
+                    icon: executable.icon.as_deref().map(str::to_owned),
                 });
             }
         }
@@ -310,14 +324,16 @@ impl Executable {
         let name = file_description(&wide).unwrap_or_else(|| file.clone());
         let mut hasher = DefaultHasher::new();
         key.hash(&mut hasher);
+        let icon = embedded_icon(&wide)
+            .or_else(|| package_logo::read(path))
+            .or_else(|| shell_icon(&wide));
+        icon.hash(&mut hasher);
         Self {
             name,
             file,
             path: full_path.to_owned(),
             icon_key: format!("{:x}", hasher.finish()),
-            icon: embedded_icon(&wide)
-                .or_else(|| package_logo::read(path))
-                .or_else(|| shell_icon(&wide)),
+            icon: icon.map(Into::into),
             checked: Instant::now(),
             accessed: Instant::now(),
         }
@@ -604,7 +620,7 @@ mod tests {
                 "metadata": { "network": "tcp", "sourceIP": "127.0.0.1", "sourcePort": peer.port(), "inboundPort": port }
             }]
         })).unwrap();
-        let apps = sample(&snapshot, None, port);
+        let apps = sample(&snapshot, None, port, HashMap::new());
         let app = &apps.entries["partial"];
         let image = &apps.icons[app.icon_key.as_ref().unwrap()];
         assert!(image.starts_with("data:image/png;base64,"));

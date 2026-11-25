@@ -278,30 +278,37 @@ export function DashboardPowerButton({
         </div>
 
         {/* 第 4 层：常驻浅色线形齿轮脉冲环（136px 凹谷半径切齐第 3 层最大半径，停止与运行态持续闪烁） */}
-        {phase !== 'starting' && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-1/2 left-1/2 size-[136px] -translate-x-1/2 -translate-y-1/2 text-[color:var(--proxy-power-ring)]"
-          >
-            <svg
-              viewBox="0 0 100 100"
+        <AnimatePresence>
+          {phase !== 'starting' && (
+            <motion.div
+              key="power-ring-blink"
               aria-hidden="true"
-              data-power-ring={phase}
-              className="air-power-ring-blink size-full"
-              style={{
-                '--power-ring-peak': phase === 'running' ? '0.44' : '0.36',
-                '--power-ring-duration': phase === 'running' ? '1.45s' : '1.65s',
-              } as CSSProperties}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.35, ease: 'easeOut' }}
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[136px] -translate-x-1/2 -translate-y-1/2 text-[color:var(--proxy-power-ring)] transition-colors duration-400"
             >
-              <path
-                d={CORE_BLOB_PATH}
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-            </svg>
-          </div>
-        )}
+              <svg
+                viewBox="0 0 100 100"
+                aria-hidden="true"
+                data-power-ring={phase}
+                className="air-power-ring-blink size-full"
+                style={{
+                  '--power-ring-peak': phase === 'running' ? '0.24' : '0.18',
+                  '--power-ring-duration': phase === 'running' ? '2s' : '2.3s',
+                } as CSSProperties}
+              >
+                <path
+                  d={CORE_BLOB_PATH}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.25"
+                />
+              </svg>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* 启动中 / 运行触发：双道同心扩散波纹涟漪 */}
         <AnimatePresence>

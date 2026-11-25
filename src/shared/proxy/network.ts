@@ -19,6 +19,7 @@ export interface NetworkSettings {
   tunMtu: number | null
   strictRoute: boolean
   dnsHijack: boolean
+  bypassLan: boolean
   routeExcludeAddress: string[]
   mixedPort: number | null
   allowLan: boolean
@@ -41,7 +42,7 @@ export const defaultNetwork: NetworkSettings = {
   fallback: [], fallbackDomains: [], domainDns: [], enhancedMode: 'redir-host', fakeIpFilter: [],
   respectRules: true, ipv6: true, dnsIpv6: true, useSystemHosts: true,
   hosts: [], directFollowPolicy: false, dnsCacheAlgorithm: 'auto',
-  tunStack: 'gvisor', tunMtu: null, strictRoute: true, dnsHijack: true, routeExcludeAddress: [],
+  tunStack: 'gvisor', tunMtu: null, strictRoute: false, dnsHijack: true, bypassLan: true, routeExcludeAddress: [],
   mixedPort: null, allowLan: false, systemProxyBypass: [], tcpConcurrent: true, blockQuic: false,
   probeUrl: 'https://www.gstatic.com/generate_204', probeStatus: 204, probeIntervalMinutes: 5,
 }

@@ -28,7 +28,7 @@ mod login {
     const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
     fn command() -> AirResult<OsString> {
-        let exe = std::env::current_exe().map_err(|_| "无法读取 Air 的安装路径")?;
+        let exe = std::env::current_exe().map_err(|_| "无法读取 Air Proxy 的安装路径")?;
         let mut quoted = OsString::from("\"");
         quoted.push(exe);
         quoted.push("\"");
@@ -51,7 +51,7 @@ mod login {
         let result = if enable {
             let value = command()?;
             if value.encode_wide().count() >= 260 {
-                return Err("Air 的安装路径超过 Windows 登录启动项长度限制".into());
+                return Err("Air Proxy 的安装路径超过 Windows 登录启动项长度限制".into());
             }
             hkcu.create_subkey_with_flags(RUN, KEY_SET_VALUE)
                 .and_then(|(key, _)| key.set_value(name, &value))

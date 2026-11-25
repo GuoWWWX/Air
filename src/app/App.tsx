@@ -29,6 +29,7 @@ import { CustomNodeInspector } from '../features/nodes/CustomNodeInspector'
 import { NodeInspector } from '../features/nodes/NodeInspector'
 import { NodeLatencyButton } from '@/shared/ui/NodeLatencyButton'
 import { NodeLibrary } from '../features/nodes/NodeLibrary'
+import type { NodeScope } from '../features/nodes/NodeSourceTree'
 import { useNodes } from '../features/nodes/useNodes'
 import { useProxy } from '../features/proxy/useProxy'
 import { RoutingSettings } from '../features/settings/RoutingSettings'
@@ -52,6 +53,10 @@ type TrayAction =
   | Exclude<ProxyAction, { action: 'start' | 'selectNode' }>
   | { action: 'start' }
   | { action: 'reportError'; message: string }
+
+function isPage(value: string | null): value is Page {
+  return navigation.some(item => item.id === value)
+}
 
 const NAV_ICON_HOVER: Partial<Record<Page, string>> = {
   nodes: 'group-hover:scale-110 group-hover:rotate-6',
@@ -127,20 +132,12 @@ function SidebarNavButton({
 
 function SidebarKernelButton({
   collapsed,
-  kernelPath,
-  background,
   onClick,
 }: {
   collapsed: boolean
-  kernelPath: string
-  background: boolean
   onClick: () => void
 }) {
-  const kernelLabel = kernelPath
-    ? background
-      ? tr('诊断内核：窗口收起后自动测速')
-      : tr('诊断内核：内核就绪 · 点击管理')
-    : tr('诊断内核：未配置 Mihomo 路径')
+  const kernelLabel = tr('诊断内核：未配置 Mihomo 路径')
 
   return (
     <button
@@ -164,14 +161,10 @@ function SidebarKernelButton({
           {tr('诊断内核')}
         </div>
         <div className="mt-0.5 truncate text-[11.5px] leading-tight text-muted-foreground">
-          {kernelPath
-            ? background
-              ? tr('收起后自动测速')
-              : tr('内核就绪 · 点击管理')
-            : tr('未配置 Mihomo 路径')}
+          {tr('未配置 Mihomo 路径')}
         </div>
       </div>
-      <span className={cn('absolute top-2 right-2 size-1.5 rounded-full', kernelPath ? 'bg-success' : 'bg-warning')} />
+      <span className="absolute top-2 right-2 size-1.5 rounded-full bg-warning" />
     </button>
   )
 }
@@ -220,8 +213,7 @@ function SidebarCollapseButton({
 
 interface AppSidebarProps {
   page: Page
-  kernelPath: string
-  background: boolean
+  kernelMissing: boolean
   updateVersion?: string
   updateBusy: boolean
   onNavigate: (target: Page) => void
@@ -231,8 +223,7 @@ interface AppSidebarProps {
 
 const AppSidebar = memo(function AppSidebar({
   page,
-  kernelPath,
-  background,
+  kernelMissing,
   updateVersion,
   updateBusy,
   onNavigate,
@@ -331,7 +322,7 @@ const AppSidebar = memo(function AppSidebar({
             variant="secondary"
             size="sm"
             aria-label={tr('软件更新')}
-            title={`Air ${updateVersion}`}
+            title={`Air Proxy ${updateVersion}`}
             onClick={onOpenUpdate}
             className="h-10 w-full justify-start gap-0 overflow-hidden px-0 text-sm"
           >
@@ -349,12 +340,12 @@ const AppSidebar = memo(function AppSidebar({
             </span>
           </Button>
         )}
-        <SidebarKernelButton
-          collapsed={collapsed}
-          kernelPath={kernelPath}
-          background={background}
-          onClick={onOpenKernel}
-        />
+        {kernelMissing && (
+          <SidebarKernelButton
+            collapsed={collapsed}
+            onClick={onOpenKernel}
+          />
+        )}
 
         <SidebarCollapseButton
           collapsed={collapsed}
@@ -419,16 +410,33 @@ export function App() {
     page: Page
     visited: Record<Page, boolean>
     visits: Record<Page, number>
-  }>({
-    page: 'home',
-    visited: { home: true, nodes: false, subscriptions: false, connections: false, settings: false },
-    visits: { home: 1, nodes: 0, subscriptions: 0, connections: 0, settings: 0 },
+  }>(() => {
+    const storedPage = preferences.getItem('air.lastPage')
+    const initialPage: Page = window.__airTrayResume && isPage(storedPage) ? storedPage : 'home'
+    return {
+      page: initialPage,
+      visited: {
+        home: initialPage === 'home',
+        nodes: initialPage === 'nodes',
+        subscriptions: initialPage === 'subscriptions',
+        connections: initialPage === 'connections',
+        settings: initialPage === 'settings',
+      },
+      visits: {
+        home: initialPage === 'home' ? 1 : 0,
+        nodes: initialPage === 'nodes' ? 1 : 0,
+        subscriptions: initialPage === 'subscriptions' ? 1 : 0,
+        connections: initialPage === 'connections' ? 1 : 0,
+        settings: initialPage === 'settings' ? 1 : 0,
+      },
+    }
   })
   const { page, visited, visits } = nav
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('overview')
   const [ready, setReady] = useState(false)
 
   const activatePage = useCallback((target: Page) => {
+    preferences.setItem('air.lastPage', target)
     setNav(current => {
       if (current.page === target && current.visited[target]) return current
       return {
@@ -475,6 +483,7 @@ export function App() {
   const [installingTun, setInstallingTun] = useState(false)
   const [policyConnection, setPolicyConnection] = useState<ProxyConnection | null>(null)
   const [kernelDraft, setKernelDraft] = useState(store.kernelOverride)
+  const [requestedNodeScope, setRequestedNodeScope] = useState<{ scope: NodeScope; token: number }>()
 
   const selectedNode =
     inspector.kind === 'node'
@@ -516,6 +525,10 @@ export function App() {
     if (!ready) return
     const boot = document.getElementById('air-boot')
     if (!boot) return
+    if (window.__airTrayResume) {
+      boot.remove()
+      return
+    }
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const minDisplayMs = reducedMotion ? 0 : 520
     const shownAt = window.__airSplashShownAt ?? 0
@@ -646,8 +659,8 @@ export function App() {
   const handleSidebarUpdate = useCallback(() => setUpdateOpen(true), [setUpdateOpen])
   const kernelPath = store.kernelPath
   const handleSidebarKernel = useCallback(() => {
-    openSettings(kernelPath ? 'monitoring' : 'kernel')
-  }, [kernelPath, openSettings])
+    openSettings('kernel')
+  }, [openSettings])
 
   function openRouting(from: 'settings' | 'nodes') {
     setRoutingReturn(from)
@@ -1028,6 +1041,11 @@ export function App() {
       if (active) void handleTrayAction(payload).catch(onError)
     })
     void subscription.catch(onError)
+    void invoke<TrayAction | null>('take_pending_tray_action')
+      .then(pending => {
+        if (active && pending) void handleTrayAction(pending).catch(onError)
+      })
+      .catch(onError)
     return () => {
       active = false
       void subscription.then(unlisten => unlisten(), () => {})
@@ -1047,8 +1065,7 @@ export function App() {
       >
         <AppSidebar
           page={page}
-          kernelPath={store.kernelPath}
-          background={store.background}
+          kernelMissing={!kernelPath}
           updateVersion={updates.status.version && !updates.status.ignored ? updates.status.version : undefined}
           updateBusy={updates.busy}
           onNavigate={navigate}
@@ -1095,6 +1112,14 @@ export function App() {
                   onSubscriptions={() => navigate('subscriptions')}
                   onConnections={() => navigate('connections')}
                   onNodes={() => navigate('nodes')}
+                  onOpenGroup={(sourceId, name) => {
+                    if (sourceId && !selectedSubscriptionIds.includes(sourceId)
+                      && store.library.sources.some(source => source.id === sourceId)) {
+                      setSelectedSubscriptionIds([...selectedSubscriptionIds, sourceId])
+                    }
+                    setRequestedNodeScope(prev => ({ scope: { kind: 'group', sourceId, name }, token: (prev?.token ?? 0) + 1 }))
+                    navigate('nodes')
+                  }}
                   onConfigureConnection={setPolicyConnection}
                   pending={proxy.pending}
                   onToggle={toggleProxy}
@@ -1143,6 +1168,7 @@ export function App() {
                   onDeleteCustom={node => void deleteCustomNodeById(node.id)}
                   onRefreshSource={id => void refreshSubscriptionSource(id)}
                   onEditYaml={setYaml}
+                  requestedScope={requestedNodeScope}
                   onError={onError}
                 >
                   {selectedNode ? (

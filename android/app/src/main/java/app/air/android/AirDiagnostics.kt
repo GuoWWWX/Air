@@ -52,7 +52,7 @@ class AirDiagnosticProvider : ContentProvider() {
 
     @Suppress("DEPRECATION")
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
-        check(Binder.getCallingUid() == Process.myUid()) { "诊断仅供 Air 使用" }
+        check(Binder.getCallingUid() == Process.myUid()) { "诊断仅供 Air Proxy 使用" }
         if (method == "cancelProbe") {
             Core.cancelProbe()
             return Bundle().apply { putString("value", "{}") }
@@ -87,7 +87,7 @@ class AirDiagnosticProvider : ContentProvider() {
                         Core.validate(owner, input.getJSONObject("plan"))
                         JSONObject().put("valid", true)
                     }
-                    else -> error("Air 不支持该诊断操作")
+                    else -> error("Air Proxy 不支持该诊断操作")
                 }
             }.get(45, TimeUnit.SECONDS)
         }

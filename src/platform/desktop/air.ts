@@ -166,7 +166,15 @@ export interface ProxyConnection {
   downloadBytes: number
 }
 
+export interface TelemetryCursor {
+  sessionId: string
+  revision: number
+  knownIcons: string[]
+}
+
 export interface ProxyTelemetry extends ProxyTraffic {
+  revision?: number
+  logOrder?: string[]
   sessionId: string
   sampledAt: number
   stale: boolean
@@ -300,7 +308,7 @@ const tauriAir = {
   proxyStatus: () => invoke<ProxyStatus>('proxy_status'),
   installTunService: () => invoke<ProxyStatus>('install_tun_service'),
   proxyExit: (sessionId: string) => invoke<ProxyExit>('proxy_exit', { sessionId }),
-  proxyTelemetry: () => invoke<ProxyTelemetry | null>('proxy_telemetry'),
+  proxyTelemetry: (cursor?: TelemetryCursor) => invoke<ProxyTelemetry | null>('proxy_telemetry', { cursor }),
   resolveApplications: (queries: string[]) =>
     invoke<ResolvedAppIdentity[]>('resolve_applications', { queries }),
   proxyControl: (request: ProxyAction) => invoke<ProxyStatus>('proxy_control', { request }),

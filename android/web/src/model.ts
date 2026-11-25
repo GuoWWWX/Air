@@ -104,6 +104,7 @@ export function restoreLibrary(saved: Partial<Library> & {
   const migrateStack = (saved.networkVersion ?? 0) < mobileNetworkVersion && mergedNetwork.tunStack === 'mixed'
   const resolvedNetwork: MobileNetwork = {
     ...mergedNetwork,
+    bypassLan: mergedNetwork.bypassLan ?? defaultMobileNetwork.bypassLan,
     ...(legacyIpv6 && { ipv6: false, dnsIpv6: false }),
     ...(migrateStack && { tunStack: defaultMobileNetwork.tunStack }),
   }
@@ -216,7 +217,7 @@ export function yamlProfile(text: string) {
     const config = Object.fromEntries(Object.entries(row).filter(([key]) => nodeFields.has(key)))
     nodes.push({ ...config, name, type, server: server.trim(), port })
   }
-  if (!nodes.length) throw new Error(tr('这份订阅没有 Air 支持的节点'))
+  if (!nodes.length) throw new Error(tr('这份订阅没有 Air Proxy 支持的节点'))
   return { profile, nodes, skipped }
 }
 
@@ -269,8 +270,10 @@ export function readLibrary(library: Library) {
   return { profiles, nodes, groups, nodesById: new Map(nodes.map(node => [node.id, node])) }
 }
 
+const probeWindow = 86_400_000
+
 export function stats(samples: ProbeSample[] | undefined) {
-  const day = (samples ?? []).filter(sample => Date.now() - sample.at < 86_400_000)
+  const day = (samples ?? []).filter(sample => Date.now() - sample.at < probeWindow)
   const good = day.filter(sample => sample.delay > 0)
   return {
     latest: day.at(-1)?.delay,
@@ -679,12 +682,51 @@ export function compile(library: Library, model = readLibrary(library), previewS
   }
   const tunnel = {
     stack: network.tunStack, mtu: network.tunMtu ?? 9000, dnsHijack: network.dnsHijack,
+    bypassLan: network.bypassLan,
     exclusions: network.routeExcludeAddress.map(ipPrefix).filter((value): value is string => Boolean(value)),
   }
   return { plan: { config, ipv6: network.ipv6, tunnel, select: { GLOBAL: active }, localHosts, probeTargets,
     outboundLabel: library.mode === 'direct' ? '' : (selectionName(choice, model, library) ?? ''),
     ...(hostSources.size > 0 && { hostScopes: { tables, byProxy, active: activeScope } }),
   }, byId, labels, choice, ruleSourceId: effectiveSubscriptionId, ruleReference: reference }
+}
+
+// The same single-entry cache serves rendering and the save/apply path.
+export function createRoutingCompiler() {
+  let libraryInputs: readonly unknown[] = []
+  let planInputs: readonly unknown[] = []
+  let model: ReturnType<typeof readLibrary>
+  let plan: ReturnType<typeof compile>
+  let needsProbes = false
+  let expiresAt = Infinity
+  function prepare(library: Library) {
+    const input = [library.sources, library.nodes, library.groups, library.hiddenNodes, library.edits]
+    if (input.some((value, i) => value !== libraryInputs[i])) {
+      model = readLibrary(library)
+      needsProbes = model.groups.some(group => group.automatic)
+      libraryInputs = input
+    }
+    const dependencies = [model, library.network, library.routing, library.chains, library.choice,
+      library.mode, needsProbes ? library.probes : undefined]
+    const now = Date.now()
+    if (now >= expiresAt || dependencies.some((value, i) => value !== planInputs[i])) {
+      plan = compile(library, model)
+      planInputs = dependencies
+      expiresAt = Infinity
+      if (needsProbes) {
+        for (const samples of Object.values(library.probes)) {
+          for (const sample of samples) {
+            const expiry = sample.at + probeWindow
+            if (expiry > now) {
+              expiresAt = Math.min(expiresAt, expiry)
+            }
+          }
+        }
+      }
+    }
+    return { model, compiled: plan, expiresAt }
+  }
+  return prepare
 }
 
 export function canStart(library: Library, choice?: Choice) {

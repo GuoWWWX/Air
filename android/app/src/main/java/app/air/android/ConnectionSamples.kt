@@ -3,12 +3,28 @@ package app.air.android
 import org.json.JSONArray
 import org.json.JSONObject
 
+// Sampled rows and their nested metadata are immutable after capture.
+internal fun JSONObject.copyFields() = JSONObject().also { copy ->
+    for (key in keys()) copy.put(key, get(key))
+}
+
 internal class ConnectionSamples {
-    private data class Seen(val row: JSONObject, val at: Long)
+    private class Seen(val row: JSONObject, val at: Long) {
+        var closed: JSONObject? = null
+            private set
+        var revision = 0L
+            private set
+
+        fun close(wallTime: Long, revision: Long) {
+            closed = row.copyFields().put("closed", true).put("closedAt", wallTime)
+            this.revision = revision
+        }
+    }
 
     private val recent = LinkedHashMap<String, Seen>()
     private var active: JSONArray? = null
     private var sampledAt = 0L
+    private var revision = 0L
 
     @Synchronized
     fun record(rows: JSONArray, now: Long) {
@@ -25,15 +41,15 @@ internal class ConnectionSamples {
         recent.entries.removeAll { now - it.value.at > HISTORY_MILLIS }
     }
 
-    fun read(now: Long, live: () -> JSONArray): JSONArray {
+    fun read(now: Long, since: Long, live: () -> JSONArray): JSONObject {
         synchronized(this) {
-            active?.takeIf { now - sampledAt <= CACHE_MILLIS }?.let { return withClosed(it, now) }
+            active?.takeIf { now - sampledAt <= CACHE_MILLIS }?.let { return withClosed(it, now, since) }
         }
         val rows = live()
-        return synchronized(this) { withClosed(if (sampledAt > now) active ?: rows else rows, now) }
+        return synchronized(this) { withClosed(if (sampledAt > now) active ?: rows else rows, now, since) }
     }
 
-    private fun withClosed(rows: JSONArray, now: Long): JSONArray {
+    private fun withClosed(rows: JSONArray, now: Long, since: Long): JSONObject {
         val result = JSONArray()
         val ids = HashSet<String>()
         for (index in 0 until rows.length()) {
@@ -41,14 +57,25 @@ internal class ConnectionSamples {
             ids.add(row.optString("id"))
             result.put(row)
         }
+        val cursor = if (since in 0..revision) since else 0L
         val wall = System.currentTimeMillis()
         for ((id, seen) in recent) {
             val age = (now - seen.at).coerceAtLeast(0)
             if (id !in ids && age <= HISTORY_MILLIS) {
-                result.put(JSONObject(seen.row.toString()).put("closed", true).put("closedAt", wall - age))
+                if (seen.closed == null) seen.close(wall - age, ++revision)
+                if (seen.revision > cursor) result.put(seen.closed)
             }
         }
-        return result
+        return JSONObject().put("connections", result).put("revision", revision)
+    }
+
+    @Synchronized
+    fun clearClosed() {
+        val ids = HashSet<String>()
+        active?.let { rows ->
+            for (i in 0 until rows.length()) rows.optJSONObject(i)?.optString("id")?.let(ids::add)
+        }
+        recent.entries.removeAll { it.value.closed != null || it.key !in ids }
     }
 
     @Synchronized

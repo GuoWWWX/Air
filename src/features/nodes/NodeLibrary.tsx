@@ -105,6 +105,7 @@ interface Props {
   totalSubscriptionCount?: number
   onShowAllSubscriptions?: () => void
   onManageSubscriptions?: () => void
+  requestedScope?: { scope: NodeScope; token: number }
   visitKey?: number
   children?: ReactNode
 }
@@ -188,6 +189,7 @@ export function NodeLibrary({
   totalSubscriptionCount,
   onShowAllSubscriptions,
   onManageSubscriptions,
+  requestedScope,
   visitKey,
   children,
 }: Props) {
@@ -239,6 +241,12 @@ export function NodeLibrary({
   })
   const [selecting, setSelecting] = useState(false)
   const [requestedPage, setPage] = useState(1)
+
+  useEffect(() => {
+    if (!requestedScope) return
+    setScope(requestedScope.scope)
+    setPage(1)
+  }, [requestedScope])
   const [pageSize, setPageSize] = useState(() => {
     const saved = Number(preferences.getItem('air.nodePageSize'))
     return pageSizes.some(item => Number(item.value) === saved) ? saved : defaultPageSize

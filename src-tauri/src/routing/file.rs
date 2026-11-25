@@ -97,7 +97,7 @@ impl RoutingFile {
             "mixed-port",
         ] {
             if mapping.contains_key(key) {
-                return Err(format!("顶层的 {key} 不是 Air 配置项。网络设置写在 network 下，分流设置写在 routing 下。"));
+                return Err(format!("顶层的 {key} 不是 Air Proxy 配置项。网络设置写在 network 下，分流设置写在 routing 下。"));
             }
         }
         network_section(&mapping)?.validate()?;
@@ -130,12 +130,37 @@ impl RoutingFile {
             nameserver: vec!["system".into()], proxy_server_nameserver: vec![], enhanced_mode: "auto".into(),
             respect_rules: false, strict_route: false, tcp_concurrent: false, ..NetworkSettings::default()
         };
-        let template = serde_yaml::to_string(&serde_json::json!({ "routing": RoutingConfig::default(), "network": legacy }))
-            .map_err(yaml_error)?;
-        if fs::metadata(self.path()).is_ok_and(|m| m.len() == template.len() as u64)
-            && fs::read(self.path()).is_ok_and(|bytes| bytes == template.as_bytes())
-        {
-            self.save_network(&NetworkSettings::default(), &digest(template))?;
+        let previous_windows = NetworkSettings {
+            strict_route: true,
+            ..NetworkSettings::default()
+        };
+        let mut templates = vec![
+            serde_yaml::to_string(&serde_json::json!({ "routing": RoutingConfig::default(), "network": &legacy }))
+                .map_err(yaml_error)?,
+        ];
+        for candidate in [&legacy, &previous_windows, &NetworkSettings::default()] {
+            let mut network_val = serde_json::to_value(candidate)
+                .map_err(|_| "无法序列化默认网络配置")?;
+            if let Some(obj) = network_val.as_object_mut() {
+                obj.remove("bypassLan");
+            }
+            templates.push(
+                serde_yaml::to_string(&serde_json::json!({
+                    "routing": RoutingConfig::default(),
+                    "network": network_val,
+                }))
+                .map_err(yaml_error)?,
+            );
+        }
+        let Ok(meta) = fs::metadata(self.path()) else {
+            return Ok(());
+        };
+        if templates.iter().any(|t| meta.len() == t.len() as u64) {
+            if let Ok(bytes) = fs::read(self.path()) {
+                if let Some(template) = templates.iter().find(|t| bytes == t.as_bytes()) {
+                    self.save_network(&NetworkSettings::default(), &digest(template))?;
+                }
+            }
         }
         Ok(())
     }

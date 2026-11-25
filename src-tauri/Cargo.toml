@@ -1,12 +1,12 @@
 [package]
 name = "air"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.89"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-single-instance", "dep:ed25519-dalek", "dep:flate2", "dep:semver", "dep:ico", "dep:image", "dep:quick-xml"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-single-instance", "dep:ed25519-dalek", "dep:flate2", "dep:semver", "dep:ico", "dep:image", "dep:quick-xml", "dep:webview2-com", "dep:windows-core"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]
@@ -28,7 +28,7 @@ image = { version = "0.25", default-features = false, features = ["png"], option
 reqwest = { version = "0.13", default-features = false, features = ["gzip", "json", "native-tls", "stream", "system-proxy"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 semver = { version = "1", features = ["serde"], optional = true }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
@@ -39,6 +39,8 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+webview2-com = { version = "0.38", optional = true }
+windows-core = { version = "0.61", optional = true }
 quick-xml = { version = "0.42", features = ["serialize"], optional = true }
 tauri-plugin-single-instance = { version = "2.4.2", optional = true }
 windows-service = "0.8.0"

@@ -39,10 +39,25 @@ export async function native<T>(
       localStorage.setItem('air.android.preview', JSON.stringify({ ...saved, ...data }))
       return true as T
     }
-    if (action === 'status') return { phase: 'idle', traffic: {}, startedAt: 0 } as T
+    if (action === 'status') {
+      return (JSON.parse(localStorage.getItem('air.android.preview.status') ?? 'null')
+        ?? { phase: 'idle', traffic: {}, startedAt: 0 }) as T
+    }
+    if (action === 'kernelInfo') {
+      return (JSON.parse(localStorage.getItem('air.android.preview.kernel') ?? 'null')
+        ?? { version: 'v1.19.32', abi: 'arm64-v8a', sdk: 36, appVersion: '1.1.0' }) as T
+    }
+    if (action === 'exit') {
+      const savedExit = localStorage.getItem('air.android.preview.exit')
+      if (savedExit) return JSON.parse(savedExit) as T
+    }
+    if (action === 'connections') {
+      const savedConnections = localStorage.getItem('air.android.preview.connections')
+      if (savedConnections) return JSON.parse(savedConnections) as T
+    }
     if (action === 'applications') return {} as T
     if (action === 'theme' || action === 'ready' || action === 'cancelProbe') return true as T
-    throw new Error(tr('请在 Android 版 Air 中使用此功能'))
+    throw new Error(tr('请在 Android 版 Air Proxy 中使用此功能'))
   }
   const activePort = port
   return new Promise<T>((resolve, reject) => {

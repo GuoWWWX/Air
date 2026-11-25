@@ -8,8 +8,8 @@ import { Separator } from '@/shared/ui/separator'
 import { Switch } from '@/shared/ui/switch'
 
 const options = [
-  { key: 'login', get title() { return tr('开机自启动') }, get description() { return tr('登录 Windows 后自动打开 Air') }, icon: LogIn },
-  { key: 'proxy', get title() { return tr('打开 Air 时总是启动代理') }, get description() { return tr('关闭此项后，下次打开 Air 时代理保持关闭') }, icon: Power },
+  { key: 'login', get title() { return tr('开机自启动') }, get description() { return tr('登录 Windows 后自动打开 Air Proxy') }, icon: LogIn },
+  { key: 'proxy', get title() { return tr('打开 Air Proxy 时总是启动代理') }, get description() { return tr('关闭此项后，下次打开 Air Proxy 时代理保持关闭') }, icon: Power },
 ] as const
 
 let cachedStartup: StartupSettings | undefined

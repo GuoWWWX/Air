@@ -71,6 +71,31 @@ internal object Core {
 
     fun hasActiveProfile() = profile != null
 
+    fun activePlan(): JSONObject? = profile?.plan?.let { JSONObject(it.toString()) }
+
+    fun applyNetwork(context: Context, plan: JSONObject) {
+        val previous = checkNotNull(profile) { "Mihomo 尚未启动" }
+        val next = Profile(plan, configFor(plan))
+        val modeChanged = previous.mode != next.mode
+        val outboundChanged = previous.selected.optString("GLOBAL") != next.selected.optString("GLOBAL")
+        if (sameConfig(previous, next)) {
+            updateOutbound(previous, next)
+            profile = next
+            if (modeChanged) {
+                runCatching { action("closeAllConnections") }
+            } else if (outboundChanged) {
+                closeProxiedConnections()
+            }
+            return
+        }
+        applyFull(context, next, previous)
+        if (modeChanged) {
+            runCatching { action("closeAllConnections") }
+        } else if (outboundChanged) {
+            closeProxiedConnections()
+        }
+    }
+
     fun applyLive(context: Context, plan: JSONObject) {
         val previous = checkNotNull(profile) { "Mihomo 尚未启动" }
         val activeConfig = previous.plan.getJSONObject("config")

@@ -1,9 +1,9 @@
 mod artwork;
 mod menu_icons;
 
-use crate::languages::tr;
+use crate::{commands, languages::tr};
 use self::artwork::TaskbarAppearance;
-use air::proxy::{Mode, Status};
+use air::proxy::{Action as ProxyAction, Mode, Status};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -17,7 +17,7 @@ const EVENT: &str = "air://tray-action";
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
-enum TrayAction {
+pub(crate) enum TrayAction {
     Start,
     Stop,
     Mode { mode: Mode },
@@ -25,6 +25,9 @@ enum TrayAction {
     Tun { enabled: bool },
     ReportError { message: String },
 }
+
+#[derive(Default)]
+pub(crate) struct PendingTrayAction(Mutex<Option<TrayAction>>);
 
 #[derive(Clone, Copy, Default, PartialEq)]
 struct MenuState {
@@ -57,10 +60,10 @@ impl MenuState {
 impl TrayStatusIcon {
     fn tooltip(self) -> &'static str {
         match self {
-            Self::Stopped => "Air · 代理已停止",
-            Self::Running => "Air · 代理运行中",
-            Self::SystemProxy => "Air · 系统代理已启用",
-            Self::Tun => "Air · TUN 已启用",
+            Self::Stopped => "Air Proxy · 代理已停止",
+            Self::Running => "Air Proxy · 代理运行中",
+            Self::SystemProxy => "Air Proxy · 系统代理已启用",
+            Self::Tun => "Air Proxy · TUN 已启用",
         }
     }
 }
@@ -151,11 +154,11 @@ pub fn setup(app: &App) -> tauri::Result<()> {
         ..MenuState::default()
     };
     let icon = state.appearance.image(state.status_icon())?;
-    let show = icon_item("tray-show", "打开 Air", true)?;
+    let show = icon_item("tray-show", "打开 Air Proxy", true)?;
     let power = icon_item("tray-power", "启动代理", true)?;
     let route = icon_item("tray-route-heading", "出站模式", false)?;
     let network = icon_item("tray-network-heading", "网络接管", false)?;
-    let exit = icon_item("tray-exit", "退出 Air", true)?;
+    let exit = icon_item("tray-exit", "退出 Air Proxy", true)?;
     let modes = [
         (
             Mode::Rule,
@@ -194,7 +197,7 @@ pub fn setup(app: &App) -> tauri::Result<()> {
     icons.apply(state.appearance.icon_size, state.running, false)?;
     app.manage(TrayMenu {
         state: Mutex::new(state),
-        captions: [("打开 Air", show), ("出站模式", route), ("网络接管", network), ("退出 Air", exit)],
+        captions: [("打开 Air Proxy", show), ("出站模式", route), ("网络接管", network), ("退出 Air Proxy", exit)],
         power,
         icons: Mutex::new(icons),
         modes,
@@ -265,35 +268,103 @@ pub fn sync(app: &AppHandle, status: &Status) {
     });
 }
 
+fn queue_pending_and_show(app: &AppHandle, action: TrayAction) {
+    if app.get_webview_window("main").is_some() {
+        let _ = app.emit(EVENT, action);
+    } else if let Some(pending) = app.try_state::<PendingTrayAction>() {
+        *pending.0.lock().expect("pending tray action poisoned") = Some(action);
+    }
+    let _ = show_window(app);
+}
+
+#[tauri::command]
+pub fn take_pending_tray_action(pending: tauri::State<'_, PendingTrayAction>) -> Option<TrayAction> {
+    pending.0.lock().expect("pending tray action poisoned").take()
+}
+
 fn on_menu(app: &AppHandle, id: &str) -> tauri::Result<()> {
     match id {
         "tray-show" => show_window(app)?,
         "tray-exit" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let state = app.state::<Arc<crate::commands::App>>();
+                let state = app.state::<Arc<commands::App>>();
                 let result = state.proxy.lock().await.stop().await;
                 match result {
                     Ok(()) => app.exit(0),
                     Err(error) => {
-                        let _ = app.emit(
-                            EVENT,
+                        queue_pending_and_show(
+                            &app,
                             TrayAction::ReportError {
-                                message: format!("退出 Air 失败：{error}"),
+                                message: format!("退出 Air Proxy 失败：{error}"),
                             },
                         );
-                        let _ = show_window(&app);
                     }
                 }
             });
         }
         _ => {
             if let Some(action) = app.state::<TrayMenu>().action(id)? {
-                app.emit(EVENT, action)?;
+                if app.get_webview_window("main").is_some() {
+                    app.emit(EVENT, action)?;
+                } else {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        execute_headless_action(&app, action).await;
+                    });
+                }
             }
         }
     }
     Ok(())
+}
+
+async fn execute_headless_action(app: &AppHandle, action: TrayAction) {
+    let state = app.state::<Arc<commands::App>>();
+    let request = match action {
+        TrayAction::Start => {
+            let Some(kernel_path) = state
+                .saved_kernel_override()
+                .or_else(commands::default_kernel_path)
+            else {
+                queue_pending_and_show(app, TrayAction::Start);
+                return;
+            };
+            let target = match state.saved_tray_start_target() {
+                Ok(target) => target,
+                Err(message) => {
+                    queue_pending_and_show(app, TrayAction::ReportError { message });
+                    return;
+                }
+            };
+            ProxyAction::Start {
+                kernel_path,
+                target,
+            }
+        }
+        TrayAction::Stop => ProxyAction::Stop,
+        TrayAction::Mode { mode } => ProxyAction::Mode { mode },
+        TrayAction::SystemProxy { enabled } => ProxyAction::SystemProxy { enabled },
+        TrayAction::Tun { enabled } => {
+            let ready = state
+                .proxy
+                .lock()
+                .await
+                .status()
+                .await
+                .ok()
+                .and_then(|status| status.tun_service_ready);
+            if enabled && ready == Some(false) {
+                queue_pending_and_show(app, TrayAction::Tun { enabled: true });
+                return;
+            }
+            ProxyAction::Tun { enabled }
+        }
+        TrayAction::ReportError { .. } => return,
+    };
+    if let Err(message) = commands::execute_proxy_control(state.inner(), app, request).await {
+        queue_pending_and_show(app, TrayAction::ReportError { message });
+    }
 }
 
 #[tauri::command]
@@ -302,18 +373,7 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn show_window(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(startup) = app.try_state::<crate::StartupReveal>() {
-        startup.0.store(true, std::sync::atomic::Ordering::Release);
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        app.state::<Arc<crate::commands::App>>().set_window_hidden(false);
-        window.show()?;
-        if window.is_minimized()? {
-            window.unminimize()?;
-        }
-        window.set_focus()?;
-    }
-    Ok(())
+    crate::ensure_main_window_shown(app)
 }
 
 #[cfg(test)]

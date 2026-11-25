@@ -8,6 +8,7 @@ declare global {
     airBootTheme?: { preference: ThemeMode; systemDark: boolean | null }
     __airSplashRevealed?: boolean
     __airSplashShownAt?: number
+    __airTrayResume?: boolean
     __airFindDisabled?: boolean
   }
 }

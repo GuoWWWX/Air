@@ -44,6 +44,8 @@ import org.json.JSONObject
 import org.json.JSONArray
 import java.io.File
 import java.io.ByteArrayOutputStream
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.URI
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
@@ -111,7 +113,7 @@ class MainActivity : ComponentActivity() {
         })
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             container.addView(TextView(this).apply {
-                text = Languages.read(this@MainActivity).getJSONObject("messages").getString("请更新 Android System WebView 后重新打开 Air。")
+                text = Languages.read(this@MainActivity).getJSONObject("messages").getString("请更新 Android System WebView 后重新打开 Air Proxy。")
                 setTextColor(if (currentDark) Color.rgb(244, 244, 245) else Color.rgb(27, 36, 53))
                 setPadding(32, 48, 32, 32)
             })
@@ -207,11 +209,13 @@ class MainActivity : ComponentActivity() {
                 "cancelProbe" -> work(message, networkRequests) {
                     AirDiagnostics.run(this, "cancelProbe", data)
                 }
-                "checkUpdate" -> work(message, networkRequests) { checkForAndroidUpdate(appVersion()) }
+                "checkUpdate" -> work(message, networkRequests) {
+                    checkForAndroidUpdate(appVersion(), AirVpnService.snapshot().optInt("port", 0))
+                }
                 "openLink" -> {
                     val url = data.getString("url")
                     require(url == "https://github.com/GuoWWWX" || url.startsWith(RELEASE_PAGE_PREFIX)) {
-                        "无效的 Air 链接"
+                        "无效的 Air Proxy 链接"
                     }
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     message.send()
@@ -222,7 +226,7 @@ class MainActivity : ComponentActivity() {
                     message.send(clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty())
                 }
                 "copy" -> {
-                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Air", data.getString("text")))
+                    getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Air Proxy", data.getString("text")))
                     message.send()
                 }
                 "stagedSubscription" -> work(message, requests) {
@@ -257,12 +261,20 @@ class MainActivity : ComponentActivity() {
                     }
                     true
                 }
+                "applyNetwork" -> work(message, Core.worker) {
+                    AirVpnService.reconfigure(this, data)
+                    true
+                }
                 "runtimeConfig" -> work(message, Core.worker) {
                     if (AirVpnService.running()) Core.activeConfig() ?: JSONObject.NULL else JSONObject.NULL
                 }
                 "status" -> message.send(AirVpnService.snapshot())
                 "connections" -> work(message, requests) {
-                    withApplicationIcons(AirVpnService.connections())
+                    withApplicationIcons(AirVpnService.connections(data.optLong("revision")), data.optJSONArray("knownPackages"))
+                }
+                "clearConnectionLogs" -> {
+                    AirVpnService.clearConnectionLogs()
+                    message.send()
                 }
                 "applications" -> work(message, requests) {
                     resolveApplications(data.optJSONArray("packages"))
@@ -345,7 +357,11 @@ class MainActivity : ComponentActivity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun withApplicationIcons(data: JSONObject): JSONObject {
+    private fun withApplicationIcons(data: JSONObject, knownPackages: JSONArray?): JSONObject {
+        val known = HashSet<String>()
+        if (knownPackages != null) {
+            for (i in 0 until minOf(128, knownPackages.length())) known.add(knownPackages.optString(i))
+        }
         val connections = data.optJSONArray("connections") ?: return data
         val visible = JSONArray()
         val apps = JSONObject()
@@ -360,10 +376,10 @@ class MainActivity : ComponentActivity() {
                 if (uid > 0) packageManager.getPackagesForUid(uid)?.firstOrNull().orEmpty() else ""
             }
             val identified = if (reportedPackage.isBlank() && pkg.isNotBlank()) {
-                JSONObject(connection.toString()).apply { getJSONObject("metadata").put("process", pkg) }
+                connection.copyFields().put("metadata", meta.copyFields().put("process", pkg))
             } else connection
             visible.put(identified)
-            if (pkg.isBlank() || visited.size >= 128 || !visited.add(pkg)) continue
+            if (pkg.isBlank() || pkg in known || visited.size >= 128 || !visited.add(pkg)) continue
             val info = resolveApplication(pkg, cacheEmpty = true)
             if (info.has("name")) apps.put(pkg, info)
         }
@@ -394,9 +410,10 @@ class MainActivity : ComponentActivity() {
         )
         fun fail(reason: String) = deliver(JSONObject().put("id", id).put("error", reason.take(400)))
         private fun deliver(data: JSONObject) {
+            val payload = data.toString()
             runOnUiThread {
                 if (!isDestroyed && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                    runCatching { reply.postMessage(data.toString()) }
+                    runCatching { reply.postMessage(payload) }
                 }
             }
         }
@@ -657,6 +674,12 @@ class MainActivity : ComponentActivity() {
         if (delay == 0L) finish.run() else mainHandler.postDelayed(finish, delay)
     }
 
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) applications.evictAll()
+    }
+
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
         splashTimeoutRunnable = null
@@ -697,17 +720,26 @@ private const val MAX_SUBSCRIPTION = 8 * 1024 * 1024
 private const val GITHUB_REPOSITORY = "GuoWWWX/Air-Proxy"
 private const val RELEASE_PAGE_PREFIX = "https://github.com/$GITHUB_REPOSITORY/releases/"
 
-private fun checkForAndroidUpdate(current: String): JSONObject {
+private fun checkForAndroidUpdate(current: String, proxyPort: Int): JSONObject {
     val api = URI("https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=20")
-    val connection = api.toURL().openConnection() as HttpsURLConnection
-    connection.connectTimeout = 8500
-    connection.readTimeout = 8500
-    connection.setRequestProperty("User-Agent", "Air-Android/$current")
-    connection.setRequestProperty("Accept", "application/vnd.github+json")
-    val releases = try {
-        check(connection.responseCode == 200) { "无法检查 GitHub 版本 · HTTP ${connection.responseCode}" }
-        connection.inputStream.use { JSONArray(readBounded(it, 2 * 1024 * 1024).toString(Charsets.UTF_8)) }
-    } finally { connection.disconnect() }
+    fun fetch(proxy: Proxy?): JSONArray {
+        val connection = (proxy?.let { api.toURL().openConnection(it) } ?: api.toURL().openConnection()) as HttpsURLConnection
+        connection.connectTimeout = 8500
+        connection.readTimeout = 8500
+        connection.setRequestProperty("User-Agent", "Air-Proxy-Android/$current")
+        connection.setRequestProperty("Accept", "application/vnd.github+json")
+        return try {
+            check(connection.responseCode == 200) { "无法检查 GitHub 版本 · HTTP ${connection.responseCode}" }
+            connection.inputStream.use { JSONArray(readBounded(it, 2 * 1024 * 1024).toString(Charsets.UTF_8)) }
+        } finally { connection.disconnect() }
+    }
+    val releases = runCatching { fetch(null) }.getOrElse { directError ->
+        if (proxyPort > 0) {
+            fetch(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
+        } else {
+            throw directError
+        }
+    }
     val version = Regex("""^v?(\d+)\.(\d+)\.(\d+)$""")
     fun number(value: String): List<Int>? = version.matchEntire(value)?.groupValues?.drop(1)?.map {
         it.toIntOrNull() ?: return null
@@ -725,11 +757,35 @@ private fun checkForAndroidUpdate(current: String): JSONObject {
         val candidate = number(tag) ?: continue
         if (!newer(candidate, latest)) continue
         val assets = release.optJSONArray("assets") ?: continue
-        if ((0 until assets.length()).none { assets.getJSONObject(it).optString("name").endsWith(".apk", true) }) continue
+        val apkAssets = (0 until assets.length())
+            .map { assets.getJSONObject(it) }
+            .filter { it.optString("name").endsWith(".apk", true) }
+        if (apkAssets.isEmpty()) continue
         val page = release.optString("html_url")
         if (!page.startsWith(RELEASE_PAGE_PREFIX)) continue
+        val downloadPrefix = "${RELEASE_PAGE_PREFIX}download/"
+        val validApks = apkAssets.filter { it.optString("browser_download_url").startsWith(downloadPrefix) }
+        val preferredAbi = Build.SUPPORTED_ABIS.firstOrNull { abi ->
+            abi == "arm64-v8a" || abi == "armeabi-v7a" || abi == "x86_64"
+        }
+        val bestApk = (preferredAbi?.let { abi ->
+            validApks.firstOrNull { it.optString("name").contains(abi, ignoreCase = true) }
+        } ?: validApks.firstOrNull {
+            it.optString("name").contains("universal", ignoreCase = true)
+        } ?: validApks.firstOrNull())
         latest = candidate
         result.put("version", tag.removePrefix("v")).put("url", page)
+        if (bestApk != null) {
+            result.put("downloadUrl", bestApk.optString("browser_download_url"))
+        } else {
+            result.remove("downloadUrl")
+        }
+        val notes = release.optString("body").trim().take(4000)
+        if (notes.isNotEmpty()) {
+            result.put("notes", notes)
+        } else {
+            result.remove("notes")
+        }
     }
     return result
 }

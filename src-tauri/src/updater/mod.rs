@@ -86,14 +86,19 @@ pub struct Updater {
     operation: Arc<tokio::sync::Mutex<()>>,
 }
 
+async fn active_proxy_port(app: &AppHandle) -> Option<u16> {
+    let state = app.try_state::<Arc<crate::commands::App>>()?;
+    let proxy = state.proxy.lock().await;
+    proxy.subscription_proxy_port()
+}
+
 impl Updater {
-    pub fn open(data: &Path) -> Result<Self, String> {
-        let root = data.join("updates");
-        let client = Client::builder()
+    fn build_client(proxy_port: Option<u16>) -> Result<Client, String> {
+        let mut builder = Client::builder()
             .connect_timeout(Duration::from_secs(12))
             .read_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(180))
-            .user_agent(concat!("Air/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Air-Proxy/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::custom(|redirect| {
                 if redirect.previous().len() < 5
                     && package::allowed_url(redirect.url())
@@ -106,9 +111,18 @@ impl Updater {
                 } else {
                     redirect.error("invalid update redirect")
                 }
-            }))
-            .build()
-            .map_err(|_| "无法初始化更新连接")?;
+            }));
+        if let Some(port) = proxy_port {
+            let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))
+                .map_err(|_| "无法配置 Air Proxy 下载代理")?;
+            builder = builder.no_proxy().proxy(proxy);
+        }
+        builder.build().map_err(|_| "无法初始化更新连接".into())
+    }
+
+    pub fn open(data: &Path) -> Result<Self, String> {
+        let root = data.join("updates");
+        let client = Self::build_client(None)?;
         Ok(Self {
             root,
             client,
@@ -163,30 +177,49 @@ impl Updater {
         });
     }
 
-    async fn read_feed(&self, url: Url) -> Result<Option<Arc<[u8]>>, String> {
-        let mut response = self
-            .client
+    async fn read_feed_with(client: &Client, url: Url) -> Result<Option<Arc<[u8]>>, (bool, String)> {
+        let mut response = client
             .get(url)
             .send()
             .await
-            .map_err(|_| "无法连接更新服务器")?;
+            .map_err(|_| (true, "无法连接更新服务器".to_owned()))?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
         if !response.status().is_success() {
-            return Err(format!(
-                "更新服务器返回 HTTP {}",
-                response.status().as_u16()
+            return Err((
+                false,
+                format!("更新服务器返回 HTTP {}", response.status().as_u16()),
             ));
         }
         let mut raw = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| "更新清单下载中断")? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| (false, "更新清单下载中断".to_owned()))?
+        {
             if raw.len() + chunk.len() > MAX_MANIFEST {
-                return Err("更新清单过大".into());
+                return Err((false, "更新清单过大".to_owned()));
             }
             raw.extend_from_slice(&chunk);
         }
         Ok(Some(raw.into()))
+    }
+
+    async fn read_feed(&self, app: &AppHandle, url: Url) -> Result<Option<Arc<[u8]>>, String> {
+        match Self::read_feed_with(&self.client, url.clone()).await {
+            Ok(raw) => Ok(raw),
+            Err((true, error)) => {
+                let Some(port) = active_proxy_port(app).await else {
+                    return Err(error);
+                };
+                let proxy_client = Self::build_client(Some(port))?;
+                Self::read_feed_with(&proxy_client, url)
+                    .await
+                    .map_err(|(_, fallback_error)| fallback_error)
+            }
+            Err((false, error)) => Err(error),
+        }
     }
 
     async fn check(&self, app: &AppHandle) {
@@ -217,7 +250,7 @@ impl Updater {
             return;
         };
         self.phase(app, Phase::Checking, None);
-        let found = self.read_feed(url).await.and_then(|raw| {
+        let found = self.read_feed(app, url).await.and_then(|raw| {
             raw.map(|raw| package::verify(&raw, &key).map(|manifest| (raw, manifest)))
                 .transpose()
         });
@@ -254,6 +287,7 @@ impl Updater {
         self.phase(app, Phase::Preparing, None);
 
         let mut url = Url::parse(&manifest.asset).map_err(|_| "更新包地址无效")?;
+        let mut download_client = self.client.clone();
         for attempt in 0..3 {
             let plan = tokio::task::spawn_blocking({
                 let (manifest, install, cache) = (manifest.clone(), install.clone(), cache.clone());
@@ -276,7 +310,7 @@ impl Updater {
             let mut result = Ok(());
             for block in &plan {
                 result = package::fetch_block(
-                    &self.client,
+                    &download_client,
                     &mut url,
                     manifest.asset_size,
                     block,
@@ -306,6 +340,11 @@ impl Updater {
                 Err(error) => {
                     self.phase(app, Phase::Downloading, Some(format!("{error}，正在重试")));
                     tokio::time::sleep(Duration::from_secs(2 << attempt)).await;
+                    if let Some(port) = active_proxy_port(app).await {
+                        if let Ok(client) = Self::build_client(Some(port)) {
+                            download_client = client;
+                        }
+                    }
                     url = Url::parse(&manifest.asset).map_err(|_| "更新包地址无效")?;
                 }
             }

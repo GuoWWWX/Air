@@ -140,6 +140,7 @@ export function Dashboard({
   onConnections,
   onConfigureConnection,
   onNodes,
+  onOpenGroup,
   pending,
   onToggle,
   onControl,
@@ -161,6 +162,7 @@ export function Dashboard({
   onConnections: () => void
   onConfigureConnection: (connection: ProxyConnection) => void
   onNodes: () => void
+  onOpenGroup?: (sourceId: string, name: string) => void
   pending: 'start' | 'stop' | undefined
   onToggle: () => void
   onControl: (action: ProxyModeAction) => void
@@ -637,8 +639,8 @@ export function Dashboard({
           {telemetry?.stale && <CardFooter className="text-xs text-muted-foreground">{tr("显示最近一次采样")}</CardFooter>}
         </Card>
 
-        <Card className="gap-3 p-4">
-          <CardHeader>
+        <Card className="min-h-0 min-w-0 gap-3 p-4 max-lg:max-h-[24rem]">
+          <CardHeader className="shrink-0">
             <div className="flex items-center gap-2">
               <Layers className="size-4 text-primary" />
               <CardTitle>{tr("分组")}</CardTitle>
@@ -651,18 +653,19 @@ export function Dashboard({
           </CardHeader>
 
           {groups.length > 0 ? (
-            <div className="flex flex-col gap-2">
-              {groups.slice(0, 3).map((group, index) => {
+            <div className="air-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-0.5">
+              {groups.map(group => {
                 const sourceName = sources.find(source => source.id === group.sourceId)?.name
                 const memberCount = (group.memberNames ?? group.members).length
+                const isSelected = Boolean(outboundGroupName && group.name === outboundGroupName)
                 return (
                   <button
                     key={group.sourceId + ':' + group.name}
                     type="button"
-                    onClick={onNodes}
+                    onClick={() => (onOpenGroup ? onOpenGroup(group.sourceId, group.name) : onNodes())}
                     className={cn(
-                      'group flex w-full cursor-pointer flex-col gap-1 rounded-[8px] border px-3 py-2.5 text-left outline-none transition-[transform,color,background-color,border-color,box-shadow] duration-150 focus-visible:ring-2 focus-visible:ring-ring/60 active:scale-[0.985]',
-                      index === 0
+                      'group flex w-full shrink-0 cursor-pointer flex-col gap-1 rounded-[8px] border px-3 py-2.5 text-left outline-none transition-[transform,color,background-color,border-color,box-shadow] duration-150 focus-visible:ring-2 focus-visible:ring-ring/60 active:scale-[0.985]',
+                      isSelected
                         ? 'border-accent-border/45 bg-accent-soft/65 hover:border-primary/50 hover:bg-accent-soft'
                         : 'border-border bg-muted/55 hover:border-accent-border hover:bg-accent-soft/45 dark:bg-[#252730]',
                     )}
@@ -671,7 +674,7 @@ export function Dashboard({
                       <strong
                         className={cn(
                           'truncate text-xs font-semibold transition-colors group-hover:text-primary',
-                          index === 0 ? 'text-primary' : 'text-foreground',
+                          isSelected ? 'text-primary' : 'text-foreground',
                         )}
                         title={group.name}
                       >
@@ -679,7 +682,7 @@ export function Dashboard({
                       </strong>
                       <div className="flex shrink-0 items-center gap-1">
                         {group.strategy && (
-                          <Badge variant={index === 0 ? 'accent' : 'default'}>
+                          <Badge variant={isSelected ? 'accent' : 'default'}>
                             {group.strategy}
                           </Badge>
                         )}

@@ -1,4 +1,4 @@
-import { tr } from '@/shared/i18n/messages'
+import { tr, useLanguage } from '@/shared/i18n/messages'
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { air, type ProxyAction, type ProxyExit, type ProxyStatus, type ProxyTelemetry } from '@/platform/desktop/air'
 import { waitForProxyPowerAnimation } from '@/shared/ui/ProxyPowerButton'
@@ -22,19 +22,38 @@ function localizeConnections(connections: ProxyTelemetry['connections']) {
   })
 }
 
-function appendTelemetry(current: TelemetryHistory | undefined, sample: ProxyTelemetry): TelemetryHistory {
+export function appendTelemetry(current: TelemetryHistory | undefined, sample: ProxyTelemetry): TelemetryHistory {
   const previous = current?.sessionId === sample.sessionId ? current : undefined
-  if (previous?.sampledAt === sample.sampledAt) {
+  if (previous?.sampledAt === sample.sampledAt && previous.revision === sample.revision) {
     return previous.stale === sample.stale ? previous : { ...previous, stale: sample.stale }
   }
+  const connections = localizeConnections(sample.connections)
+  let connectionLogs = sample.connectionLogs && localizeConnections(sample.connectionLogs)
+  let appIcons = sample.appIcons
+  if (sample.logOrder) {
+    const rows = new Map(previous?.connectionLogs?.map(row => [row.id, row]))
+    for (const row of connections) rows.set(row.id, row)
+    for (const row of connectionLogs ?? []) rows.set(row.id, row)
+    connectionLogs = sample.logOrder.map(id => {
+      const row = rows.get(id)
+      if (!row) throw new Error('Incomplete connection history')
+      return row
+    })
+    appIcons = {}
+    for (const row of connectionLogs) {
+      const key = row.appIconKey
+      const icon = key && (sample.appIcons?.[key] ?? previous?.appIcons?.[key])
+      if (key && icon) appIcons[key] = icon
+    }
+  }
   return {
-    ...sample,
-    connections: localizeConnections(sample.connections),
-    ...(sample.connectionLogs ? { connectionLogs: localizeConnections(sample.connectionLogs) } : {}),
+    ...sample, connections, connectionLogs, appIcons, logOrder: undefined,
     uploadPeak: Math.max(previous?.uploadPeak ?? 0, sample.uploadRate),
     downloadPeak: Math.max(previous?.downloadPeak ?? 0, sample.downloadRate),
-    uploadHistory: [...(previous?.uploadHistory.slice(-16) ?? []), sample.uploadRate],
-    downloadHistory: [...(previous?.downloadHistory.slice(-16) ?? []), sample.downloadRate],
+    uploadHistory: previous?.sampledAt === sample.sampledAt ? previous.uploadHistory
+      : [...(previous?.uploadHistory.slice(-16) ?? []), sample.uploadRate],
+    downloadHistory: previous?.sampledAt === sample.sampledAt ? previous.downloadHistory
+      : [...(previous?.downloadHistory.slice(-16) ?? []), sample.downloadRate],
   }
 }
 
@@ -77,12 +96,15 @@ function useProxyExit(status: ProxyStatus): ExitLookup {
 }
 
 export function useProxy(onError: (error: unknown) => void, options?: { liveTelemetry?: boolean }) {
+  const language = useLanguage()
   const liveTelemetry = options?.liveTelemetry ?? true
   const liveTelemetryRef = useRef(liveTelemetry)
   liveTelemetryRef.current = liveTelemetry
   const [status, setStatus] = useState(initial)
   const exitLookup = useProxyExit(status)
   const [snapshot, setSnapshot] = useState<TelemetryHistory>()
+  const lastFrame = useRef<TelemetryHistory | undefined>(undefined)
+  const clearGeneration = useRef(0)
   const [pending, setPending] = useState<'start' | 'stop'>()
   const [selectingNodeId, setSelectingNodeId] = useState<string>()
   const mounted = useRef(true)
@@ -145,12 +167,14 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
   }, [onError, status.running])
 
   useEffect(() => {
+    lastFrame.current = undefined
     if (!status.sessionId) {
       setSnapshot(undefined)
       return
     }
     let active = true
     let polling = false
+    let resync = false
     let timer: number | undefined
     const sessionId = status.sessionId
     async function pollTelemetry() {
@@ -165,12 +189,23 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
       polling = true
       window.clearTimeout(timer)
       try {
-        const next = await air.proxyTelemetry()
-        if (active && next?.sessionId === sessionId) {
-          setSnapshot(current => appendTelemetry(current, next))
+        const base = lastFrame.current
+        const generation = clearGeneration.current
+        const next = await air.proxyTelemetry({
+          sessionId, revision: resync ? 0 : base?.revision ?? 0,
+          knownIcons: resync ? [] : Object.keys(base?.appIcons ?? {}),
+        })
+        if (active && generation === clearGeneration.current && next?.sessionId === sessionId) {
+          const merged = appendTelemetry(base, next)
+          resync = false
+          lastFrame.current = merged
+          setSnapshot(merged)
         }
       } catch {
-        if (active) setSnapshot(current => current && !current.stale ? { ...current, stale: true } : current)
+        if (active) {
+          resync = true
+          setSnapshot(current => current && !current.stale ? { ...current, stale: true } : current)
+        }
       } finally {
         polling = false
         if (active && !document.hidden) {
@@ -188,7 +223,7 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [status.sessionId])
+  }, [status.sessionId, language])
 
   function control(action: ProxyAction) {
     const isPower = action.action === 'start' || action.action === 'stop'
@@ -262,11 +297,13 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
   }, [])
   const clearLogs = useCallback(async () => {
     await air.clearConnectionLogs()
-    setSnapshot(current =>
-      current?.connectionLogs
-        ? { ...current, connectionLogs: current.connectionLogs.filter(item => !item.closed) }
-        : current,
-    )
+    clearGeneration.current++
+    const current = lastFrame.current
+    if (current?.connectionLogs) {
+      const cleared = { ...current, connectionLogs: current.connectionLogs.filter(item => !item.closed) }
+      lastFrame.current = cleared
+      setSnapshot(cleared)
+    }
     pollTelemetryRef.current?.()
   }, [])
   return { status, telemetry, exitLookup, pending, selectingNodeId, control, updateStatus, refreshNow, clearLogs }

@@ -15,11 +15,11 @@ export function AboutPanel({ updates }: { updates: Updates }) {
   const message = status.message ?? (
     status.phase === 'checking' ? tr('正在检查更新…')
       : status.phase === 'current' ? tr('当前没有可用更新。')
-        : status.version ? (status.ignored ? tr("已忽略 Air {0}", status.version)
+        : status.version ? (status.ignored ? tr("已忽略 Air Proxy {0}", status.version)
           : status.phase === 'downloading' && status.progress.total
             ? tr("已下载 {0} / {1}", formatBytes(status.progress.received), formatBytes(status.progress.total))
-            : busy ? tr('正在准备安装更新…') : tr("发现新版本 Air {0}", status.version))
-          : tr('Air 会在启动时和后台定期检查更新。')
+            : busy ? tr('正在准备安装更新…') : tr("发现新版本 Air Proxy {0}", status.version))
+          : tr('Air Proxy 会在启动时和后台定期检查更新。')
   )
   return (
     <div className="flex flex-col gap-3">
@@ -27,7 +27,7 @@ export function AboutPanel({ updates }: { updates: Updates }) {
         <CardHeader className="justify-start">
           <img src={airLogo} alt="" className="size-10 shrink-0" />
           <div className="flex flex-1 items-center gap-2">
-            <CardTitle>Air</CardTitle>
+            <CardTitle>Air Proxy</CardTitle>
             <Badge variant="default">v{status.current}</Badge>
           </div>
           <Button variant="outline" size="icon-sm" aria-label={tr("作者的 GitHub 主页")} title="GuoWWWX · GitHub"
@@ -38,7 +38,7 @@ export function AboutPanel({ updates }: { updates: Updates }) {
           </Button>
         </CardHeader>
         <CardContent>
-          <p className="text-sm leading-relaxed text-muted-foreground">{tr("Air 是一个基于 Mihomo 的 Windows 桌面代理客户端，支持管理订阅与节点、配置出站规则与多跳链路，并查看延迟和实时连接。")}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">{tr("Air Proxy 是一个基于 Mihomo 的 Windows 桌面代理客户端，支持管理订阅与节点、配置出站规则与多跳链路，并查看延迟和实时连接。")}</p>
         </CardContent>
       </Card>
       <Card className="flex-row flex-wrap items-center justify-between gap-4 p-4">

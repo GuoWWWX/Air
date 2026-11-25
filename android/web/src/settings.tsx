@@ -37,10 +37,12 @@ const settingsRows = [
   { page: 'inbound', icon: Plug, get description() { return tr('本地端口、局域网共享与 IPv6') } },
   { page: 'routing', icon: Waypoints, get description() { return tr('按域名、IP 网段或应用包名选择出站') } },
   { page: 'kernel', icon: Settings, get description() { return tr('检查 Android 内置 Mihomo 内核') } },
-  { page: 'configFile', icon: FileCode2, get description() { return tr('编辑和校验 Air 的 YAML 配置') } },
+  { page: 'configFile', icon: FileCode2, get description() { return tr('编辑和校验 Air Proxy 的 YAML 配置') } },
 ] as const
 
-export function SettingsIndex({ library, open }: { library: Library; open: (page: SettingsPage) => void }) {
+export function SettingsIndex({ library, open, availableUpdate }: {
+  library: Library; open: (page: SettingsPage) => void; availableUpdate?: UpdateCheck
+}) {
   const scrollRef = useRef<HTMLElement>(null)
 
   useLayoutEffect(() => {
@@ -73,7 +75,13 @@ export function SettingsIndex({ library, open }: { library: Library; open: (page
         value={library.monitoring ? tr('已开启') : tr('已关闭')} onClick={() => open('monitoring')} />
     </div></section>
     <section aria-label={settingsTitles.about}><div className="panel settings-panel">
-      <Row icon={Info} title={settingsTitles.about} description={tr("Air Proxy 版本、软件更新与作者 GitHub")} onClick={() => open('about')} />
+      <Row
+        icon={Info}
+        title={settingsTitles.about}
+        description={tr("Air Proxy 版本、软件更新与作者 GitHub")}
+        badge={availableUpdate?.version ? <Tag tone="blue">v{availableUpdate.version}</Tag> : undefined}
+        onClick={() => open('about')}
+      />
     </div></section>
   </main>
 }
@@ -238,7 +246,7 @@ export function ConfigSettings({ library, busy, save }: {
   return <>
     <main className="page-scroll yaml-page">
       <div className="section-title">
-        <strong>{tr("Air 配置 YAML")}</strong>
+        <strong>{tr("Air Proxy 配置 YAML")}</strong>
         <div className="flex shrink-0 items-center gap-1.5">
           <Tag tone={errors ? 'red' : 'gray'}>{errors ? tr("{0} 处语法错误", errors) : tr("第 {0} 行，第 {1} 列", cursor[0], cursor[1])}</Tag>
           <Button type="button" size="icon-sm" variant={search.open ? 'subtle' : 'outline'} aria-label={tr('查找配置内容')} aria-pressed={search.open} onClick={search.toggleSearch}>
@@ -269,7 +277,7 @@ export function ConfigSettings({ library, busy, save }: {
 }
 
 export interface KernelInfo { version: string; appVersion: string; sdk: number; abi: string }
-export interface UpdateCheck { current: string; version?: string; url?: string }
+export interface UpdateCheck { current: string; version?: string; url?: string; downloadUrl?: string; notes?: string }
 
 export function KernelSettings({ info, active, check }: { info: KernelInfo; active: boolean; check: () => Promise<void> }) {
   const [checking, setChecking] = useState(false)
@@ -292,10 +300,12 @@ export function KernelSettings({ info, active, check }: { info: KernelInfo; acti
   </main>
 }
 
-export function AboutSettings({ info }: { info: KernelInfo }) {
+export function AboutSettings({ info, update: initialUpdate, onUpdateChecked }: {
+  info: KernelInfo; update?: UpdateCheck; onUpdateChecked?: (next: UpdateCheck) => void
+}) {
   const [checking, setChecking] = useState(false)
-  const [status, setStatus] = useState('')
-  const [update, setUpdate] = useState<UpdateCheck>()
+  const [update, setUpdate] = useState<UpdateCheck | undefined>(initialUpdate)
+  const [status, setStatus] = useState(() => initialUpdate?.version ? tr('发现新版本 Air Proxy ') + initialUpdate.version : '')
   function open(url: string) {
     if (!onAndroid) {
       window.open(url, '_blank', 'noopener,noreferrer')
@@ -303,7 +313,10 @@ export function AboutSettings({ info }: { info: KernelInfo }) {
     }
     void native('openLink', { url }).catch(failure => showMessage({ type: 'error', title: errorText(failure) }))
   }
-  useEffect(() => { setStatus('') }, [info.appVersion])
+  useEffect(() => {
+    setUpdate(initialUpdate)
+    setStatus(initialUpdate?.version ? tr('发现新版本 Air Proxy ') + initialUpdate.version : '')
+  }, [info.appVersion, initialUpdate])
   return <main className="page-scroll">
     <section className="panel about">
       <div className="about-head">
@@ -322,17 +335,23 @@ export function AboutSettings({ info }: { info: KernelInfo }) {
           </svg>
         </Button>
       </div>
-      <p className="about-desc">{tr("Air 是一个基于 Mihomo 的 Android 代理客户端，支持管理订阅与节点、配置分流规则与多跳链路，并查看延迟和实时连接。")}</p>
+      <p className="about-desc">{tr("Air Proxy 是一个基于 Mihomo 的 Android 代理客户端，支持管理订阅与节点、配置分流规则与多跳链路，并查看延迟和实时连接。")}</p>
     </section>
     <section className="panel settings-form">
       <h2 className="settings-form-title">{tr("软件更新")}</h2>
       <p className="fine-print" role="status">{status || tr('查找 GitHub 上发布的 Android 安装包。')}</p>
+      {update?.notes && (
+        <div className="max-h-40 overflow-y-auto rounded-[8px] border border-border bg-muted/40 p-2.5 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
+          {update.notes}
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" disabled={checking} onClick={async () => {
           setChecking(true)
           try {
             const available = await native<UpdateCheck>('checkUpdate')
             setUpdate(available)
+            onUpdateChecked?.(available)
             const msg = available.version ? tr('发现新版本 Air Proxy ') + available.version : tr('当前已是最新版本')
             setStatus(msg)
             showMessage({ type: available.version ? 'info' : 'success', title: msg })
@@ -344,7 +363,14 @@ export function AboutSettings({ info }: { info: KernelInfo }) {
         }}><RefreshCw data-icon="inline-start" className={checking ? 'motion-safe:animate-spin' : undefined} />
           {checking ? tr('正在检查更新…') : tr('检查更新')}
         </Button>
-        {update?.url && <Button variant="default" onClick={() => open(update.url!)}>{tr("查看更新")}</Button>}
+        {update?.downloadUrl ? (
+          <>
+            <Button variant="default" onClick={() => open(update.downloadUrl!)}>{tr("下载安装包")}</Button>
+            {update.url && <Button variant="outline" onClick={() => open(update.url!)}>{tr("查看发布页")}</Button>}
+          </>
+        ) : (
+          update?.url && <Button variant="default" onClick={() => open(update.url!)}>{tr("查看更新")}</Button>
+        )}
       </div>
     </section>
   </main>

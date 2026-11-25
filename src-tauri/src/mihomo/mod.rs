@@ -1,4 +1,4 @@
-mod geodata;
+pub(crate) mod geodata;
 
 use crate::{
     network::NetworkSettings,
@@ -334,7 +334,7 @@ impl Kernel {
         .await
         .unwrap_or_else(|_| {
             Err(if missing_geodata {
-                "等待 Mihomo 地理规则库下载超时，请使用包含离线规则库的 Air 安装包"
+                "等待 Mihomo 地理规则库下载超时，请使用包含离线规则库的 Air Proxy 安装包"
             } else {
                 "Mihomo 的本地控制接口未在启动时限内就绪"
             }.into())

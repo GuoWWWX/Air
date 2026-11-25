@@ -23,8 +23,8 @@ export function UpdateDialog({ updates }: { updates: Updates }) {
             <ArrowDownToLine className="size-4.5" />
           </span>
           <div className="flex flex-1 flex-col gap-1">
-            <DialogTitle>Air {status.version}{tr(" 可更新")}</DialogTitle>
-            <DialogDescription>{tr('当前版本 {0}。下载完成后，Air 会关闭代理、覆盖安装并重新打开。', status.current)}</DialogDescription>
+            <DialogTitle>Air Proxy {status.version}{tr(" 可更新")}</DialogTitle>
+            <DialogDescription>{tr('当前版本 {0}。下载完成后，Air Proxy 会关闭代理、覆盖安装并重新打开。', status.current)}</DialogDescription>
           </div>
           <Badge variant="accent">v{status.version}</Badge>
         </DialogHeader>

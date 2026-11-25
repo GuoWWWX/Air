@@ -78,13 +78,13 @@ pub struct Stats {
 
 impl Store {
     pub fn open(path: &Path) -> AirResult<Self> {
-        let mut connection = Connection::open(path).map_err(|_| "无法打开 Air 本地数据库")?;
+        let mut connection = Connection::open(path).map_err(|_| "无法打开 Air Proxy 本地数据库")?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(|_| "无法初始化订阅数据库")?;
         connection
             .execute_batch(include_str!("../../migrations/001_initial.sql"))
-            .map_err(|_| "无法初始化 Air 本地数据库")?;
+            .map_err(|_| "无法初始化 Air Proxy 本地数据库")?;
         source_names::repair_duplicates(&mut connection).map_err(|_| "无法整理同名订阅")?;
         let directory = path.parent().ok_or("无效的配置目录")?.join("subscriptions");
         let documents = documents::Documents::open(directory, &mut connection)?;
@@ -92,7 +92,7 @@ impl Store {
     }
 
     fn connection(&self) -> AirResult<MutexGuard<'_, Connection>> {
-        self.db.lock().map_err(|_| "无法访问 Air 本地数据库".into())
+        self.db.lock().map_err(|_| "无法访问 Air Proxy 本地数据库".into())
     }
 
     pub fn system_proxy_preference(&self) -> AirResult<bool> {

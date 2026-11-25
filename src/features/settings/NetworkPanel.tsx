@@ -15,7 +15,7 @@ import { Textarea } from '@/shared/ui/textarea'
 export type NetworkPage = 'dns' | 'tun' | 'inbound' | 'monitoring'
 const pageKeys = {
   dns: ['nameserver', 'defaultNameserver', 'directNameserver', 'proxyServerNameserver', 'fallback', 'fallbackDomains', 'domainDns', 'respectRules', 'enhancedMode', 'fakeIpFilter', 'dnsIpv6', 'useSystemHosts', 'hosts', 'directFollowPolicy', 'dnsCacheAlgorithm'],
-  tun: ['tunStack', 'tunMtu', 'strictRoute', 'dnsHijack', 'routeExcludeAddress'],
+  tun: ['tunStack', 'tunMtu', 'bypassLan', 'strictRoute', 'dnsHijack', 'routeExcludeAddress'],
   inbound: ['mixedPort', 'systemProxyBypass', 'allowLan', 'ipv6', 'tcpConcurrent', 'blockQuic'],
   monitoring: ['probeUrl', 'probeStatus', 'probeIntervalMinutes'],
 } as const satisfies Record<NetworkPage, readonly (keyof NetworkSettings)[]>
@@ -139,7 +139,7 @@ export function NetworkPanel({ page, kernelPath, sources = [] }: { page: Network
       setDraft(next.settings)
       showMessage({
         type: 'success',
-        title: page === 'monitoring' ? tr('已保存，下次测速时使用') : tr('已保存，下次启动代理时使用'),
+        title: page === 'monitoring' ? tr('已保存，下次测速时使用') : tr('已保存，运行中的代理将自动应用'),
       })
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err)
@@ -217,7 +217,7 @@ export function NetworkPanel({ page, kernelPath, sources = [] }: { page: Network
               />
               <Button variant="outline" type="button" className="shrink-0" onClick={() => void importResolvers()}>{tr("读取 DNS 地址")}</Button>
             </div>
-            <p className="text-xs text-muted-foreground">{tr("读取此订阅 YAML 中填写的服务器列表。检查后保存即可应用到 Air。")}</p>
+            <p className="text-xs text-muted-foreground">{tr("读取此订阅 YAML 中填写的服务器列表。检查后保存即可应用到 Air Proxy。")}</p>
           </div>}
         </Section>
         <details className="air-card-surface group rounded-[11px] border border-border bg-card p-4 shadow-(--shadow-card)">
@@ -229,7 +229,7 @@ export function NetworkPanel({ page, kernelPath, sources = [] }: { page: Network
             {toggle('respectRules', tr('DNS 连接遵循分流规则'), tr('启用时需要单独指定节点 DNS。'))}
             {toggle('dnsIpv6', tr('返回 IPv6 解析结果'), values.ipv6 ? tr('允许 DNS 返回 AAAA 记录。') : tr('请先在「代理接入」中启用 IPv6。'), !values.ipv6)}
             {toggle('useSystemHosts', tr('读取系统 hosts'), tr('解析时使用 Windows hosts 文件中的本地记录。'))}
-            {list('hosts', tr('Air 本地 hosts'), tr('每行填写 IP 和域名，用空格分隔。同一个 IP 可以对应多个域名。'), '192.168.1.10 nas.home')}
+            {list('hosts', tr('Air Proxy 本地 hosts'), tr('每行填写 IP 和域名，用空格分隔。同一个 IP 可以对应多个域名。'), '192.168.1.10 nas.home')}
             {toggle('directFollowPolicy', tr('直连 DNS 遵循分域策略'), tr('填写直连 DNS 后，可让指定域名继续使用下方的分域 DNS。'), !values.directNameserver.some(v => v.trim()))}
             <div className="flex flex-col gap-1.5"><Label>{tr("DNS 缓存算法")}</Label>
               <AirSelect label={tr("DNS 缓存算法")} value={values.dnsCacheAlgorithm} onChange={v => update('dnsCacheAlgorithm', v)}
@@ -274,12 +274,13 @@ export function NetworkPanel({ page, kernelPath, sources = [] }: { page: Network
         <div className="flex flex-col gap-1.5"><Label>{tr("协议栈")}</Label><AirSelect label={tr("协议栈")} value={values.tunStack} onChange={v => update('tunStack', v)}
           options={[{value:'gvisor', label:'gVisor'}, {value:'system', label:tr('系统（System）')}, {value:'mixed', label:tr('混合（Mixed）')}]} /></div>
         {optionalNumber('tunMtu', tr('最大传输单元（MTU）'), 1280, 9000, tr('单位为字节，留空由内核决定。'))}
-        {toggle('dnsHijack', tr('接管 DNS 请求'), tr('将经过 TUN 的 TCP 和 UDP 53 端口查询交给 Air 解析。'))}
-        {toggle('strictRoute', tr('严格路由'), tr('收紧 Windows 的路由和 DNS 限制，可能影响其他 VPN 或局域网服务。'))}
-        {list('routeExcludeAddress', tr('绕过 TUN 的网段'), tr('每行一个 IPv4 或 IPv6 网段，例如公司的内网地址。'), '192.168.50.0/24')}
+        {toggle('dnsHijack', tr('接管 DNS 请求'), tr('将经过 TUN 的 TCP 和 UDP 53 端口查询交给 Air Proxy 解析。'))}
+        {toggle('bypassLan', tr('绕过局域网私网'), tr('默认绕过 10/8、172.16/12、192.168/16 等局域网私网，不接管内网设备和本地路由。'))}
+        {toggle('strictRoute', tr('严格路由'), tr('收紧 Windows 的路由和 DNS 限制（默认关闭，以兼容双网卡、自定义静态路由及其他 VPN）。'))}
+        {list('routeExcludeAddress', tr('绕过 TUN 的网段'), tr('每行一个额外绕过的 IPv4 或 IPv6 网段，例如使用公网地址的内网设备或特定公司网段。'), '192.168.50.0/24')}
       </Section>}
       {page === 'inbound' && <Section title={tr("本地代理与网络")}>
-        {optionalNumber('mixedPort', tr('HTTP / SOCKS 混合端口'), 1, 65535, tr('留空时优先使用 7890。如已占用，Air 会使用空闲端口，并在 7890 释放后接收该端口的本地 TCP 代理连接。'))}
+        {optionalNumber('mixedPort', tr('HTTP / SOCKS 混合端口'), 1, 65535, tr('留空时优先使用 7890。如已占用，Air Proxy 会使用空闲端口，并在 7890 释放后接收该端口的本地 TCP 代理连接。'))}
         {toggle('allowLan', tr('允许局域网连接'), tr('允许 IPv4 私网设备使用本机的代理端口，仅在信任的网络中开启。'))}
         {list('systemProxyBypass', tr('Windows 系统代理绕过列表'), tr('默认已自动绕过本机与局域网地址，此处填写需要额外绕过的地址或通配符，每行一个。'), '<local>\n*.lan')}
         {toggle('ipv6', tr('允许 IPv6'), tr('允许代理内核使用 IPv6 网络。关闭时也会禁用 AAAA 解析。'))}
@@ -300,7 +301,7 @@ export function NetworkPanel({ page, kernelPath, sources = [] }: { page: Network
           <Input id="probeStatus" type="number" required min={100} max={599} value={values.probeStatus || ''} onChange={e => update('probeStatus', Number(e.target.value))} />
         </div>
       </Section>}
-      <p className="text-xs text-muted-foreground">{page === 'monitoring' ? tr('保存后从下次测速开始生效。') : tr('保存后从下次启动代理开始生效。正在使用的连接可继续工作。')}</p>
+      <p className="text-xs text-muted-foreground">{page === 'monitoring' ? tr('保存后从下次测速开始生效。') : tr('保存后立即应用到运行中的代理；未启动时会在下次启动生效。')}</p>
       {needsReload && <div className="flex items-center gap-2 text-xs text-muted-foreground"><span>{tr("配置已被外部修改")}</span>{readAgain}</div>}
       <div className="flex items-center justify-between gap-3">
         <Button type="button" variant="ghost" onClick={() => {

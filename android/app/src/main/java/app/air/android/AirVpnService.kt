@@ -180,51 +180,37 @@ class AirVpnService : VpnService() {
     }
 
     private fun establishTunnel(plan: JSONObject) {
-        val ipv6 = plan.optBoolean("ipv6", false)
-        val tune = plan.optJSONObject("tunnel") ?: JSONObject()
-        val mtu = tune.optInt("mtu", 9000)
-        val stack = tune.optString("stack", "gvisor")
-        val dnsHijack = tune.optBoolean("dnsHijack", true)
-        require(mtu in 1280..9000 && stack in setOf("gvisor", "system", "mixed")) { "虚拟网卡配置无效" }
+        val sig = parseTunnelSignature(plan)
+        require(sig.mtu in 1280..9000 && sig.stack in setOf("gvisor", "system", "mixed")) { "虚拟网卡配置无效" }
+        val routes = buildTunnelRoutePlan(Build.VERSION.SDK_INT, sig.ipv6, sig.bypassLan, sig.exclusions)
         val connectivity = getSystemService(ConnectivityManager::class.java)
         seedAvailableNetworks(connectivity)
         refreshUnderlyingNetwork(connectivity, resetOnSwitch = false)
         val builder = Builder().setSession(getString(R.string.app_name))
-            .setMtu(mtu)
+            .setMtu(sig.mtu)
             .addAddress(ADDRESS, 30)
-            .addRoute("0.0.0.0", 0)
             .addDisallowedApplication(packageName)
         if (Build.VERSION.SDK_INT >= 29) {
             builder.setMetered(false)
         }
-        if (ipv6) builder.addAddress(IPV6, 126).addRoute("::", 0)
+        if (sig.ipv6) {
+            builder.addAddress(IPV6, 126)
+        }
+        for (route in routes.includeIpv4) {
+            builder.addRoute(route.address, route.prefixLength)
+        }
+        for (route in routes.includeIpv6) {
+            builder.addRoute(route.address, route.prefixLength)
+        }
         if (Build.VERSION.SDK_INT >= 33) {
-            val localCidrs = mutableListOf("224.0.0.0/4", "255.255.255.255/32", "169.254.0.0/16")
-            if (ipv6) {
-                localCidrs += listOf("fe80::/10", "ff00::/8")
-            }
-            for (localCidr in localCidrs) {
-                runCatching {
-                    val addr = InetAddresses.parseNumericAddress(localCidr.substringBeforeLast('/'))
-                    builder.excludeRoute(IpPrefix(addr, localCidr.substringAfterLast('/').toInt()))
-                }
-            }
-        }
-        val exclusions = tune.optJSONArray("exclusions")
-        if (Build.VERSION.SDK_INT >= 33 && exclusions != null) {
-            for (index in 0 until exclusions.length()) {
-                val cidr = exclusions.getString(index)
+            for (cidr in routes.excludeCidrs) {
                 val address = InetAddresses.parseNumericAddress(cidr.substringBeforeLast('/'))
-                if (ipv6 || address.address.size == 4) {
-                    builder.excludeRoute(IpPrefix(address, cidr.substringAfterLast('/').toInt()))
-                }
+                builder.excludeRoute(IpPrefix(address, cidr.substringAfterLast('/').toInt()))
             }
-        } else if (exclusions != null && exclusions.length() > 0) {
-            error("绕过网段需要 Android 13 或更新版本")
         }
-        if (dnsHijack) {
+        if (sig.dnsHijack) {
             builder.addDnsServer(DNS).addRoute(DNS, 32)
-            if (ipv6) {
+            if (sig.ipv6) {
                 builder.addDnsServer(DNS_IPV6).addRoute(DNS_IPV6, 128)
             }
         }
@@ -241,10 +227,10 @@ class AirVpnService : VpnService() {
         try {
             Core.action("startLog")
             val descriptor = builder.establish() ?: error("Android 未授权建立 VPN")
-            val addresses = if (ipv6) "$ADDRESS/30,$IPV6/126" else "$ADDRESS/30"
+            val addresses = if (sig.ipv6) "$ADDRESS/30,$IPV6/126" else "$ADDRESS/30"
             ownsTunnel = true
             Clash.startTUN(descriptor.detachFd(), { fd -> protect(fd) }, ::processName,
-                "Air-TUN", stack, addresses, if (dnsHijack) DNS_HIJACK_ANY else "", mtu)
+                "Air-TUN", sig.stack, addresses, if (sig.dnsHijack) DNS_HIJACK_ANY else "", sig.mtu)
             val error = try {
                 ready.get(5, TimeUnit.SECONDS)
             } catch (_: java.util.concurrent.TimeoutException) {
@@ -625,12 +611,15 @@ class AirVpnService : VpnService() {
         @Volatile private var activeOutbound = OutboundSummary()
         @Volatile private var activeService: AirVpnService? = null
 
-        fun connections(): JSONObject {
+        fun connections(since: Long): JSONObject {
             val service = activeService ?: return JSONObject()
             if (!running()) return JSONObject()
             val now = SystemClock.elapsedRealtime()
-            val sampled = service.connectionSamples.read(now, Core::connectionRows)
-            return JSONObject().put("connections", sampled)
+            return service.connectionSamples.read(now, since, Core::connectionRows)
+        }
+
+        fun clearConnectionLogs() {
+            activeService?.connectionSamples?.clearClosed()
         }
 
         private fun outboundSummary(plan: JSONObject): OutboundSummary {
@@ -667,6 +656,59 @@ class AirVpnService : VpnService() {
             } catch (error: Exception) {
                 pending.set(null)
                 state = State("error", error.message)
+                throw error
+            }
+        }
+
+        internal fun reconfigure(context: Context, plan: JSONObject) {
+            val service = activeService
+            check(running() && service != null) { "VPN 未连接" }
+            val previousPlan = Core.activePlan()
+            val nextSig = parseTunnelSignature(plan)
+            require(nextSig.mtu in 1280..9000 && nextSig.stack in setOf("gvisor", "system", "mixed")) { "虚拟网卡配置无效" }
+            buildTunnelRoutePlan(Build.VERSION.SDK_INT, nextSig.ipv6, nextSig.bypassLan, nextSig.exclusions)
+            val tunnelChanged = previousPlan == null || parseTunnelSignature(previousPlan) != nextSig
+            if (!tunnelChanged) {
+                try {
+                    Core.applyNetwork(context, plan)
+                    val port = plan.getJSONObject("config").optInt("mixed-port", 0).takeIf { it > 0 }
+                    state = state.copy(port = port)
+                    updateOutbound(plan)
+                } catch (error: Exception) {
+                    if (!Core.hasActiveProfile()) runCatching { disconnect(context) }
+                    throw error
+                }
+                return
+            }
+            service.unregisterNetworkCallback(clearTracked = false)
+            if (service.ownsTunnel) {
+                runCatching { Clash.stopTun() }
+                service.ownsTunnel = false
+            }
+            runCatching { Core.action("closeAllConnections") }
+            try {
+                Core.applyNetwork(service, plan)
+                service.establishTunnel(plan)
+                val port = plan.getJSONObject("config").optInt("mixed-port", 0).takeIf { it > 0 }
+                state = state.copy(port = port)
+                updateOutbound(plan)
+            } catch (error: Exception) {
+                if (service.ownsTunnel) {
+                    runCatching { Clash.stopTun() }
+                    service.ownsTunnel = false
+                }
+                val rollback = previousPlan?.let { prev ->
+                    runCatching {
+                        Core.applyNetwork(service, prev)
+                        service.establishTunnel(prev)
+                        updateOutbound(prev)
+                    }
+                }
+                if (rollback == null || rollback.isFailure) {
+                    service.closeTunnel()
+                    state = State("error", error.message ?: "无法更新虚拟网卡配置")
+                    service.stopSelf()
+                }
                 throw error
             }
         }

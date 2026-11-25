@@ -13,7 +13,7 @@ const vite = await createServer({
   logLevel: 'silent',
 })
 after(() => vite.close())
-const { compile, defaultLibrary, effectiveYaml, restoreLibrary, withoutSubscription } = await vite.ssrLoadModule('/src/model.ts')
+const { compile, createRoutingCompiler, defaultLibrary, effectiveYaml, restoreLibrary, withoutSubscription } = await vite.ssrLoadModule('/src/model.ts')
 const { parseSettings } = await vite.ssrLoadModule('/src/configuration.ts')
 const { mergeAppPolicyRules, mergeStandaloneHostRule } = await vite.ssrLoadModule('@/shared/proxy/connection-policy.ts')
 
@@ -172,4 +172,74 @@ test('deleting a user template unbinds every referencing object and keeps unrela
     sets: [{ id: 'loop', name: 'Loop', profile: { rules: ['MATCH,A'], 'proxy-groups': [{ name: 'A', type: 'select', proxies: ['B'] }, { name: 'B', type: 'fallback', proxies: ['A'] }] } }],
     bindings: {},
   }))
+})
+
+test('UI changes and unrelated probes reuse the plan; changing the exit recompiles its rules', () => {
+  const prepare = createRoutingCompiler()
+  const initial = prepare(library)
+  const next = { ...library, theme: 'dark', probes: { 'second/Node': [{ at: Date.now(), delay: 5 }] } }
+  assert.equal(prepare(next).compiled, initial.compiled)
+  const switched = { ...next, choice: { type: 'node', id: 'first/Node' } }
+  const changed = prepare(switched)
+  assert.equal(changed.model, initial.model)
+  assert.notEqual(changed.compiled, initial.compiled)
+  assert.deepEqual(changed.compiled.plan, compile(switched).plan)
+  assert.ok(changed.compiled.plan.config.rules.includes(firstRule))
+})
+
+test('automatic groups react to changed and expired latency samples', t => {
+  const now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  const prepare = createRoutingCompiler()
+  const group = { id: 'auto', name: 'Auto', type: 'url-test', members: [],
+    automatic: { sourceId: 'second', maxDelay: 100, limit: 1 } }
+  const base = { ...library, groups: [group] }
+  const empty = prepare(base)
+  assert.equal(empty.compiled.byId.has(group.id), false)
+  assert.equal(empty.expiresAt, Infinity)
+
+  const chosen = {
+    ...base,
+    choice: { type: 'group', id: 'auto' },
+    probes: { 'second/Node': [{ at: now, delay: 10 }] },
+  }
+  const measured = prepare(chosen)
+  assert.equal(measured.compiled.byId.has(group.id), true)
+  assert.deepEqual(measured.compiled.choice, { type: 'group', id: 'auto' })
+  assert.equal(measured.expiresAt, now + 86_400_000)
+  assert.equal(prepare({ ...chosen, theme: 'dark' }).compiled, measured.compiled)
+
+  const expiredAt = now + 86_400_000
+  Date.now.mock.mockImplementation(() => expiredAt)
+  const expired = prepare(chosen)
+  assert.equal(expired.compiled.byId.has(group.id), false)
+  assert.notDeepEqual(expired.compiled.choice, { type: 'group', id: 'auto' })
+  assert.equal(expired.expiresAt, Infinity)
+
+  const multi = {
+    ...chosen,
+    probes: {
+      'second/Node': [
+        { at: expiredAt + 1000, delay: 15 },
+        { at: expiredAt + 5000, delay: 10 },
+      ],
+    },
+  }
+  assert.equal(prepare(multi).expiresAt, expiredAt + 1000 + 86_400_000)
+})
+
+test('bypassLan defaults to true on restore, parse and compiled tunnel plans', () => {
+  assert.equal(defaultLibrary.network.bypassLan, true)
+  assert.equal(compile(defaultLibrary).plan.tunnel.bypassLan, true)
+
+  const legacyNetwork = restoreLibrary({
+    ...library,
+    network: { ...library.network, bypassLan: undefined },
+  })
+  assert.equal(legacyNetwork.network.bypassLan, true)
+  assert.equal(compile(legacyNetwork).plan.tunnel.bypassLan, true)
+
+  const disabled = parseSettings(stringify({ network: { bypassLan: false } }))
+  assert.equal(disabled.network.bypassLan, false)
+  assert.equal(compile({ ...defaultLibrary, network: disabled.network }).plan.tunnel.bypassLan, false)
 })

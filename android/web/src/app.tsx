@@ -5,7 +5,7 @@ import { diagnostic, tr, useLanguage } from '@/shared/i18n/messages'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, CalendarClock, ChevronDown, Copy, Download, Eye, Puzzle, QrCode, Check, CloudDownload, Code2, FileCode2, Network, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { stringify } from 'yaml'
-import { AnimatePresence, MotionConfig, animate, motion, useMotionValue, useTransform } from 'motion/react'
+import { AnimatePresence, MotionConfig, motion } from 'motion/react'
 import airLogo from '@/assets/air-m1.svg'
 import type { Page as Tab } from '@/shared/ui/app-navigation'
 import { Button } from '@/shared/ui/button'
@@ -18,13 +18,13 @@ import { useSubscriptionOrder } from '@/shared/proxy/useSubscriptionOrder'
 import { copySubscriptionText, native, onAndroid } from './bridge'
 import { waitForProxyPowerAnimation } from '@/shared/ui/ProxyPowerButton'
 import { ConnectionPolicySheet } from './connection-policy'
-import { id as createId, remoteSubscriptionName, type SubscriptionDownload, canStart, compile, defaultLibrary, effectiveYaml, membersOf, readLibrary, restoreLibrary, selection, withoutSubscription, yamlProfile, type Chain, type Choice, type Connection, type ExitInfo, type Group, type Library, type Mode, type Node, type Subscription, type ProbeSample, type VpnStatus } from './model'
-import { Connections, Home, HomeHeaderPower, NodeDensitySheet, Nodes, NodeScopeSheet, Subscriptions, type ChainMeasurement, type MobileNodeDensity, type MobileNodeScope, type PendingImport } from './views'
+import { id as createId, remoteSubscriptionName, type SubscriptionDownload, canStart, createRoutingCompiler, defaultLibrary, effectiveYaml, membersOf, readLibrary, restoreLibrary, selection, withoutSubscription, yamlProfile, type compile, type Chain, type Choice, type Connection, type ExitInfo, type Group, type Library, type Mode, type Node, type Subscription, type ProbeSample, type VpnStatus } from './model'
+import { Connections, Home, NodeDensitySheet, Nodes, NodeScopeSheet, Subscriptions, type ChainMeasurement, type MobileNodeDensity, type MobileNodeScope, type PendingImport } from './views'
 import { ChainEditor, GroupEditor, ImportView, NodeEditor, YamlEditor, type SubscriptionImportRequest } from './workflows'
 import { BottomNavigation, Empty, Header, Row, Sheet, Tag } from './ui'
 import { validateNetwork, validateRouting } from './configuration'
 import { NetworkSettings } from './network-settings'
-import { AboutSettings, ConfigSettings, KernelSettings, RoutingSettings, SettingsIndex, ThemeSettings, settingsTitles, type KernelInfo, type SettingsPage } from './settings'
+import { AboutSettings, ConfigSettings, KernelSettings, RoutingSettings, SettingsIndex, ThemeSettings, settingsTitles, type KernelInfo, type SettingsPage, type UpdateCheck } from './settings'
 type Screen =
   | { kind: 'import' | 'yaml'; id?: string }
   | { kind: SettingsPage }
@@ -40,7 +40,7 @@ type Dialog =
 
 const emptyStatus: VpnStatus = { phase: 'idle', startedAt: 0, traffic: {} }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
-const defaultKernel: KernelInfo = { version: '1.19.34', appVersion: '1.0.2', sdk: 35, abi: 'Android' }
+const defaultKernel: KernelInfo = { version: '1.19.34', appVersion: '1.1.0', sdk: 35, abi: 'Android' }
 const PROBE_REQUEST_SIZE = 72
 const MANUAL_PROBE_COALESCE_MS = 80
 type MonitorResult = { at: number; available: number; checked: number; error?: string; samples?: Record<string, ProbeSample[]> }
@@ -82,14 +82,6 @@ function loadMobileNodeDensity(): MobileNodeDensity {
   return saved === 'compact' || saved === 'detailed' ? saved : 'normal'
 }
 
-function monitorPlan(library: Library, model = readLibrary(library), config = compile(library, model)) {
-  return {
-    plan: config.plan, url: library.network.probeUrl, expected: library.network.probeStatus,
-    interval: library.network.probeIntervalMinutes,
-    targets: Object.fromEntries(model.nodes.map(node => [node.id, config.byId.get(node.id)!])),
-  }
-}
-
 export function App() {
   useLanguage()
   const [tab, setTab] = useState<Tab>('home')
@@ -104,26 +96,12 @@ export function App() {
   const [exitInfo, setExitInfo] = useState<ExitInfo>()
   const [exitChecking, setExitChecking] = useState(false)
   const [exitFailed, setExitFailed] = useState(false)
+  const logClearGeneration = useRef(0)
   const [history, setHistory] = useState<Connection[]>([])
   const [chainMeasurement, setChainMeasurement] = useState<ChainMeasurement>()
   const [busy, setBusy] = useState(false)
   const [powerPending, setPowerPending] = useState<'start' | 'stop'>()
   const powerPendingRef = useRef<'start' | 'stop' | undefined>(undefined)
-  const targetHeaderPowerWidth = status.phase === 'running' && !powerPending ? 132 : 104
-  const homePowerProgress = useMotionValue(0)
-  const homePowerWidth = useMotionValue(targetHeaderPowerWidth)
-  const homeStatusShift = useTransform([homePowerProgress, homePowerWidth], ([p, w]: number[]) => {
-    if (p <= 0.001) return 0
-    const visibleWidth = 36 + (w - 36) * p
-    return -(visibleWidth + 6) * Math.min(1, p / 0.18)
-  })
-  useEffect(() => {
-    const controls = animate(homePowerWidth, targetHeaderPowerWidth, { type: 'spring', stiffness: 420, damping: 32 })
-    return () => controls.stop()
-  }, [homePowerWidth, targetHeaderPowerWidth])
-  useEffect(() => {
-    if (tab !== 'home' || Boolean(screen)) homePowerProgress.set(0)
-  }, [tab, screen, homePowerProgress])
   const [probing, setProbing] = useState<string[]>([])
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null)
   const probeRunId = useRef(0)
@@ -152,6 +130,7 @@ export function App() {
   const [pendingImports, setPendingImports] = useState<PendingImport[]>([])
   const lastStatusError = useRef<string | undefined>(undefined)
   const [kernelInfo, setKernelInfo] = useState(defaultKernel)
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateCheck>()
   const [backgroundResult, setBackgroundResult] = useState<MonitorResult>()
   const monitorAt = useRef(0)
   const [checked, setChecked] = useState<string[]>([])
@@ -173,9 +152,39 @@ export function App() {
   const modeSwitchPending = useRef(0)
   const modeRollbackRef = useRef<Mode>(library.mode)
   const [darkSystem, setDarkSystem] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
-  const model = useMemo(() => readLibrary(library), [library.sources, library.nodes, library.groups, library.hiddenNodes, library.edits])
-  const choice = useMemo(() => selection(library, model), [library, model])
-  const compiled = useMemo(() => compile(library, model), [library, model])
+  const [expiryTick, setExpiryTick] = useState(0)
+  const prepareRouting = useMemo(createRoutingCompiler, [])
+  const { model, compiled, expiresAt: routingExpiresAt } = useMemo(
+    () => prepareRouting(library),
+    [prepareRouting, library, expiryTick],
+  )
+  const choice = compiled.choice
+
+  useEffect(() => {
+    if (!Number.isFinite(routingExpiresAt)) return
+    let timer = 0
+    const scheduleExpiry = () => {
+      window.clearTimeout(timer)
+      const delay = routingExpiresAt - Date.now()
+      if (delay <= 0) {
+        setExpiryTick(tick => tick + 1)
+        return
+      }
+      timer = window.setTimeout(scheduleExpiry, Math.min(delay, 2_147_483_647))
+    }
+    const onVisibilityChange = () => {
+      if (!document.hidden && Date.now() >= routingExpiresAt) {
+        setExpiryTick(tick => tick + 1)
+      }
+    }
+    scheduleExpiry()
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [routingExpiresAt])
+  const canPrepare = canStart(library, choice)
   const running = status.phase === 'running'
   const dark = library.theme === 'dark' || library.theme === 'system' && darkSystem
   const screenSource = screen && 'id' in screen && library.sources.find(source => source.id === screen.id) || undefined
@@ -248,6 +257,27 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    if (!onAndroid || !loaded) return
+    const lastChecked = Number(preferences.getItem('air.lastUpdateCheckAt') ?? 0)
+    if (Number.isFinite(lastChecked) && Date.now() - lastChecked < 6 * 3_600_000) return
+    let active = true
+    void native<UpdateCheck>('checkUpdate')
+      .then(next => {
+        preferences.setItem('air.lastUpdateCheckAt', String(Date.now()))
+        if (!active) return
+        if (next.version && next.version !== next.current && next.version !== kernelInfo.appVersion) {
+          setAvailableUpdate(next)
+          if (preferences.getItem('air.promptedUpdateVersion') !== next.version) {
+            preferences.setItem('air.promptedUpdateVersion', next.version)
+            showMessage({ type: 'info', title: tr('发现新版本 Air Proxy ') + next.version })
+          }
+        }
+      })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [loaded, kernelInfo.appVersion])
+
+  useEffect(() => {
     if (!loaded || !library.monitoring || !onAndroid) return
     let active = true
     async function read() {
@@ -287,14 +317,14 @@ export function App() {
   }, [loaded, loadError])
 
   useEffect(() => {
-    if (!onAndroid || !loaded || status.phase !== 'idle' || !canStart(library, choice)) return
+    if (!onAndroid || !loaded || status.phase !== 'idle' || !canPrepare) return
     const timer = window.setTimeout(() => {
       if (!document.hidden && !working.current) {
-        void native('prepareProxy', compiled.plan).catch(() => undefined)
+        void native('prepareProxy', prepareRouting(current.current).compiled.plan).catch(() => undefined)
       }
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [loaded, status.phase, library, choice, compiled.plan])
+  }, [loaded, status.phase, canPrepare, compiled.plan])
 
   useEffect(() => {
     let gone = false
@@ -321,12 +351,20 @@ export function App() {
     }
     let cancelled = false
     let sampling = false
+    let revision = 0
+    let applications = new Map<string, { name: string; icon?: string }>()
     async function connections() {
       if (document.hidden || sampling) return
       sampling = true
       try {
-        const response = await native<{ connections?: Connection[]; applications?: Record<string, { name: string; icon?: string }> }>('connections')
-        if (cancelled) return
+        const known = applications
+        const generation = logClearGeneration.current
+        const response = await native<{
+          connections?: Connection[]
+          applications?: Record<string, { name: string; icon?: string }>
+          revision?: number
+        }>('connections', { revision, knownPackages: [...known.keys()] })
+        if (cancelled || applications !== known || generation !== logClearGeneration.current) return
         const nowAt = performance.now()
         const wallNow = Date.now()
         const prev = prevConnSample.current
@@ -336,11 +374,15 @@ export function App() {
           const parsed = row.start ? Date.parse(row.start) : Number.NaN
           return Number.isFinite(parsed) ? parsed : (row.firstSeenAt ?? 0)
         }
+        const visibleApps = new Map<string, { name: string; icon?: string }>()
         const rows = (response.connections ?? []).map((row): Connection => {
-          const app = response.applications?.[row.metadata.process ?? '']
+          const pkg = row.metadata.process ?? ''
+          const app = response.applications?.[pkg] ?? applications.get(pkg)
+          if (app && visibleApps.size < 128) visibleApps.set(pkg, app)
           return app ? { ...row, appName: app.name, appIcon: app.icon } : row
         })
-        const sampledClosed = new Map(rows.filter(row => row.closed).map(row => [row.id, row]))
+        applications = visibleApps
+        const sampledClosed = rows.filter(row => row.closed)
         const active = rows.filter(row => !row.closed).map((row): Connection => {
           nextMap.set(row.id, { upload: row.upload, download: row.download })
           const old = prev?.map.get(row.id)
@@ -374,18 +416,15 @@ export function App() {
             return existing?.firstSeenAt ? { ...row, firstSeenAt: existing.firstSeenAt } : row
           })
           const nextClosed = new Map<string, Connection>()
-          for (const row of [...previous, ...sampledClosed.values()]) {
+          for (const row of previous) {
             if (ids.has(row.id)) continue
-            const latest = sampledClosed.get(row.id) ?? row
+            nextClosed.set(row.id, row.closed ? row : { ...row, closed: true, closedAt: wallNow, upRate: 0, downRate: 0 })
+          }
+          for (const row of sampledClosed) {
+            if (ids.has(row.id)) continue
             const old = previousMap.get(row.id)
-            nextClosed.set(row.id, {
-              ...latest,
-              closed: true,
-              closedAt: old?.closedAt ?? latest.closedAt ?? wallNow,
-              firstSeenAt: old?.firstSeenAt ?? latest.firstSeenAt,
-              upRate: 0,
-              downRate: 0,
-            })
+            nextClosed.set(row.id, { ...row, closedAt: old?.closedAt ?? row.closedAt ?? wallNow,
+              firstSeenAt: old?.firstSeenAt ?? row.firstSeenAt, upRate: 0, downRate: 0 })
           }
           const combined = [...nextActive, ...nextClosed.values()].sort((a, b) => timeOf(b) - timeOf(a))
           if (combined.length <= 500) return combined
@@ -394,13 +433,18 @@ export function App() {
           return [...trimmedActive, ...combined.filter(row => row.closed).slice(0, remainingSlots)]
             .sort((a, b) => timeOf(b) - timeOf(a))
         })
+        revision = response.revision ?? 0
       } catch { /* A connection can end while an update is in progress. */ }
       finally { sampling = false }
     }
     void connections()
-    document.addEventListener('visibilitychange', connections)
+    const onVisibility = () => {
+      applications = new Map()
+      void connections()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
     const tick = setInterval(() => void connections(), 1500)
-    return () => { cancelled = true; clearInterval(tick); document.removeEventListener('visibilitychange', connections) }
+    return () => { cancelled = true; clearInterval(tick); document.removeEventListener('visibilitychange', onVisibility) }
   }, [running, tab, screen, status.startedAt])
 
   useEffect(() => {
@@ -460,7 +504,16 @@ export function App() {
     finally { working.current = false; setBusy(false) }
   }
 
-  async function save(next: Library, applyLive = running) {
+  function monitorPlan(library: Library) {
+    const { model, compiled } = prepareRouting(library)
+    return {
+      plan: compiled.plan, url: library.network.probeUrl, expected: library.network.probeStatus,
+      interval: library.network.probeIntervalMinutes,
+      targets: Object.fromEntries(model.nodes.map(node => [node.id, compiled.byId.get(node.id)!])),
+    }
+  }
+
+  async function save(next: Library, applyLive = running, applyNetwork = false) {
     const sources = await Promise.all(next.sources.map(async source => {
       if (!source.extension?.script.trim() && !source.extension?.rules.length)
         return source.extendedYaml === undefined ? source : { ...source, extendedYaml: undefined }
@@ -470,30 +523,32 @@ export function App() {
       yamlProfile(extendedYaml)
       return { ...source, extendedYaml }
     }))
-    next = { ...next, sources }
-    const nextModel = readLibrary(next)
-    const nextConfig = compile(next, nextModel)
+    if (sources.some((source, i) => source !== next.sources[i])) next = { ...next, sources }
+    const nextConfig = prepareRouting(next).compiled
     if (applyLive && !canStart(next, nextConfig.choice)) throw new Error(tr('请先停止代理，再移除最后一个可用出站'))
-    if (applyLive) await native('apply', nextConfig.plan)
+    if (applyLive) await native(applyNetwork ? 'applyNetwork' : 'apply', nextConfig.plan)
     try {
-      await native('save', { ...next, monitorPlan: next.monitoring ? monitorPlan(next, nextModel, nextConfig) : undefined })
+      await native('save', { ...next, monitorPlan: next.monitoring ? monitorPlan(next) : undefined })
       current.current = next
       setLibrary(next)
     } catch (error) {
-      if (applyLive) await native('apply', compile(current.current).plan).catch(() => undefined)
+      if (applyLive) {
+        await native(applyNetwork ? 'applyNetwork' : 'apply', prepareRouting(current.current).compiled.plan)
+          .catch(() => undefined)
+      }
       throw error
     }
   }
 
-  function commit(build: (latest: Library) => Library, applyLive = running) {
-    return enqueueWrite(() => save(build(current.current), applyLive))
+  function commit(build: (latest: Library) => Library, applyLive = running, applyNetwork = false) {
+    return enqueueWrite(() => save(build(current.current), applyLive, applyNetwork))
   }
 
   function changeOutbound(patch: Partial<Pick<Library, 'choice' | 'mode'>>) {
     return enqueueWrite(async () => {
       const previous = current.current
       const next = { ...previous, ...patch }
-      const nextConfig = compile(next, readLibrary(next))
+      const nextConfig = prepareRouting(next).compiled
       if (running) {
         if (!canStart(next, nextConfig.choice)) throw new Error(tr('请先导入订阅或添加节点'))
         await native('apply', nextConfig.plan)
@@ -501,7 +556,7 @@ export function App() {
       try {
         await native('saveOutbound', { choice: next.choice ?? null, mode: next.mode })
       } catch (error) {
-        if (running) await native('apply', compile(previous).plan).catch(() => undefined)
+        if (running) await native('apply', prepareRouting(previous).compiled.plan).catch(() => undefined)
         throw error
       }
       current.current = next
@@ -525,7 +580,7 @@ export function App() {
       const latest = current.current
       const previous = { ...latest, mode: modeRollbackRef.current }
       const next = { ...latest, mode: nextMode }
-      const nextConfig = compile(next, readLibrary(next))
+      const nextConfig = prepareRouting(next).compiled
       if (running) {
         if (!canStart(next, nextConfig.choice)) throw new Error(tr('请先导入订阅或添加节点'))
         await native('apply', nextConfig.plan)
@@ -533,7 +588,7 @@ export function App() {
       try {
         await native('saveOutbound', { choice: next.choice ?? null, mode: next.mode })
       } catch (error) {
-        if (running) await native('apply', compile(previous).plan).catch(() => undefined)
+        if (running) await native('apply', prepareRouting(previous).compiled.plan).catch(() => undefined)
         throw error
       }
       modeRollbackRef.current = next.mode
@@ -551,7 +606,7 @@ export function App() {
       })
   }
 
-  async function saveConfiguration(next: Library, apply: boolean) {
+  async function saveConfiguration(next: Library, apply: boolean, applyNetwork = false) {
     let saved = false
     await task(async () => {
       validateNetwork(next.network)
@@ -560,13 +615,26 @@ export function App() {
       if (kernelInfo.sdk < 29 && next.routing.rules.some(rule => rule.enabled && rule.matcher === 'processName')) {
         throw new Error(tr('按应用包名分流需要 Android 10 或更新版本'))
       }
-      const effective = compile(next)
+      const effective = prepareRouting(next).compiled
       const targets = [next.routing.fallback, ...next.routing.rules.filter(rule => rule.enabled).map(rule => rule.target)]
       if (targets.some(target => 'id' in target && !effective.byId.has(target.id))) throw new Error(tr('有规则指向不可用的分组或链路'))
       if (onAndroid) await native('validatePlan', { plan: effective.plan })
-      await commit(latest => ({ ...latest, network: next.network, routing: next.routing, monitoring: next.monitoring }), running && apply)
+      await commit(
+        latest => ({ ...latest, network: next.network, routing: next.routing, monitoring: next.monitoring }),
+        running && apply,
+        applyNetwork,
+      )
       saved = true
-      notice(running && !apply ? tr('已保存，下次启动代理生效') : tr('配置已保存'))
+      if (onAndroid && running && apply && applyNetwork) {
+        setStatus(await native<VpnStatus>('status'))
+      }
+      notice(
+        running && apply && applyNetwork
+          ? tr('已保存并应用到当前代理')
+          : running && !apply
+            ? tr('已保存，下次启动代理生效')
+            : tr('配置已保存'),
+      )
     })
     return saved
   }
@@ -583,9 +651,13 @@ export function App() {
   }
 
   function togglePower() {
-    if (!running && !canStart(library, choice)) {
+    const fresh = prepareRouting(current.current)
+    if (fresh.compiled !== compiled) {
+      setExpiryTick(tick => tick + 1)
+    }
+    if (!running && !canStart(current.current, fresh.compiled.choice)) {
       showMessage({ type: 'info', title: tr('请先导入订阅或添加节点') })
-      if (model.nodes.length) go('nodes')
+      if (fresh.model.nodes.length) go('nodes')
       else importSub()
       return
     }
@@ -596,7 +668,7 @@ export function App() {
       setPowerPending(action)
       try {
         if (action === 'start') {
-          const next = await native<VpnStatus>('start', compiled.plan)
+          const next = await native<VpnStatus>('start', fresh.compiled.plan)
           if (!document.hidden && next.phase === 'running') {
             await waitForProxyPowerAnimation(action, startedAt)
           }
@@ -906,7 +978,7 @@ export function App() {
   type ProbeNode = { id: string; alias: string }
 
   function groupProbeChunks(ids: string[], libraryForTest: Library) {
-    const plan = compile(libraryForTest)
+    const plan = prepareRouting(libraryForTest).compiled
     // A request stays within one hosts scope while the core fills its probe slots.
     const byScope = new Map<number, ProbeNode[]>()
     for (const id of new Set(ids)) {
@@ -1155,7 +1227,7 @@ export function App() {
   }
 
   function enqueueManualProbe(ids: string[]) {
-    const plan = compile(current.current)
+    const plan = prepareRouting(current.current).compiled
     let added = false
     for (const id of new Set(ids)) {
       if (!plan.byId.has(id)) continue
@@ -1294,6 +1366,10 @@ export function App() {
         ? 'stopping'
         : status.phase
 
+  const pendingUpdate = availableUpdate?.version && availableUpdate.version !== kernelInfo.appVersion
+    ? availableUpdate
+    : undefined
+
   let page: ReactNode
   const back = () => { setDialog(undefined); setScreen(undefined); setNodesSelecting(false); setChecked([]) }
   if (!loaded) {
@@ -1311,13 +1387,24 @@ export function App() {
         apps={history.map(conn => ({ executable: conn.metadata.process, path: conn.metadata.processPath, name: conn.appName, icon: conn.appIcon }))}
         save={routing => saveConfiguration({ ...current.current, routing }, true)} />}
       {pageKind === 'configFile' && <ConfigSettings library={library} busy={busy}
-        save={patch => saveConfiguration({ ...current.current, ...patch }, true)} />}
+        save={patch => saveConfiguration(
+          { ...current.current, ...patch },
+          true,
+          JSON.stringify(patch.network) !== JSON.stringify(current.current.network),
+        )} />}
       {pageKind === 'kernel' && <KernelSettings info={kernelInfo} active={running}
-        check={() => native<void>('validatePlan', { plan: compiled.plan })} />}
-      {pageKind === 'about' && <AboutSettings info={kernelInfo} />}
+        check={() => native<void>('validatePlan', { plan: prepareRouting(current.current).compiled.plan })} />}
+      {pageKind === 'about' && (
+        <AboutSettings info={kernelInfo} update={pendingUpdate} onUpdateChecked={setAvailableUpdate} />
+      )}
       {(pageKind === 'dns' || pageKind === 'tun' || pageKind === 'inbound' || pageKind === 'monitoring') &&
         <NetworkSettings key={pageKind} page={pageKind} library={library} busy={busy} sdk={kernelInfo.sdk}
-          backgroundResult={backgroundResult} save={(network, monitoring) => saveConfiguration({ ...current.current, network, monitoring }, false)} />}
+          backgroundResult={backgroundResult}
+          save={(network, monitoring) => saveConfiguration(
+            { ...current.current, network, monitoring },
+            pageKind !== 'monitoring',
+            pageKind !== 'monitoring',
+          )} />}
     </>
   } else {
     switch (tab) {
@@ -1326,18 +1413,7 @@ export function App() {
           icon="home"
           animateKey="tab:home"
           statusPhase={currentPhase}
-          statusShift={homeStatusShift}
           title={tr("仪表盘")}
-          action={
-            <HomeHeaderPower
-              progress={homePowerProgress}
-              widthMv={homePowerWidth}
-              status={status}
-              pending={powerPending}
-              busy={busy}
-              toggle={togglePower}
-            />
-          }
         />
           <Home status={status} pending={powerPending} library={library} model={model} choice={choice} exit={exitInfo} exitChecking={exitChecking} exitFailed={exitFailed} rows={history} labels={compiled.labels} busy={busy}
             detect={detect} mode={switchMode}
@@ -1347,8 +1423,7 @@ export function App() {
             importSub={importSub} toggle={togglePower}
             openGroup={group => setDialog({ kind: 'group', group })}
             openConnection={conn => setDialog({ kind: 'connection', id: conn.id, snapshot: conn })}
-            copyIp={ip => copySubscriptionText(ip).then(() => { notice(tr('出口 IP 已复制')); return true }).catch(() => { showMessage({ type: 'error', title: tr('复制失败') }); return false })}
-            headerPowerProgress={homePowerProgress} /></>
+            copyIp={ip => copySubscriptionText(ip).then(() => { notice(tr('出口 IP 已复制')); return true }).catch(() => { showMessage({ type: 'error', title: tr('复制失败') }); return false })} /></>
         break
       }
       case 'subscriptions':
@@ -1375,11 +1450,15 @@ export function App() {
           <Connections running={running} rows={history} exit={exitInfo} labels={compiled.labels} busy={busy} measurement={chainMeasurement}
             filter={connectionsFilter} setFilter={setConnectionsFilter} query={connectionsQuery} setQuery={setConnectionsQuery}
             diagnose={detect}
-            onClearLogs={() => setHistory(previous => previous.filter(row => !row.closed))}
+            onClearLogs={() => void task(async () => {
+              if (onAndroid) await native('clearConnectionLogs')
+              logClearGeneration.current++
+              setHistory(previous => previous.filter(row => !row.closed))
+            })}
             onSelect={conn => setDialog({ kind: 'connection', id: conn.id, snapshot: conn })} /></>
         break
       case 'settings':
-        page = <><Header icon="settings" animateKey="tab:settings" statusPhase={currentPhase} title={tr("设置")} /><SettingsIndex library={library} open={kind => setScreen({ kind })} /></>
+        page = <><Header icon="settings" animateKey="tab:settings" statusPhase={currentPhase} title={tr("设置")} /><SettingsIndex library={library} open={kind => setScreen({ kind })} availableUpdate={pendingUpdate} /></>
         break
     }
   }
@@ -1604,7 +1683,7 @@ export function App() {
     {loaded && (
       <>
         {page}
-        <BottomNavigation page={tab} onChange={go} />
+        <BottomNavigation page={tab} onChange={go} settingsBadge={Boolean(pendingUpdate?.version)} />
         <Sheet open={Boolean(dialog && sheet)} title={sheetTitle} close={() => setDialog(undefined)}>{sheet}</Sheet>
       </>
     )}

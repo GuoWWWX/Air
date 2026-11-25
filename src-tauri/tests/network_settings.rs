@@ -10,6 +10,7 @@ fn factory_dns_uses_real_ips_and_upgrades_only_the_generated_legacy_file() {
     current.validate().unwrap();
     assert!(current.dns_hijack && current.respect_rules);
     assert!(current.tcp_concurrent);
+    assert!(!current.strict_route && current.bypass_lan);
     assert_eq!(current.enhanced_mode, "redir-host");
     assert!(current.nameserver.iter().all(|host| host.starts_with("https://")));
     assert!(!current.proxy_server_nameserver.is_empty());
@@ -25,6 +26,38 @@ fn factory_dns_uses_real_ips_and_upgrades_only_the_generated_legacy_file() {
     file.upgrade_factory_network().unwrap();
     assert_eq!(file.network().unwrap().settings, current);
     assert_eq!(fs::read_to_string(dir.path().join("air-config.previous.yaml")).unwrap(), template);
+}
+
+#[test]
+fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
+    let previous_windows = NetworkSettings {
+        strict_route: true,
+        ..NetworkSettings::default()
+    };
+    let mut network_val = serde_json::to_value(&previous_windows).unwrap();
+    network_val.as_object_mut().unwrap().remove("bypassLan");
+    let untouched = serde_yaml::to_string(&serde_json::json!({
+        "routing": RoutingConfig::default(),
+        "network": network_val,
+    }))
+    .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = RoutingFile::new(dir.path());
+    fs::write(file.path(), &untouched).unwrap();
+    file.upgrade_factory_network().unwrap();
+    let upgraded = file.network().unwrap().settings;
+    assert!(!upgraded.strict_route);
+    assert!(upgraded.bypass_lan);
+
+    let custom_dir = tempfile::tempdir().unwrap();
+    let custom_file = RoutingFile::new(custom_dir.path());
+    let custom_contents = format!("# edited by user\n{untouched}");
+    fs::write(custom_file.path(), &custom_contents).unwrap();
+    custom_file.upgrade_factory_network().unwrap();
+    let preserved = custom_file.network().unwrap().settings;
+    assert!(preserved.strict_route);
+    assert!(preserved.bypass_lan);
 }
 
 #[test]

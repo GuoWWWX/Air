@@ -84,7 +84,7 @@ fn service_status(require_current: bool) -> Option<(ServiceStatus, ServiceVersio
 }
 
 #[derive(Clone, Copy)]
-enum ServiceVersion { Current, PreviousCore, V8, Compatible, Legacy }
+enum ServiceVersion { Current, V10, V9, PreviousCore, V8, Compatible, Legacy }
 
 impl ServiceVersion {
     fn has_persistent_adapter(self) -> bool {
@@ -92,7 +92,7 @@ impl ServiceVersion {
     }
 
     fn supports_standby(self) -> bool {
-        matches!(self, Self::Current | Self::PreviousCore)
+        matches!(self, Self::Current | Self::V10 | Self::V9 | Self::PreviousCore)
     }
 }
 
@@ -109,9 +109,13 @@ fn owned_service() -> Option<(Service, ServiceVersion)> {
     let version = match version {
         install::RUN if engine == install::CORE_SHA256 => ServiceVersion::Current,
         install::RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::PreviousCore,
+        install::V10_RUN if engine == install::CORE_SHA256 || engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V10,
+        install::V9_RUN if engine == install::CORE_SHA256 || engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V9,
         install::V8_RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V8,
         install::OLDER_COMPATIBLE_RUN if engine == install::LEGACY_CORE_SHA256 => ServiceVersion::Compatible,
         install::RUN
+        | install::V10_RUN
+        | install::V9_RUN
         | install::V8_RUN
         | install::V7_RUN
         | install::V6_RUN
@@ -170,6 +174,18 @@ fn compat_config(mut config: Value, current_version: bool) -> Value {
     config
 }
 
+fn compat_network_settings(settings: &NetworkSettings) -> AirResult<Value> {
+    let mut value = serde_json::to_value(settings).map_err(|_| "无法传递虚拟网卡配置")?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("bypassLan");
+        obj.insert(
+            "routeExcludeAddress".into(),
+            json!(settings.effective_route_exclude_address(settings.tun_ipv6())),
+        );
+    }
+    Ok(value)
+}
+
 #[derive(Clone)]
 pub(super) struct Session {
     pipe: Arc<Mutex<Option<NamedPipeClient>>>,
@@ -180,19 +196,26 @@ impl Session {
     pub async fn start(config: serde_yaml::Value, port: Option<u16>, allow_lan: bool) -> AirResult<(Self, u16)> {
         let session = Self::connect(false).await?;
         let config = compat_config(json_config(config)?, session.version.has_persistent_adapter());
-        let port = session.call(Request::Start { config, port, allow_lan }).await?;
+        let port = session.call(&Request::Start { config, port, allow_lan }).await?;
         Ok((session, port))
     }
 
     pub async fn prepare(config: &serde_yaml::Value) -> AirResult<Self> {
         let session = Self::connect(true).await?;
-        session.call::<()>(Request::Prepare { config: json_config(config)? }).await?;
+        session.call::<()>(&Request::Prepare { config: json_config(config)? }).await?;
         Ok(session)
     }
 
     pub async fn activate(&self, settings: &NetworkSettings) -> AirResult<u16> {
         use super::loopback::PREFERRED_PORT;
-        let activate = |port| self.call(Request::Activate { settings: Box::new(settings.clone()), port });
+        let activate = |port| async move {
+            if matches!(self.version, ServiceVersion::Current | ServiceVersion::V10) {
+                self.call(&Request::Activate { settings: Box::new(settings.clone()), port }).await
+            } else {
+                let compat = compat_network_settings(settings)?;
+                self.call(&json!({ "op": "activate", "settings": compat, "port": port })).await
+            }
+        };
         match activate(settings.mixed_port.or(Some(PREFERRED_PORT))).await {
             Err(error) if settings.mixed_port.is_none() && error == crate::mihomo::mixed_port_unavailable(PREFERRED_PORT) => activate(None).await,
             result => result,
@@ -203,7 +226,7 @@ impl Session {
         if !self.version.supports_standby() {
             return Err("虚拟网卡服务尚未支持内核待机".into());
         }
-        self.call(Request::Park).await
+        self.call(&Request::Park).await
     }
 
     async fn connect(require_standby: bool) -> AirResult<Self> {
@@ -235,11 +258,11 @@ impl Session {
         })
     }
 
-    async fn call<T: DeserializeOwned>(&self, request: Request) -> AirResult<T> {
+    async fn call<T: DeserializeOwned>(&self, request: &impl Serialize) -> AirResult<T> {
         let mut slot = self.pipe.lock().await;
         let mut pipe = slot.take().ok_or("虚拟网卡服务连接已关闭")?;
         let result = timeout(Duration::from_secs(15), async {
-            send(&mut pipe, &request).await?;
+            send(&mut pipe, request).await?;
             read::<Response>(&mut pipe).await
         }).await
             .map_err(|_| "虚拟网卡服务响应超时")?
@@ -249,50 +272,55 @@ impl Session {
     }
 
     pub async fn running(&self) -> bool {
-        self.call(Request::Alive).await.unwrap_or(false)
+        self.call(&Request::Alive).await.unwrap_or(false)
     }
 
     pub async fn connections(&self) -> AirResult<ConnectionsSnapshot> {
-        self.call(Request::Connections).await
+        self.call(&Request::Connections).await
     }
 
     pub async fn set_mode(&self, mode: Mode) -> AirResult<()> {
-        self.call(Request::Mode { mode }).await
+        self.call(&Request::Mode { mode }).await
     }
 
     pub async fn set_tun(&self, settings: &NetworkSettings, enabled: bool) -> AirResult<()> {
-        self.call(Request::Tun { settings: Box::new(settings.clone()), enabled }).await
+        if matches!(self.version, ServiceVersion::Current | ServiceVersion::V10) {
+            self.call(&Request::Tun { settings: Box::new(settings.clone()), enabled }).await
+        } else {
+            let compat = compat_network_settings(settings)?;
+            self.call(&json!({ "op": "tun", "settings": compat, "enabled": enabled })).await
+        }
     }
 
     pub async fn tun_state(&self) -> AirResult<bool> {
-        self.call(Request::TunState).await
+        self.call(&Request::TunState).await
     }
 
     pub async fn select_global(&self, name: &str) -> AirResult<()> {
-        self.call(Request::Global { name: name.into() }).await
+        self.call(&Request::Global { name: name.into() }).await
     }
 
     pub async fn close_connections(&self, ids: &[String]) -> AirResult<()> {
         if !self.version.has_persistent_adapter() || ids.is_empty() {
             return Ok(());
         }
-        self.call(Request::CloseConnections { ids: ids.to_vec() }).await
+        self.call(&Request::CloseConnections { ids: ids.to_vec() }).await
     }
 
     pub async fn close_all_connections(&self) -> AirResult<()> {
         if !self.version.has_persistent_adapter() {
             return Ok(());
         }
-        self.call(Request::CloseAllConnections).await
+        self.call(&Request::CloseAllConnections).await
     }
 
     pub async fn reload(&self, config: &serde_yaml::Value) -> AirResult<()> {
         let config = compat_config(json_config(config)?, self.version.has_persistent_adapter());
-        self.call(Request::Reload { config }).await
+        self.call(&Request::Reload { config }).await
     }
 
     pub async fn stop(&self) -> AirResult<()> {
-        self.call::<()>(Request::Stop).await?;
+        self.call::<()>(&Request::Stop).await?;
         self.pipe.lock().await.take();
         Ok(())
     }
@@ -708,5 +736,35 @@ mod tests {
         assert!(legacy.get("unified-delay").is_none());
         assert!(legacy.get("sniffer").is_none());
         assert!(legacy["tun"].get("endpoint-independent-nat").is_none());
+    }
+
+    #[test]
+    fn compat_network_settings_strips_bypass_lan_and_preserves_effective_exclusions() {
+        let settings = NetworkSettings {
+            ipv6: false,
+            bypass_lan: true,
+            route_exclude_address: vec!["203.0.113.0/24".into()],
+            ..NetworkSettings::default()
+        };
+        let compat = compat_network_settings(&settings).unwrap();
+        assert!(compat.get("bypassLan").is_none());
+        assert_eq!(
+            compat["routeExcludeAddress"],
+            json!([
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+                "169.254.0.0/16",
+                "203.0.113.0/24"
+            ])
+        );
+
+        let custom_only = NetworkSettings {
+            bypass_lan: false,
+            ..settings
+        };
+        let compat_custom = compat_network_settings(&custom_only).unwrap();
+        assert!(compat_custom.get("bypassLan").is_none());
+        assert_eq!(compat_custom["routeExcludeAddress"], json!(["203.0.113.0/24"]));
     }
 }

@@ -13,17 +13,19 @@ fn stage_windows_assets() {
     let staged = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../.cache/air");
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let windows = env::var_os("CARGO_CFG_TARGET_OS").is_some_and(|os| os == "windows");
-    let release = windows && env::var_os("CARGO_FEATURE_CUSTOM_PROTOCOL").is_some();
+    let desktop = env::var_os("CARGO_FEATURE_DESKTOP").is_some();
+    let release = desktop && windows && env::var_os("CARGO_FEATURE_CUSTOM_PROTOCOL").is_some();
     for (name, directory, script) in [
         ("geosite.dat", "mihomo-data", "prepare-mihomo-data.ps1"),
         ("geoip.metadb", "mihomo-data", "prepare-mihomo-data.ps1"),
         ("wintun.dll", "windows-x64", "prepare-windows-kernel.ps1"),
         ("Wintun-LICENSE.txt", "windows-x64", "prepare-windows-kernel.ps1"),
+        ("air-tun-service.exe", "windows-x64", "prepare-windows-service.ps1"),
     ] {
         let source = staged.join(directory).join(name);
         println!("cargo:rerun-if-changed={}", source.display());
         let target = out.join(name);
-        if windows && source.is_file() {
+        if windows && desktop && source.is_file() {
             fs::copy(source, target).expect("copy staged Windows asset");
         } else {
             assert!(

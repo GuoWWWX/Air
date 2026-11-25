@@ -44,12 +44,12 @@ fn install_directory() -> Result<PathBuf, String> {
         )
     };
     if code != 0 {
-        return Err("未找到 Air 的当前用户安装，请运行 Air 安装包".into());
+        return Err("未找到 Air Proxy 的当前用户安装，请运行 Air Proxy 安装包".into());
     }
     let value = String::from_utf16_lossy(&value[..length as usize / 2]);
     let path = PathBuf::from(value.trim_end_matches('\0').trim_matches('"'));
     if !path.is_absolute() || !path.join(EXE).is_file() || !path.join("uninstall.exe").is_file() {
-        return Err("Air 安装路径无效".into());
+        return Err("Air Proxy 安装路径无效".into());
     }
     path.canonicalize().map_err(package::io_error)
 }
@@ -60,7 +60,7 @@ pub fn current_install() -> Result<PathBuf, String> {
         .and_then(|path| path.canonicalize())
         .map_err(package::io_error)?;
     if exe != dir.join(EXE) {
-        return Err("请从当前用户安装目录启动 Air 后再更新".into());
+        return Err("请从当前用户安装目录启动 Air Proxy 后再更新".into());
     }
     Ok(dir)
 }
@@ -121,12 +121,12 @@ fn wait_for_application(pid: u32) -> Result<(), String> {
         if io::Error::last_os_error().raw_os_error() == Some(87) {
             return Ok(());
         }
-        return Err("无法等待 Air 退出".into());
+        return Err("无法等待 Air Proxy 退出".into());
     }
     let state = unsafe { WaitForSingleObject(handle, 30_000) };
     unsafe { CloseHandle(handle) };
     if state != WAIT_OBJECT_0 {
-        return Err("Air 正在退出，请重新打开后重试".into());
+        return Err("Air Proxy 正在退出，请重新打开后重试".into());
     }
     Ok(())
 }
@@ -182,7 +182,7 @@ pub(super) fn apply(manifest: &Manifest, install: &Path, cache: &Path) -> Result
                 };
             }
             if !recovered {
-                return Err("安装未完成，请在 Air 中重试更新".into());
+                return Err("安装未完成，请在 Air Proxy 中重试更新".into());
             }
             return Err(package::io_error(error));
         }
@@ -224,7 +224,7 @@ pub fn run_helper() -> bool {
         let pid = args
             .next()
             .and_then(|value| value.parse().ok())
-            .ok_or("缺少 Air 进程")?;
+            .ok_or("缺少 Air Proxy 进程")?;
         let _lock = lock(root).map_err(package::io_error)?;
         wait_for_application(pid)?;
         let raw = fs::read(root.join("approved.json")).map_err(package::io_error)?;

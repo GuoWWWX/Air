@@ -13,3 +13,5 @@ android/.kotlin/
 /.cache/
 /artifacts/
 __pycache__/
+.agents/
+skills-lock.json

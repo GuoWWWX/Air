@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
     time::{Duration, Instant},
 };
@@ -287,6 +287,59 @@ impl App {
         })
     }
 
+    pub fn config_dir(&self) -> &Path {
+        &self.directory
+    }
+
+    pub fn runtime_dir(&self) -> &Path {
+        &self.runtime
+    }
+
+    fn load_ui_preferences(&self) -> AirResult<Option<HashMap<String, String>>> {
+        match std::fs::read(self.directory.join("interface.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    pub fn saved_kernel_override(&self) -> Option<PathBuf> {
+        let preferences = self.load_ui_preferences().ok().flatten()?;
+        let path = preferences.get("air.kernelPath")?.trim();
+        if path.is_empty() {
+            return None;
+        }
+        let candidate = PathBuf::from(path);
+        (candidate.is_absolute() && candidate.is_file()).then_some(candidate)
+    }
+
+    pub fn saved_tray_start_target(&self) -> AirResult<StartTarget> {
+        let session = self.store.startup_proxy()?;
+        if let Some(target) = session.target {
+            return Ok(target);
+        }
+        let preferences = self.load_ui_preferences()?.unwrap_or_default();
+        if let Some(id) = preferences.get("air.outboundGroupId").map(|v| v.trim()).filter(|v| !v.is_empty()) {
+            return Ok(StartTarget::Group {
+                id: id.to_string(),
+                name: String::new(),
+                members: vec![],
+            });
+        }
+        if let Some(id) = preferences.get("air.preferredNodeId").map(|v| v.trim()).filter(|v| !v.is_empty()) {
+            let group_id = preferences
+                .get("air.preferredGroupId")
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .map(ToString::to_string);
+            return Ok(StartTarget::Node {
+                id: id.to_string(),
+                group_id,
+            });
+        }
+        Ok(StartTarget::Routing)
+    }
+
     async fn reload(&self) -> AirResult<()> {
         *self.library.write().await = Library::load(&self.store)?;
         Ok(())
@@ -508,6 +561,10 @@ impl App {
         result
     }
 
+    pub fn window_hidden(&self) -> bool {
+        self.background.borrow().window_hidden
+    }
+
     pub fn set_window_hidden(&self, hidden: bool) {
         self.background.send_if_modified(|current| {
             if current.window_hidden == hidden {
@@ -681,11 +738,7 @@ struct GroupView {
 
 #[tauri::command]
 pub fn read_ui_preferences(state: State<'_, Arc<App>>) -> AirResult<Option<HashMap<String, String>>> {
-    match std::fs::read(state.directory.join("interface.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    state.load_ui_preferences()
 }
 
 #[tauri::command]
@@ -1564,8 +1617,37 @@ pub async fn test_dns_settings(state: State<'_, Arc<App>>, kernel_path: PathBuf,
 
 #[tauri::command]
 pub async fn save_network_settings(state: State<'_, Arc<App>>, settings: NetworkSettings, revision: String) -> AirResult<NetworkDocument> {
+    settings.validate()?;
+    let mut runtime = state.proxy.lock().await;
     let _guard = state.edits.lock().await;
-    RoutingFile::new(&state.directory).save_network(&settings, &revision)
+    let library = state.library.read().await;
+    let file = RoutingFile::new(&state.directory);
+    let previous = file.network()?;
+    let active = runtime.active_target();
+    let base = runtime.active_network().unwrap_or(&previous.settings);
+    let needs_reload = active.as_ref().is_some_and(|target| {
+        base.proxy_settings_changed(&settings)
+            || (matches!(target, StartTarget::Group { .. })
+                && (base.probe_url != settings.probe_url
+                    || base.probe_status != settings.probe_status))
+    });
+    let next_proxy = match (&active, needs_reload) {
+        (Some(target), true) => {
+            Some(state.compile_target(runtime.mode(), &file.load()?.routing, &library, target)?)
+        }
+        _ => None,
+    };
+    let document = file.save_network(&settings, &revision)?;
+    if let Some(proxy_config) = next_proxy {
+        if let Err(error) = runtime.reload_network(proxy_config, settings).await {
+            file.save_network(&previous.settings, &document.revision)
+                .map_err(|restore| format!("{error}。未能恢复网络配置：{restore}"))?;
+            return Err(error);
+        }
+    } else if active.is_none() && previous.settings.proxy_settings_changed(&settings) {
+        runtime.discard_standby().await;
+    }
+    Ok(document)
 }
 
 #[tauri::command]
@@ -1682,8 +1764,11 @@ pub async fn proxy_exit(state: State<'_, Arc<App>>, session_id: String) -> AirRe
 }
 
 #[tauri::command]
-pub async fn proxy_telemetry(state: State<'_, Arc<App>>) -> AirResult<Option<TelemetrySnapshot>> {
-    Ok(state.proxy.lock().await.telemetry())
+pub async fn proxy_telemetry(
+    state: State<'_, Arc<App>>,
+    cursor: Option<proxy::TelemetryCursor>,
+) -> AirResult<Option<TelemetrySnapshot>> {
+    Ok(state.proxy.lock().await.telemetry_update(cursor.as_ref()))
 }
 
 #[tauri::command]
@@ -1695,10 +1780,9 @@ pub async fn resolve_applications(
         .map_err(|_| "无法读取应用信息".to_string())
 }
 
-#[tauri::command]
-pub async fn proxy_control(
-    state: State<'_, Arc<App>>,
-    app: AppHandle,
+pub async fn execute_proxy_control(
+    state: &Arc<App>,
+    app: &AppHandle,
     request: ProxyAction,
 ) -> AirResult<ProxyStatus> {
     let mut runtime = state.proxy.lock().await;
@@ -1748,8 +1832,17 @@ pub async fn proxy_control(
     session.tun = status.tun;
     session.running = status.running;
     state.store.save_startup_proxy(&session)?;
-    crate::tray::sync(&app, &status);
+    crate::tray::sync(app, &status);
     Ok(status)
+}
+
+#[tauri::command]
+pub async fn proxy_control(
+    state: State<'_, Arc<App>>,
+    app: AppHandle,
+    request: ProxyAction,
+) -> AirResult<ProxyStatus> {
+    execute_proxy_control(state.inner(), &app, request).await
 }
 
 #[tauri::command]

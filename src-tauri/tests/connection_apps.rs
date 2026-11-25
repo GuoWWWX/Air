@@ -2,7 +2,7 @@
 
 use air::{
     network::NetworkSettings,
-    proxy::{compile, Mode, Runtime, StartTarget},
+    proxy::{compile, Mode, Runtime, StartTarget, TelemetryCursor},
     routing::{RoutingConfig, RoutingFile},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -148,6 +148,60 @@ async fn live_connection_reports_the_sending_application_and_its_icon() {
     if let Some(path) = std::env::var_os("AIR_TEST_CONNECTION_TELEMETRY") {
         std::fs::write(path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
     }
+    let mut cursor = TelemetryCursor {
+        session_id: snapshot["sessionId"].as_str().unwrap().to_owned(),
+        revision: snapshot["revision"].as_u64().unwrap(),
+        known_icons: [icon_key.to_owned()].into_iter().collect(),
+    };
+    Runtime::sample_telemetry_with_visibility(&runtime, true).await;
+    let poll = || async {
+        serde_json::to_value(
+            runtime
+                .lock()
+                .await
+                .telemetry_update(Some(&cursor))
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let hidden = poll().await;
+    let matching = hidden["connections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == row["id"])
+        .unwrap();
+    assert_eq!(matching["appIconKey"], icon_key);
+    assert_eq!(matching["appExecutable"], row["appExecutable"]);
+    assert!(hidden["appIcons"].get(icon_key).is_none());
     client.kill().await.unwrap();
+    drop(connection);
+
+    let closed = timeout(Duration::from_secs(4), async {
+        loop {
+            Runtime::sample_telemetry_with_visibility(&runtime, true).await;
+            let packet = poll().await;
+            if packet["connectionLogs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["id"] == row["id"] && item["closed"] == true)
+            {
+                return packet;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("a connection closed in the tray is still recorded");
+    cursor.revision = closed["revision"].as_u64().unwrap();
+    let mut locked = runtime.lock().await;
+    let ack = serde_json::to_value(locked.telemetry_update(Some(&cursor)).unwrap()).unwrap();
+    assert!(ack["connectionLogs"].as_array().unwrap().is_empty());
+    assert!(ack["logOrder"].as_array().unwrap().contains(&row["id"]));
+    locked.clear_connection_logs();
+    let cleared = serde_json::to_value(locked.telemetry_update(Some(&cursor)).unwrap()).unwrap();
+    assert!(!cleared["logOrder"].as_array().unwrap().contains(&row["id"]));
+    drop(locked);
     runtime.lock().await.stop().await.unwrap();
 }

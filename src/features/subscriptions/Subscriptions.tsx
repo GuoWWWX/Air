@@ -37,6 +37,7 @@ import {
   DropdownMenuTrigger,
 } from '@/shared/ui/dropdown-menu'
 import { Input } from '@/shared/ui/input'
+import { Segmented } from '@/shared/ui/segmented'
 import { Menu } from '@base-ui/react/menu'
 import { SubscriptionTool, type SubscriptionToolData } from '@/shared/ui/SubscriptionTool'
 import { useSubscriptionOrder } from '@/shared/proxy/useSubscriptionOrder'
@@ -139,8 +140,7 @@ export function Subscriptions({
     } catch (error) { onError(error) }
   }
 
-  const [allNodes, setAllNodes] = useState(false)
-  const [allGroups, setAllGroups] = useState(false)
+  const [contentTab, setContentTab] = useState<'nodes' | 'groups'>('nodes')
 
   const sourceList = useMemo(
     () =>
@@ -674,31 +674,43 @@ export function Subscriptions({
           </header>
 
           {chosen.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 border-b border-border-subtle pb-2.5">
-              <AnimatePresence initial={false}>
-                {chosen.map(source => (
-                  <motion.span
-                    key={source.id}
-                    layout
-                    initial={{ opacity: 0, scale: 0.85 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.85 }}
-                    transition={{ duration: 0.14 }}
-                    className="inline-flex"
-                  >
-                    <Badge variant="accent" className="max-w-36 overflow-hidden" title={source.name}>
-                      <span className="min-w-0 truncate">{source.name}</span>
-                    </Badge>
-                  </motion.span>
-                ))}
-              </AnimatePresence>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle pb-2.5">
+              <div className="flex flex-wrap gap-1.5">
+                <AnimatePresence initial={false}>
+                  {chosen.map(source => (
+                    <motion.span
+                      key={source.id}
+                      layout
+                      initial={{ opacity: 0, scale: 0.85 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.85 }}
+                      transition={{ duration: 0.14 }}
+                      className="inline-flex"
+                    >
+                      <Badge variant="accent" className="max-w-36 overflow-hidden" title={source.name}>
+                        <span className="min-w-0 truncate">{source.name}</span>
+                      </Badge>
+                    </motion.span>
+                  ))}
+                </AnimatePresence>
+              </div>
+              <Segmented
+                ariaLabel={tr('订阅内容')}
+                size="sm"
+                value={nodes.length === 0 && groups.length > 0 ? 'groups' : contentTab}
+                onChange={setContentTab}
+                options={[
+                  { value: 'nodes', label: `${tr('节点')} (${nodes.length})` },
+                  { value: 'groups', label: `${tr('分组')} (${groups.length})` },
+                ]}
+              />
             </div>
           )}
 
           <ContextMenu>
             <ContextMenuTrigger
               render={
-                <div className="air-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-0.5" />
+                <div className="air-scroll flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-0.5" />
               }
             >
             {!chosen.length ? (
@@ -707,142 +719,107 @@ export function Subscriptions({
                 <strong className="text-sm font-semibold text-foreground">{tr("选择订阅来源")}</strong>
                 <span className="text-xs text-muted-foreground">{tr("勾选左侧订阅后，将同步显示在「节点库」与此处汇总")}</span>
               </div>
+            ) : (nodes.length === 0 && groups.length > 0 ? 'groups' : contentTab) === 'groups' ? (
+              <div className="flex flex-col gap-1.5">
+                {groups.map(group => (
+                  <div
+                    key={`${group.sourceId}:${group.name}`}
+                    className="flex items-center gap-2.5 rounded-[8px] border border-border bg-muted/55 px-3 py-2 transition-colors duration-150 hover:border-accent-border hover:bg-muted/75 dark:bg-background/60"
+                  >
+                    <Layers className="size-3.5 shrink-0 text-primary" />
+                    <strong className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground" title={group.name}>
+                      {group.name}
+                    </strong>
+                    {(() => {
+                      const sourceName = sourceById.get(group.sourceId)?.name
+                      return (
+                        <Badge variant="accent" className="max-w-28 overflow-hidden" title={sourceName}>
+                          <span className="min-w-0 truncate">{sourceName}</span>
+                        </Badge>
+                      )
+                    })()}
+                    <span className="hidden shrink-0 whitespace-nowrap text-[12px] text-muted-foreground sm:inline">
+                      {strategyLabels[group.strategy ?? 'select'] ?? group.strategy} ·{' '}
+                      {(group.memberNames ?? group.members).length}{tr(" 个成员")}</span>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setDialog({ kind: 'group', group })}
+                    >
+                      <Pencil data-icon="inline-start" />{tr("编辑")}</Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={tr("删除分组 {0}", group.name)}
+                      onClick={() => deleteItem(group)}
+                      className="text-destructive hover:bg-danger-soft hover:text-destructive"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                ))}
+                {!groups.length && (
+                  <p className="text-xs text-muted-foreground">{tr("所选订阅没有分组")}</p>
+                )}
+              </div>
             ) : (
-              <>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-baseline gap-2">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{tr("分组")}</h3>
-                    <small className="mono text-xs text-muted-foreground">{groups.length}{tr(" 个")}</small>
-                  </div>
-                  {groups.length > 2 && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-expanded={allGroups}
-                      onClick={() => setAllGroups(value => !value)}
-                    >
-                      {allGroups ? tr('收起') : tr('查看全部')}
-                    </Button>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  {groups.slice(0, allGroups ? undefined : 2).map(group => (
-                    <div
-                      key={`${group.sourceId}:${group.name}`}
-                      className="flex items-center gap-2.5 rounded-[8px] border border-border bg-muted/55 px-3 py-2 transition-colors duration-150 hover:border-accent-border hover:bg-muted/75 dark:bg-background/60"
-                    >
-                      <Layers className="size-3.5 shrink-0 text-primary" />
-                      <strong className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground" title={group.name}>
-                        {group.name}
-                      </strong>
-                      {(() => {
-                        const sourceName = sourceById.get(group.sourceId)?.name
-                        return (
-                          <Badge variant="accent" className="max-w-28 overflow-hidden" title={sourceName}>
-                            <span className="min-w-0 truncate">{sourceName}</span>
-                          </Badge>
-                        )
-                      })()}
-                      <span className="hidden shrink-0 whitespace-nowrap text-[12px] text-muted-foreground sm:inline">
-                        {strategyLabels[group.strategy ?? 'select'] ?? group.strategy} ·{' '}
-                        {(group.memberNames ?? group.members).length}{tr(" 个成员")}</span>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => setDialog({ kind: 'group', group })}
-                      >
-                        <Pencil data-icon="inline-start" />{tr("编辑")}</Button>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={tr("删除分组 {0}", group.name)}
-                        onClick={() => deleteItem(group)}
-                        className="text-destructive hover:bg-danger-soft hover:text-destructive"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  ))}
-                  {!groups.length && (
-                    <p className="text-xs text-muted-foreground">{tr("所选订阅没有分组")}</p>
-                  )}
-                </div>
-
-                <Separator />
-
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-baseline gap-2">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{tr("节点")}</h3>
-                    <small className="mono text-xs text-muted-foreground">{nodes.length}{tr(" 个")}</small>
-                  </div>
-                  {nodes.length > 4 && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-expanded={allNodes}
-                      onClick={() => setAllNodes(value => !value)}
-                    >
-                      {allNodes ? tr('收起') : tr('查看全部')}
-                    </Button>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  {nodes.slice(0, allNodes ? undefined : 4).map(node => (
-                    <div
-                      key={node.id}
-                      className="flex items-center gap-2.5 rounded-[8px] border border-border bg-muted/55 px-3 py-2 transition-colors duration-150 hover:border-accent-border hover:bg-muted/75 dark:bg-background/60"
-                    >
-                      <Server className="size-3.5 shrink-0 text-primary" />
-                      <strong className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground" title={node.name}>
-                        <FlagText text={node.name} />
-                      </strong>
-                      <Badge variant="accent" className="max-w-28 overflow-hidden" title={node.source}>
-                        <span className="min-w-0 truncate">
-                          <FlagText text={node.source} />
-                        </span>
-                      </Badge>
-                      <Badge variant="mono" className="hidden sm:inline-flex">
-                        {formatProtocol(node.protocol)}
-                      </Badge>
-                      <span
-                        className={cn(
-                          'mono w-[4.25rem] shrink-0 text-right text-xs font-medium',
-                          node.latestMs !== null
-                            ? node.latestMs <= 500
-                              ? 'text-success'
-                              : node.latestMs < 1000
-                                ? 'text-warning'
-                                : 'text-destructive'
-                            : node.status === 'timeout' || node.status === 'unreachable'
-                              ? 'text-destructive'
-                              : 'text-muted-foreground',
-                        )}
-                      >
-                        {node.latestMs !== null
-                          ? `${node.latestMs} ms`
-                          : node.status === 'timeout'
-                            ? tr('超时')
-                            : node.status === 'unreachable'
-                              ? tr('失败')
-                              : tr('待测试')}
+              <div className="flex flex-col gap-1.5">
+                {nodes.map(node => (
+                  <div
+                    key={node.id}
+                    className="flex items-center gap-2.5 rounded-[8px] border border-border bg-muted/55 px-3 py-2 transition-colors duration-150 hover:border-accent-border hover:bg-muted/75 dark:bg-background/60"
+                  >
+                    <Server className="size-3.5 shrink-0 text-primary" />
+                    <strong className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground" title={node.name}>
+                      <FlagText text={node.name} />
+                    </strong>
+                    <Badge variant="accent" className="max-w-28 overflow-hidden" title={node.source}>
+                      <span className="min-w-0 truncate">
+                        <FlagText text={node.source} />
                       </span>
-                      <Button variant="secondary" size="sm" onClick={() => onNode(node)}>
-                        <Pencil data-icon="inline-start" />{tr("编辑")}</Button>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={tr("删除节点 {0}", node.name)}
-                        onClick={() => deleteItem(node)}
-                        className="text-destructive hover:bg-danger-soft hover:text-destructive"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </>
+                    </Badge>
+                    <Badge variant="mono" className="hidden sm:inline-flex">
+                      {formatProtocol(node.protocol)}
+                    </Badge>
+                    <span
+                      className={cn(
+                        'mono w-[4.25rem] shrink-0 text-right text-xs font-medium',
+                        node.latestMs !== null
+                          ? node.latestMs <= 500
+                            ? 'text-success'
+                            : node.latestMs < 1000
+                              ? 'text-warning'
+                              : 'text-destructive'
+                          : node.status === 'timeout' || node.status === 'unreachable'
+                            ? 'text-destructive'
+                            : 'text-muted-foreground',
+                      )}
+                    >
+                      {node.latestMs !== null
+                        ? `${node.latestMs} ms`
+                        : node.status === 'timeout'
+                          ? tr('超时')
+                          : node.status === 'unreachable'
+                            ? tr('失败')
+                            : tr('待测试')}
+                    </span>
+                    <Button variant="secondary" size="sm" onClick={() => onNode(node)}>
+                      <Pencil data-icon="inline-start" />{tr("编辑")}</Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={tr("删除节点 {0}", node.name)}
+                      onClick={() => deleteItem(node)}
+                      className="text-destructive hover:bg-danger-soft hover:text-destructive"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                ))}
+                {!nodes.length && (
+                  <p className="text-xs text-muted-foreground">{tr("所选订阅没有节点")}</p>
+                )}
+              </div>
             )}
             </ContextMenuTrigger>
 

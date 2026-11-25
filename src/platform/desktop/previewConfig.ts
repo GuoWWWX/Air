@@ -20,7 +20,7 @@ export function parse(contents: string) {
   if (!isMap(doc.contents)) throw new Error('全局配置文件的根节点必须是 YAML 映射')
   const root = doc.toJS()
   for (const field of ['dns', 'nameserver', 'proxies', 'proxy-groups', 'rules', 'tun', 'mixed-port']) {
-    if (Object.hasOwn(root, field)) throw new Error(`顶层的 ${field} 不是 Air 配置项`)
+    if (Object.hasOwn(root, field)) throw new Error(`顶层的 ${field} 不是 Air Proxy 配置项`)
   }
   for (const section of ['network', 'routing']) {
     if (doc.has(section) && !isMap(doc.get(section, true))) throw new Error(`${section} 必须是 YAML 映射`)

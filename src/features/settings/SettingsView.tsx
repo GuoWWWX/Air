@@ -272,7 +272,7 @@ export function SettingsView({
                   onClick={() => onOpenSettings('kernel')}
                 />
                 <Separator />
-                <SettingRow icon={<FileCode2 />} title={tr("配置文件")} description={tr("编辑和校验 Air 的 YAML 配置")} onClick={() => onOpenSettings('configFile')} />
+                <SettingRow icon={<FileCode2 />} title={tr("配置文件")} description={tr("编辑和校验 Air Proxy 的 YAML 配置")} onClick={() => onOpenSettings('configFile')} />
               </Card>
             </section>
 
@@ -296,7 +296,7 @@ export function SettingsView({
               <SettingRow
                 icon={<Info />}
                 title={tr("关于")}
-                description={tr("Air 版本、软件更新与作者 GitHub")}
+                description={tr("Air Proxy 版本、软件更新与作者 GitHub")}
                 onClick={() => onOpenSettings('about')}
               />
             </Card>
@@ -414,7 +414,7 @@ export function SettingsView({
                     />
                     <p className="text-[12px] text-muted-foreground">
                       {store.defaultKernelPath
-                        ? tr('已检测到随 Air 放置的默认内核，留空即可自动使用。')
+                        ? tr('已检测到随 Air Proxy 放置的默认内核，留空即可自动使用。')
                         : tr('请填写本机 Mihomo 可执行文件的完整路径。')}
                     </p>
                   </div>

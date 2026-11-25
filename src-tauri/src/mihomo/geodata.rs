@@ -1,19 +1,51 @@
 use crate::AirResult;
 use serde_yaml::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+#[cfg(windows)]
+pub(crate) const GEOSITE_NAME: &str = "GeoSite.dat";
+#[cfg(windows)]
+pub(crate) const GEOIP_NAME: &str = "geoip.metadb";
+#[cfg(windows)]
+pub(crate) const GEOSITE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/geosite.dat"));
+#[cfg(windows)]
+pub(crate) const GEOIP_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/geoip.metadb"));
+
+#[cfg(not(windows))]
+const GEOSITE_NAME: &str = "GeoSite.dat";
+#[cfg(not(windows))]
+const GEOIP_NAME: &str = "geoip.metadb";
+#[cfg(not(windows))]
+const GEOSITE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/geosite.dat"));
+#[cfg(not(windows))]
+const GEOIP_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/geoip.metadb"));
 
 const DATABASES: [(&str, &str, &[u8]); 2] = [
-    (
-        "GEOSITE",
-        "GeoSite.dat",
-        include_bytes!(concat!(env!("OUT_DIR"), "/geosite.dat")),
-    ),
-    (
-        "GEOIP",
-        "geoip.metadb",
-        include_bytes!(concat!(env!("OUT_DIR"), "/geoip.metadb")),
-    ),
+    ("GEOSITE", GEOSITE_NAME, GEOSITE_BYTES),
+    ("GEOIP", GEOIP_NAME, GEOIP_BYTES),
 ];
+
+fn sibling_geodata(name: &str) -> Option<PathBuf> {
+    let candidate = std::env::current_exe().ok()?.with_file_name(name);
+    candidate.is_file().then_some(candidate)
+}
+
+fn materialize_geodata(
+    name: &str,
+    embedded: &[u8],
+    sibling: Option<&Path>,
+    destination: &Path,
+) -> AirResult<bool> {
+    if !embedded.is_empty() {
+        std::fs::write(destination, embedded).map_err(|_| format!("无法准备 Mihomo 的 {name} 数据库"))?;
+        return Ok(true);
+    }
+    if let Some(source) = sibling.filter(|path| path.is_file()) {
+        std::fs::copy(source, destination).map_err(|_| format!("无法准备 Mihomo 的 {name} 数据库"))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
 
 pub(super) fn stage(config: &Value, directory: &Path) -> AirResult<bool> {
     let providers = || {
@@ -62,10 +94,9 @@ pub(super) fn stage(config: &Value, directory: &Path) -> AirResult<bool> {
         if file.is_file() {
             continue;
         }
-        if bytes.is_empty() {
+        let sibling = bytes.is_empty().then(|| sibling_geodata(name)).flatten();
+        if !materialize_geodata(name, bytes, sibling.as_deref(), &file)? {
             missing |= required;
-        } else {
-            std::fs::write(file, bytes).map_err(|_| format!("无法准备 Mihomo 的 {name} 数据库"))?;
         }
     }
     Ok(missing)
@@ -112,6 +143,18 @@ mod stage_tests {
             assert!(dir.path().join("geoip.metadb").is_file());
         }
     }
+
+    #[test]
+    fn empty_embedded_geodata_falls_back_to_sibling_file() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let target_dir = tempfile::tempdir().unwrap();
+        let sibling = source_dir.path().join("GeoSite.dat");
+        std::fs::write(&sibling, b"geosite-bytes").unwrap();
+        let dest = target_dir.path().join("GeoSite.dat");
+        assert!(super::materialize_geodata("GeoSite.dat", &[], Some(&sibling), &dest).unwrap());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"geosite-bytes");
+        assert!(!super::materialize_geodata("GeoSite.dat", &[], None, &target_dir.path().join("missing.dat")).unwrap());
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -123,6 +166,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires the bundled Windows Mihomo executable and staged geodata"]
     async fn cold_start_loads_geo_rules_without_downloading() {
+        assert!(
+            !super::GEOSITE_BYTES.is_empty() && !super::GEOIP_BYTES.is_empty(),
+            "cold_start_loads_geo_rules_without_downloading requires bundled geodata (do not pass --no-default-features)",
+        );
         let download_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let blocked_url = format!("http://{}/geo", download_listener.local_addr().unwrap());
         let config = serde_yaml::to_value(serde_json::json!({

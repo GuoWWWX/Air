@@ -365,8 +365,8 @@ pub async fn fetch(raw_url: &str, active_proxy: Option<u16>) -> AirResult<Downlo
     routes.push(("直连", download_client().no_proxy()));
     if let Some(port) = active_proxy {
         let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))
-            .map_err(|_| "无法配置 Air 下载代理")?;
-        routes.push(("Air 代理", download_client().no_proxy().proxy(proxy)));
+            .map_err(|_| "无法配置 Air Proxy 下载代理")?;
+        routes.push(("Air Proxy 代理", download_client().no_proxy().proxy(proxy)));
     }
     routes.push(("系统代理", download_client()));
     let mut failures = Vec::new();

@@ -110,7 +110,7 @@ pub fn verify(raw: &[u8], key: &VerifyingKey) -> Result<Manifest, String> {
         || manifest.files.len() != FILES.len()
         || !Url::parse(&manifest.asset).is_ok_and(|url| allowed_url(&url))
     {
-        return Err("更新包与 Air 安装版本不兼容".into());
+        return Err("更新包与 Air Proxy 安装版本不兼容".into());
     }
     let mut offset = 0;
     let mut total_size = 0;

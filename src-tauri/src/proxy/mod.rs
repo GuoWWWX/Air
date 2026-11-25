@@ -2,6 +2,8 @@ mod config;
 pub(crate) mod subscription_rules;
 pub mod exit;
 mod runtime_kernel;
+#[cfg(test)]
+mod telemetry_tests;
 mod loopback;
 #[cfg(windows)]
 pub mod tun_service;
@@ -21,6 +23,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
@@ -115,7 +118,7 @@ pub struct Status {
     port: Option<u16>,
     pub system_proxy: bool,
     pub tun: bool,
-    tun_service_ready: Option<bool>,
+    pub tun_service_ready: Option<bool>,
     session_id: Option<String>,
     target: Option<StartTarget>,
     outbound: Option<Outbound>,
@@ -133,21 +136,52 @@ struct TrafficSnapshot {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetrySnapshot {
+    revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_order: Option<Vec<String>>,
     session_id: String,
     sampled_at: u64,
     stale: bool,
     #[serde(flatten)]
     traffic: TrafficSnapshot,
     memory_bytes: Option<u64>,
-    connections: Vec<ConnectionView>,
-    connection_logs: Vec<ConnectionView>,
+    connections: Vec<Arc<ConnectionView>>,
+    connection_logs: Vec<Arc<ConnectionView>>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    app_icons: HashMap<String, String>,
+    app_icons: HashMap<String, Arc<str>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryCursor {
+    pub session_id: String,
+    pub revision: u64,
+    pub known_icons: HashSet<String>,
+}
+
+impl TelemetrySnapshot {
+    fn make_incremental(&mut self, cursor: &TelemetryCursor) {
+        let same_session = self.session_id == cursor.session_id && cursor.revision <= self.revision;
+        self.log_order = Some(
+            self.connection_logs
+                .iter()
+                .map(|row| row.id.clone())
+                .collect(),
+        );
+        self.connection_logs
+            .retain(|row| row.closed && (!same_session || row.closed_revision > cursor.revision));
+        if same_session {
+            self.app_icons
+                .retain(|key, _| !cursor.known_icons.contains(key));
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectionView {
+    #[serde(skip)]
+    closed_revision: u64,
     id: String,
     app: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,7 +231,7 @@ pub fn resolve_applications(queries: &[String]) -> Vec<ResolvedApplication> {
 #[derive(Default)]
 struct Applications {
     entries: HashMap<String, Application>,
-    icons: HashMap<String, String>,
+    icons: HashMap<String, Arc<str>>,
 }
 
 struct Application {
@@ -245,8 +279,7 @@ struct Active {
     node_names: HashMap<String, String>,
     dialers: HashMap<String, String>,
     telemetry: Option<TelemetrySnapshot>,
-    connection_logs: Vec<ConnectionView>,
-    log_app_icons: HashMap<String, String>,
+
     _loopback: Option<loopback::Forwarder>,
     _lease: File,
 }
@@ -436,8 +469,7 @@ impl Runtime {
             node_names: config.node_names,
             dialers: config.dialers,
             telemetry: None,
-            connection_logs: Vec::new(),
-            log_app_icons: HashMap::new(),
+
             _loopback: loopback,
             _lease: lease,
         });
@@ -446,6 +478,14 @@ impl Runtime {
 
     pub fn telemetry(&self) -> Option<TelemetrySnapshot> {
         self.active.as_ref()?.telemetry.clone()
+    }
+
+    pub fn telemetry_update(&self, cursor: Option<&TelemetryCursor>) -> Option<TelemetrySnapshot> {
+        let mut sample = self.telemetry()?;
+        if let Some(cursor) = cursor {
+            sample.make_incremental(cursor);
+        }
+        Some(sample)
     }
 
     pub fn active_network(&self) -> Option<&crate::network::NetworkSettings> {
@@ -458,30 +498,15 @@ impl Runtime {
 
     pub fn clear_connection_logs(&mut self) {
         let Some(active) = self.active.as_mut() else { return };
-        active.connection_logs.retain(|item| !item.closed);
-        let retained_icons: HashSet<_> = active
-            .connection_logs
-            .iter()
-            .filter_map(|item| item.app_icon_key.as_ref())
-            .cloned()
-            .collect();
-        active
-            .log_app_icons
-            .retain(|key, _| retained_icons.contains(key));
         if let Some(snapshot) = &mut active.telemetry {
-            snapshot.connection_logs = active.connection_logs.clone();
-            snapshot.app_icons = active
-                .log_app_icons
+            snapshot.connection_logs.retain(|item| !item.closed);
+            let used: HashSet<_> = snapshot
+                .connections
                 .iter()
-                .filter(|(k, _)| {
-                    retained_icons.contains(*k)
-                        || snapshot
-                            .connections
-                            .iter()
-                            .any(|c| c.app_icon_key.as_ref() == Some(*k))
-                })
-                .map(|(k, v)| (k.clone(), v.clone()))
+                .filter_map(|row| row.app_icon_key.as_ref())
                 .collect();
+            snapshot.app_icons.retain(|key, _| used.contains(key));
+            snapshot.revision += 1;
         }
     }
 
@@ -594,15 +619,10 @@ impl Runtime {
             }
         } else {
             active.kernel.reload(&config.yaml).await?;
-            if config.yaml["proxy-groups"].as_sequence().into_iter().flatten().any(|group|
-                group["name"] == "GLOBAL" && group["proxies"].as_sequence().is_some_and(|members| members.len() > 1)
-            ) {
+            if has_selectable_global(&config.yaml) {
                 let target = config.global.as_deref().ok_or("当前节点无效")?;
                 if let Err(error) = active.kernel.select_global(target).await {
-                    active.kernel.reload(&active.yaml).await?;
-                    if let Some(previous) = &active.global {
-                        active.kernel.select_global(previous).await?;
-                    }
+                    active.restore_yaml_and_global().await?;
                     return Err(error);
                 }
             }
@@ -649,8 +669,226 @@ impl Runtime {
         self.select_node(config).await
     }
 
+    pub async fn discard_standby(&mut self) {
+        #[cfg(windows)]
+        if let Some(standby) = self.standby.take() {
+            let _ = standby.session.stop().await;
+        }
+    }
+
+    pub async fn reload_network(
+        &mut self,
+        config: config::ProxyConfig,
+        network: crate::network::NetworkSettings,
+    ) -> AirResult<()> {
+        #[cfg(windows)]
+        let directory = self.directory.clone();
+        self.reload_network_with(config, network, |port, bypass| {
+            #[cfg(windows)]
+            {
+                windows::reapply(&directory, port, bypass)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (port, bypass);
+                Ok(())
+            }
+        })
+        .await
+    }
+
+    async fn reload_network_with<F>(
+        &mut self,
+        mut config: config::ProxyConfig,
+        network: crate::network::NetworkSettings,
+        mut apply_system_proxy: F,
+    ) -> AirResult<()>
+    where
+        F: FnMut(u16, &[String]) -> AirResult<()>,
+    {
+        self.reap_exited().await?;
+        let Some(active) = self.active.as_mut() else {
+            self.discard_standby().await;
+            return Ok(());
+        };
+        network.validate()?;
+        let previous_network = active.network.clone();
+        let port_or_bind_changed = previous_network.port_or_bind_changed(&network);
+        let tun_changed = active.tun && previous_network.tun_settings_changed(&network);
+        let system_proxy_bypass_changed =
+            previous_network.system_proxy_bypass != network.system_proxy_bypass;
+        let group_probe_changed = matches!(active.target, StartTarget::Group { .. })
+            && (previous_network.probe_url != network.probe_url
+                || previous_network.probe_status != network.probe_status);
+        let core_changed = previous_network.core_settings_changed(&network) || group_probe_changed;
+
+        #[cfg(not(windows))]
+        let _ = &mut apply_system_proxy;
+        if !port_or_bind_changed && !tun_changed && !core_changed {
+            #[cfg(windows)]
+            if active.system_proxy && system_proxy_bypass_changed {
+                if let Err(error) = apply_system_proxy(active.port, &network.system_proxy_bypass) {
+                    let _ = apply_system_proxy(active.port, &previous_network.system_proxy_bypass);
+                    return Err(error);
+                }
+            }
+            active.network = network;
+            return Ok(());
+        }
+
+        config.apply_network(
+            &network,
+            active.tun,
+            active.yaml["dns"]["fake-ip-range"].as_str(),
+        )?;
+        config.yaml["mode"] = serde_yaml::to_value(self.mode).map_err(|_| "出站模式无效")?;
+        config.yaml["log-level"] = if cfg!(windows) { "error" } else { "silent" }.into();
+
+        if port_or_bind_changed || tun_changed {
+            #[cfg(windows)]
+            let service = matches!(active.kernel, RuntimeKernel::Service(_));
+            #[cfg(not(windows))]
+            let service = false;
+            #[cfg(windows)]
+            if service {
+                tun_service::validate(&config.yaml)?;
+            }
+            config.yaml["mixed-port"] = 0.into();
+            let old_port = active.port;
+            let old_yaml = active.yaml.clone();
+            let requested_port = if port_or_bind_changed {
+                network.mixed_port
+            } else {
+                Some(old_port)
+            };
+            if port_or_bind_changed {
+                active._loopback = None;
+            }
+            #[cfg(windows)]
+            if active.tun && matches!(active.kernel, RuntimeKernel::Local(_)) {
+                let _ = active.kernel.set_tun(&active.network, false).await;
+            }
+            active.kernel.stop().await?;
+            let mut proxy_touched = false;
+            let launched: AirResult<(RuntimeKernel, u16)> = async {
+                let (mut next_kernel, new_port) = active
+                    .relaunch_with(
+                        &self.directory,
+                        config.yaml.clone(),
+                        requested_port,
+                        network.allow_lan,
+                        service,
+                    )
+                    .await?;
+                #[cfg(windows)]
+                if active.system_proxy && (new_port != old_port || system_proxy_bypass_changed) {
+                    proxy_touched = true;
+                    if let Err(error) = apply_system_proxy(new_port, &network.system_proxy_bypass) {
+                        if matches!(next_kernel, RuntimeKernel::Local(_))
+                            && config.yaml["tun"]["enable"].as_bool() == Some(true)
+                        {
+                            let _ = next_kernel.set_tun(&network, false).await;
+                        }
+                        if let Err(stop_error) = next_kernel.stop().await {
+                            return Err(format!("{error}。关闭切换后的代理失败 · {stop_error}"));
+                        }
+                        return Err(error);
+                    }
+                }
+                Ok((next_kernel, new_port))
+            }
+            .await;
+            match launched {
+                Ok((kernel, new_port)) => {
+                    config.yaml["mixed-port"] = new_port.into();
+                    active.kernel = kernel;
+                    active.yaml = config.yaml;
+                    active.port = new_port;
+                    active.network = network;
+                    if port_or_bind_changed {
+                        active._loopback = (active.network.mixed_port.is_none()
+                            && new_port != loopback::PREFERRED_PORT)
+                            .then(|| {
+                                loopback::Forwarder::start(loopback::PREFERRED_PORT, new_port)
+                            });
+                    }
+                    active.reset_telemetry();
+                    #[cfg(windows)]
+                    if tun_changed {
+                        windows::flush_dns_cache();
+                    }
+                }
+                Err(error) => {
+                    let (restored, restored_port) = active
+                        .relaunch_with(
+                            &self.directory,
+                            old_yaml,
+                            Some(old_port),
+                            previous_network.allow_lan,
+                            service,
+                        )
+                        .await
+                        .map_err(|restore| format!("{error}。无法恢复原代理 · {restore}"))?;
+                    active.kernel = restored;
+                    active.port = restored_port;
+                    if port_or_bind_changed {
+                        active._loopback = (previous_network.mixed_port.is_none()
+                            && restored_port != loopback::PREFERRED_PORT)
+                            .then(|| {
+                                loopback::Forwarder::start(loopback::PREFERRED_PORT, restored_port)
+                            });
+                    }
+                    #[cfg(windows)]
+                    if active.system_proxy && (proxy_touched || restored_port != old_port) {
+                        let _ = apply_system_proxy(
+                            restored_port,
+                            &previous_network.system_proxy_bypass,
+                        );
+                    }
+                    active.reset_telemetry();
+                    return Err(error);
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = proxy_touched;
+            return Ok(());
+        }
+
+        config.yaml["mixed-port"] = active.port.into();
+        active.kernel.reload(&config.yaml).await?;
+        if has_selectable_global(&config.yaml) {
+            let result: AirResult<()> = async {
+                let target = active.global.as_deref().ok_or("当前节点无效")?;
+                active.kernel.select_global(target).await
+            }
+            .await;
+            if let Err(error) = result {
+                active.restore_yaml_and_global().await?;
+                return Err(error);
+            }
+        }
+        #[cfg(windows)]
+        if active.system_proxy && system_proxy_bypass_changed {
+            if let Err(error) = apply_system_proxy(active.port, &network.system_proxy_bypass) {
+                let _ = apply_system_proxy(active.port, &previous_network.system_proxy_bypass);
+                active
+                    .restore_yaml_and_global()
+                    .await
+                    .map_err(|restore| format!("{error}。无法恢复原核心配置 · {restore}"))?;
+                return Err(error);
+            }
+        }
+        active.yaml = config.yaml;
+        active.network = network;
+        Ok(())
+    }
+
     pub async fn sample_telemetry(runtime: &Mutex<Self>) {
-        let (session_id, request, memory, _port, _client_map) = {
+        Self::sample_telemetry_with_visibility(runtime, false).await;
+    }
+
+    pub async fn sample_telemetry_with_visibility(runtime: &Mutex<Self>, _hidden: bool) {
+        let (session_id, request, memory, _port, _client_map, _known_apps) = {
             let mut runtime = runtime.lock().await;
             let _ = runtime.reap_exited().await;
             let Some(active) = runtime.active.as_ref() else {
@@ -658,14 +896,25 @@ impl Runtime {
             };
             #[cfg(all(windows, feature = "desktop"))]
             let clients = active._loopback.as_ref().map(|forwarder| forwarder.clients.clone());
+            #[cfg(all(windows, feature = "desktop"))]
+            let known_apps = active
+                .telemetry
+                .as_ref()
+                .filter(|_| _hidden)
+                .into_iter()
+                .flat_map(|s| &s.connections)
+                .filter(|row| row.app_icon_key.is_some())
+                .map(|row| (row.id.clone(), row.clone()))
+                .collect();
             #[cfg(not(all(windows, feature = "desktop")))]
-            let clients = ();
+            let (clients, known_apps) = ((), ());
             (
                 active.session_id.clone(),
                 active.kernel.connections(),
                 active.kernel.memory_bytes(),
                 active.port,
                 clients,
+                known_apps,
             )
         };
         // Keep the control lock available while the kernel responds.
@@ -673,7 +922,7 @@ impl Runtime {
         #[cfg(all(windows, feature = "desktop"))]
         let (result, applications) = match result {
             Ok(snapshot) => tokio::task::spawn_blocking(move || {
-                let apps = windows_apps::sample(&snapshot, _client_map, _port);
+                let apps = windows_apps::sample(&snapshot, _client_map, _port, _known_apps);
                 (Ok(snapshot), apps)
             })
             .await
@@ -772,12 +1021,7 @@ impl Runtime {
             };
             if enabled {
                 if !windows::is_active(active.port)? {
-                    windows::restore(&self.directory)?;
-                    windows::enable(&self.directory, active.port, &active.network.system_proxy_bypass)?;
-                    if !windows::is_active(active.port)? {
-                        windows::restore(&self.directory)?;
-                        return Err("Windows 没有应用 Air 的系统代理设置".into());
-                    }
+                    windows::reapply(&self.directory, active.port, &active.network.system_proxy_bypass)?;
                 }
             } else {
                 windows::restore(&self.directory)?;
@@ -911,9 +1155,23 @@ impl Active {
 
     #[cfg(windows)]
     async fn relaunch(&self, directory: &Path, config: serde_yaml::Value, service: bool) -> AirResult<RuntimeKernel> {
+        let (kernel, _) = self.relaunch_with(directory, config, Some(self.port), self.network.allow_lan, service).await?;
+        Ok(kernel)
+    }
+
+    async fn relaunch_with(
+        &self,
+        directory: &Path,
+        config: serde_yaml::Value,
+        requested_port: Option<u16>,
+        allow_lan: bool,
+        service: bool,
+    ) -> AirResult<(RuntimeKernel, u16)> {
+        #[cfg(windows)]
         let tun = config["tun"]["enable"].as_bool() == Some(true);
-        let (mut kernel, _) = RuntimeKernel::start(&self.binary, directory, config, Some(self.port), self.network.allow_lan, service).await?;
+        let (mut kernel, port) = RuntimeKernel::start(&self.binary, directory, config, requested_port, allow_lan, service).await?;
         let ready: AirResult<()> = async {
+            #[cfg(windows)]
             if tun {
                 verify_tun(&kernel, true).await?;
             }
@@ -926,16 +1184,23 @@ impl Active {
             kernel.stop().await?;
             return Err(error);
         }
-        Ok(kernel)
+        Ok((kernel, port))
     }
 
-    #[cfg(windows)]
+    async fn restore_yaml_and_global(&self) -> AirResult<()> {
+        self.kernel.reload(&self.yaml).await?;
+        if has_selectable_global(&self.yaml) {
+            if let Some(target) = &self.global {
+                self.kernel.select_global(target).await?;
+            }
+        }
+        Ok(())
+    }
+
     fn reset_telemetry(&mut self) {
         self.last_traffic = None;
         self.traffic_baseline = (0, 0);
         self.telemetry = None;
-        self.connection_logs.clear();
-        self.log_app_icons.clear();
         self.session_id = uuid::Uuid::new_v4().simple().to_string();
     }
 
@@ -983,7 +1248,7 @@ impl Active {
         active_connections.sort_unstable_by(|a, b| {
             b.start.cmp(&a.start).then_with(|| a.id.cmp(&b.id))
         });
-        let connections: Vec<ConnectionView> = active_connections
+        let connections: Vec<Arc<ConnectionView>> = active_connections
             .into_iter()
             .map(|entry| {
                 let meta_host = entry.metadata.host();
@@ -1008,7 +1273,8 @@ impl Active {
                 } else {
                     format!("{} · {}", entry.rule, entry.rule_payload)
                 };
-                ConnectionView {
+                Arc::new(ConnectionView {
+                    closed_revision: 0,
                     id: entry.id,
                     app: app.name,
                     app_executable: app.executable,
@@ -1025,60 +1291,40 @@ impl Active {
                     path,
                     upload_bytes: entry.upload,
                     download_bytes: entry.download,
-                }
+                })
             })
             .collect();
 
-        for (key, icon) in &applications.icons {
-            self.log_app_icons.insert(key.clone(), icon.clone());
-        }
-        let active_ids: HashSet<String> = connections.iter().map(|c| c.id.clone()).collect();
-        let mut merged_logs: Vec<ConnectionView> = Vec::with_capacity(500);
-        merged_logs.extend(connections.iter().cloned());
-        for mut old in self.connection_logs.drain(..) {
-            if !active_ids.contains(&old.id) {
-                old.closed = true;
-                merged_logs.push(old);
+        let prior = self.telemetry.take();
+        let revision = prior.as_ref().map_or(1, |s| s.revision + 1);
+        let (mut logs, mut app_icons) = prior
+            .map(|s| (s.connection_logs, s.app_icons))
+            .unwrap_or_default();
+        let active_ids: HashSet<_> = connections.iter().map(|row| row.id.as_str()).collect();
+        // History is newest first. Only retained closed rows count towards the spare slots.
+        logs.retain(|row| !active_ids.contains(row.id.as_str()));
+        logs.truncate(500usize.saturating_sub(connections.len()));
+        for row in &mut logs {
+            if !row.closed {
+                let row = Arc::make_mut(row);
+                row.closed = true;
+                row.closed_revision = revision;
             }
         }
-        merged_logs.sort_by(|a, b| b.start.cmp(&a.start).then_with(|| b.id.cmp(&a.id)));
-        const MAX_CONNECTION_LOGS: usize = 500;
-        if merged_logs.len() > MAX_CONNECTION_LOGS {
-            let mut active_only = Vec::new();
-            let mut closed_only = Vec::new();
-            for item in merged_logs {
-                if !item.closed {
-                    active_only.push(item);
-                } else {
-                    closed_only.push(item);
-                }
-            }
-            let remaining = MAX_CONNECTION_LOGS.saturating_sub(active_only.len());
-            closed_only.truncate(remaining);
-            active_only.extend(closed_only);
-            active_only.sort_by(|a, b| b.start.cmp(&a.start).then_with(|| b.id.cmp(&a.id)));
-            merged_logs = active_only;
+        if !connections.is_empty() {
+            logs.extend(connections.iter().cloned());
+            logs.sort_unstable_by(|a, b| b.start.cmp(&a.start).then_with(|| b.id.cmp(&a.id)));
         }
-        self.connection_logs = merged_logs;
-
-        let used_icon_keys: HashSet<String> = connections
+        app_icons.extend(applications.icons);
+        let used: HashSet<_> = logs
             .iter()
-            .chain(self.connection_logs.iter())
-            .filter_map(|item| item.app_icon_key.clone())
+            .filter_map(|row| row.app_icon_key.as_ref())
             .collect();
-        self.log_app_icons
-            .retain(|key, _| used_icon_keys.contains(key));
-
-        let mut app_icons = applications.icons;
-        for key in &used_icon_keys {
-            if !app_icons.contains_key(key) {
-                if let Some(icon) = self.log_app_icons.get(key) {
-                    app_icons.insert(key.clone(), icon.clone());
-                }
-            }
-        }
+        app_icons.retain(|key, _| used.contains(key));
 
         self.telemetry = Some(TelemetrySnapshot {
+            revision,
+            log_order: None,
             session_id: self.session_id.clone(),
             sampled_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1093,7 +1339,7 @@ impl Active {
             },
             memory_bytes: memory.or(snapshot.memory.filter(|bytes| *bytes > 0)),
             connections,
-            connection_logs: self.connection_logs.clone(),
+            connection_logs: logs,
             app_icons,
         });
     }
@@ -1108,6 +1354,19 @@ impl Drop for Runtime {
     }
 }
 
+fn has_selectable_global(yaml: &serde_yaml::Value) -> bool {
+    yaml["proxy-groups"]
+        .as_sequence()
+        .into_iter()
+        .flatten()
+        .any(|group| {
+            group["name"] == "GLOBAL"
+                && group["proxies"]
+                    .as_sequence()
+                    .is_some_and(|members| members.len() > 1)
+        })
+}
+
 fn lease(directory: &Path) -> AirResult<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -1115,7 +1374,105 @@ fn lease(directory: &Path) -> AirResult<File> {
         .create(true)
         .truncate(false)
         .open(directory.join("proxy-runtime.lock"))
-        .map_err(|_| "无法打开 Air 代理进程锁")?;
-    file.try_lock().map_err(|_| "另一个 Air 窗口正在使用代理")?;
+        .map_err(|_| "无法打开 Air Proxy 代理进程锁")?;
+    file.try_lock().map_err(|_| "另一个 Air Proxy 窗口正在使用代理")?;
     Ok(file)
+}
+
+#[cfg(all(test, windows, feature = "desktop"))]
+mod tests {
+    use super::*;
+    use crate::{
+        network::NetworkSettings,
+        routing::{RoutingConfig, RoutingFile},
+    };
+    use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+    use tokio::net::TcpStream;
+
+    fn reserve_port(start: u16) -> (TcpListener, UdpSocket, u16) {
+        (start..32000)
+            .find_map(|port| {
+                let address = (Ipv4Addr::LOCALHOST, port);
+                let tcp = TcpListener::bind(address).ok()?;
+                let udp = UdpSocket::bind(address).ok()?;
+                Some((tcp, udp, port))
+            })
+            .expect("available local TCP and UDP port for test proxy")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the bundled Windows Mihomo executable"]
+    async fn reload_network_rolls_back_kernel_port_when_system_proxy_update_fails() {
+        let core =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.cache/air/windows-x64/mihomo.exe");
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path();
+
+        let (old_tcp, old_udp, old_port) = reserve_port(22000);
+        let (new_tcp, new_udp, new_port) = reserve_port(old_port + 1);
+        let old_network = NetworkSettings {
+            mixed_port: Some(old_port),
+            ..NetworkSettings::default()
+        };
+        let preferences = RoutingFile::new(directory);
+        preferences.ensure_exists().unwrap();
+        preferences
+            .save_network(&old_network, &preferences.network().unwrap().revision)
+            .unwrap();
+
+        let initial_config =
+            compile(Mode::Direct, &RoutingConfig::default(), &[], None, &StartTarget::Routing)
+                .unwrap();
+        let mut runtime = Runtime::new(directory.to_owned());
+        runtime.set_mode(Mode::Direct).await.unwrap();
+        drop((old_tcp, old_udp));
+        runtime.start(&core, initial_config).await.unwrap();
+
+        // Simulate active system proxy without modifying host Windows settings.
+        runtime.system_proxy = true;
+        runtime.active.as_mut().unwrap().system_proxy = true;
+        assert_eq!(runtime.subscription_proxy_port(), Some(old_port));
+        assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, old_port)).await.is_ok());
+
+        let new_network = NetworkSettings {
+            mixed_port: Some(new_port),
+            system_proxy_bypass: vec!["<local>".to_owned(), "example.internal".to_owned()],
+            ..NetworkSettings::default()
+        };
+        let new_config =
+            compile(Mode::Direct, &RoutingConfig::default(), &[], None, &StartTarget::Routing)
+                .unwrap();
+        let mut applied_calls = Vec::new();
+        drop((new_tcp, new_udp));
+        let error = runtime
+            .reload_network_with(new_config, new_network.clone(), |port, bypass| {
+                applied_calls.push((port, bypass.to_vec()));
+                if port == new_port {
+                    Err("simulated system proxy failure".into())
+                } else {
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("simulated system proxy failure"));
+        assert_eq!(
+            applied_calls,
+            vec![
+                (new_port, new_network.system_proxy_bypass.clone()),
+                (old_port, old_network.system_proxy_bypass.clone()),
+            ]
+        );
+        assert_eq!(runtime.subscription_proxy_port(), Some(old_port));
+        assert_eq!(runtime.active_network(), Some(&old_network));
+        assert_eq!(
+            runtime.active.as_ref().unwrap().yaml["mixed-port"].as_u64(),
+            Some(u64::from(old_port))
+        );
+        assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, old_port)).await.is_ok());
+        assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, new_port)).await.is_err());
+
+        runtime.stop().await.unwrap();
+    }
 }

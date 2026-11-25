@@ -57,6 +57,19 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn default_true() -> bool {
+    true
+}
+
+const PRIVATE_IPV4_CIDRS: [&str; 4] = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+];
+
+const PRIVATE_IPV6_CIDRS: [&str; 2] = ["fc00::/7", "fe80::/10"];
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct NetworkSettings {
@@ -80,6 +93,8 @@ pub struct NetworkSettings {
     pub tun_mtu: Option<u16>,
     pub strict_route: bool,
     pub dns_hijack: bool,
+    #[serde(default = "default_true")]
+    pub bypass_lan: bool,
     pub route_exclude_address: Vec<String>,
     pub mixed_port: Option<u16>,
     pub allow_lan: bool,
@@ -126,8 +141,9 @@ impl Default for NetworkSettings {
             dns_cache_algorithm: "auto".into(),
             tun_stack: "gvisor".into(),
             tun_mtu: None,
-            strict_route: cfg!(windows),
+            strict_route: false,
             dns_hijack: true,
+            bypass_lan: true,
             route_exclude_address: vec![],
             mixed_port: None,
             allow_lan: false,
@@ -350,15 +366,77 @@ impl NetworkSettings {
         Ok(())
     }
 
-    pub(crate) fn tun(&self, enabled: bool) -> Json {
+    pub(crate) fn tun_ipv6(&self) -> bool {
         let ipv6 = self.ipv6;
         #[cfg(windows)]
         let ipv6 = ipv6 && crate::proxy::windows::tun_ipv6_available();
+        ipv6
+    }
+
+    pub(crate) fn effective_route_exclude_address(&self, ipv6: bool) -> Vec<String> {
+        let mut cidrs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut push = |cidr: &str| {
+            let trimmed = cidr.trim();
+            if !trimmed.is_empty() && seen.insert(trimmed.to_ascii_lowercase()) {
+                cidrs.push(trimmed.to_owned());
+            }
+        };
+        if self.bypass_lan {
+            for cidr in PRIVATE_IPV4_CIDRS {
+                push(cidr);
+            }
+            if ipv6 {
+                for cidr in PRIVATE_IPV6_CIDRS {
+                    push(cidr);
+                }
+            }
+        }
+        for cidr in &self.route_exclude_address {
+            push(cidr);
+        }
+        cidrs
+    }
+
+    pub fn tun_settings_changed(&self, other: &Self) -> bool {
+        self.tun_stack != other.tun_stack
+            || self.tun_mtu != other.tun_mtu
+            || self.strict_route != other.strict_route
+            || self.dns_hijack != other.dns_hijack
+            || self.bypass_lan != other.bypass_lan
+            || self.route_exclude_address != other.route_exclude_address
+            || self.ipv6 != other.ipv6
+    }
+
+    pub fn port_or_bind_changed(&self, other: &Self) -> bool {
+        self.mixed_port != other.mixed_port || self.allow_lan != other.allow_lan
+    }
+
+    fn comparable_core(&self) -> Self {
+        Self {
+            system_proxy_bypass: vec![],
+            probe_url: String::new(),
+            probe_status: 0,
+            probe_interval_minutes: 0,
+            ..self.clone()
+        }
+    }
+
+    pub fn core_settings_changed(&self, other: &Self) -> bool {
+        self.comparable_core() != other.comparable_core()
+    }
+
+    pub fn proxy_settings_changed(&self, other: &Self) -> bool {
+        self.core_settings_changed(other) || self.system_proxy_bypass != other.system_proxy_bypass
+    }
+
+    pub(crate) fn tun(&self, enabled: bool) -> Json {
+        let ipv6 = self.tun_ipv6();
         let mut tun = json!({
             "enable": enabled, "device": "Air-TUN", "stack": self.tun_stack, "auto-route": true,
             "auto-detect-interface": true, "strict-route": self.strict_route,
             "endpoint-independent-nat": true,
-            "route-exclude-address": self.route_exclude_address,
+            "route-exclude-address": self.effective_route_exclude_address(ipv6),
             "dns-hijack": if self.dns_hijack { vec!["any:53", "tcp://any:53"] } else { vec![] },
             "inet6-address": if ipv6 { vec!["fdfe:dcba:9876::1/126"] } else { vec![] },
         });
@@ -451,7 +529,7 @@ pub fn subscription_resolvers(
             .iter()
             .any(|v| !valid_resolver(v, key == "default-nameserver"))
         {
-            return Err(format!("订阅 dns.{key} 含 Air 当前不支持的 DNS 地址"));
+            return Err(format!("订阅 dns.{key} 含 Air Proxy 当前不支持的 DNS 地址"));
         }
         copied.insert(field.into(), list);
     }
@@ -515,6 +593,16 @@ mod tests {
         assert_eq!(yaml["tun"]["stack"], "mixed");
         assert_eq!(yaml["tun"]["endpoint-independent-nat"].as_bool(), Some(true));
         assert_eq!(yaml["tun"]["route-exclude-address"][0], "10.0.0.0/8");
+        let excludes: Vec<&str> = yaml["tun"]["route-exclude-address"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        assert_eq!(
+            excludes,
+            vec!["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+        );
         assert_eq!(yaml["tun"]["strict-route"].as_bool(), Some(true));
         assert_eq!(yaml["tun"]["mtu"].as_u64(), Some(1400));
         assert_eq!(yaml["bind-address"], "0.0.0.0");
@@ -523,6 +611,37 @@ mod tests {
             .unwrap()
             .iter()
             .all(|ip| ip != "0.0.0.0/0"));
+    }
+
+    #[test]
+    fn bypass_lan_and_strict_route_defaults_work_as_expected() {
+        let parsed: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert!(!parsed.strict_route);
+        assert!(parsed.bypass_lan);
+
+        let default_settings = NetworkSettings::default();
+        assert!(!default_settings.strict_route);
+        assert!(default_settings.bypass_lan);
+
+        let excluded_v6 = default_settings.effective_route_exclude_address(true);
+        assert!(excluded_v6.contains(&"10.0.0.0/8".to_owned()));
+        assert!(excluded_v6.contains(&"172.16.0.0/12".to_owned()));
+        assert!(excluded_v6.contains(&"192.168.0.0/16".to_owned()));
+        assert!(excluded_v6.contains(&"169.254.0.0/16".to_owned()));
+        assert!(excluded_v6.contains(&"fc00::/7".to_owned()));
+        assert!(excluded_v6.contains(&"fe80::/10".to_owned()));
+        assert!(!excluded_v6.contains(&"198.18.0.0/15".to_owned()));
+        assert!(!excluded_v6.contains(&"100.64.0.0/10".to_owned()));
+
+        let custom_only = NetworkSettings {
+            bypass_lan: false,
+            route_exclude_address: vec!["203.0.113.0/24".into()],
+            ..NetworkSettings::default()
+        };
+        assert_eq!(
+            custom_only.effective_route_exclude_address(true),
+            vec!["203.0.113.0/24"]
+        );
     }
 
     #[test]

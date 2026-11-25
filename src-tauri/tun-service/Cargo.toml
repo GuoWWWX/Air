@@ -1,0 +1,19 @@
+[package]
+name = "air-tun-service"
+version = "1.1.0"
+edition = "2021"
+rust-version = "1.89"
+
+[workspace]
+
+[dependencies]
+air = { path = "..", default-features = false }
+
+[build-dependencies]
+tauri-winres = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true
+codegen-units = 1

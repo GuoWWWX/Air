@@ -137,7 +137,7 @@ export function validateNetwork(settings: MobileNetwork) {
   if (settings.hosts.some(line => {
     const [ip, ...names] = line.split(/\s+/)
     return !isIp(ip) || !names.length || names.some(name => !validDomain(name))
-  })) throw new Error(tr('Air 本地 hosts 每行需填一个 IP 和至少一个域名'))
+  })) throw new Error(tr('Air Proxy 本地 hosts 每行需填一个 IP 和至少一个域名'))
   if (settings.routeExcludeAddress.some(value => !ipPrefix(value))) throw new Error(tr('绕过 TUN 的网段格式无效'))
   if (!['gvisor', 'system', 'mixed'].includes(settings.tunStack)) throw new Error(tr('虚拟网卡协议栈无效'))
   if (!['auto', 'redir-host', 'fake-ip'].includes(settings.enhancedMode)) throw new Error(tr('DNS 解析模式无效'))
@@ -259,8 +259,8 @@ export function parseSettings(text: string) {
   if (new TextEncoder().encode(text).length > 1024 * 1024) throw new Error(tr('配置文件超过 1 MB'))
   const doc = parseDocument(text)
   if (doc.errors[0]) throw new Error(doc.errors[0].message)
-  const source = map(doc.toJS({ maxAliasCount: 50 }), tr('Air 配置'))
-  if (Object.keys(source).some(key => !['network', 'routing', 'monitoring'].includes(key))) throw new Error(tr('Air 配置只支持 network、routing 和 monitoring'))
+  const source = map(doc.toJS({ maxAliasCount: 50 }), tr('Air Proxy 配置'))
+  if (Object.keys(source).some(key => !['network', 'routing', 'monitoring'].includes(key))) throw new Error(tr('Air Proxy 配置只支持 network、routing 和 monitoring'))
   const rawNetwork = map(source.network ?? {}, 'network')
   for (const [key, value] of Object.entries(rawNetwork)) {
     if (!Object.hasOwn(defaultMobileNetwork, key)) throw new Error(tr('未知网络配置项 · ') + key)

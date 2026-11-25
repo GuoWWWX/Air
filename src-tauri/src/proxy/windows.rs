@@ -123,7 +123,7 @@ pub(crate) fn own_process(process: RawHandle) -> AirResult<OwnedHandle> {
         ) == 0
             || AssignProcessToJobObject(job.as_raw_handle(), process) == 0
     } {
-        return Err("无法把 Mihomo 加入 Air 的进程管理对象".into());
+        return Err("无法把 Mihomo 加入 Air Proxy 的进程管理对象".into());
     }
     Ok(job)
 }
@@ -499,6 +499,16 @@ pub(super) fn restore(directory: &Path) -> AirResult<()> {
         change.previous.apply()?;
     }
     fs::remove_file(path).map_err(|_| "无法清除系统代理恢复记录".into())
+}
+
+pub(super) fn reapply(directory: &Path, port: u16, bypass: &[String]) -> AirResult<()> {
+    restore(directory)?;
+    enable(directory, port, bypass)?;
+    if !is_active(port)? {
+        restore(directory)?;
+        return Err("Windows 没有应用 Air Proxy 的系统代理设置".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
