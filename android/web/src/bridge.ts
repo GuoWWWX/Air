@@ -71,7 +71,15 @@ export async function native<T>(
     }
     if (action === 'kernelInfo') {
       return (JSON.parse(localStorage.getItem('air.android.preview.kernel') ?? 'null')
-        ?? { version: 'v1.19.32', abi: 'arm64-v8a', sdk: 36, appVersion: '1.1.0' }) as T
+        ?? { version: 'v1.19.34', abi: 'arm64-v8a', sdk: 36, appVersion: '1.1.3' }) as T
+    }
+    if (action === 'updateStatus') {
+      return {
+        current: '1.1.3',
+        phase: 'idle',
+        ignored: false,
+        progress: { received: 0, total: 0, speed: 0, reused: 0, apkSize: 0 },
+      } as T
     }
     if (action === 'exit') {
       const savedExit = localStorage.getItem('air.android.preview.exit')

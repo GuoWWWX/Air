@@ -50,7 +50,8 @@ pub(super) const WINTUN_DLL: &str = "wintun.dll";
 const WINTUN_LICENSE: &str = "Wintun-LICENSE.txt";
 const LOADER: &str = "WebView2Loader.dll";
 // These are the Windows release assets copied into the protected service directory.
-pub(super) const CORE_SHA256: &str = "e0e3823e739c622297d6862bbe72c14eb9e355c32cfda511357be857a8488261";
+pub(super) const CORE_SHA256: &str = "b0c4d88cc0ba42dde818dc769d2efc5711e40a558ea76dbf815ed68ef587507e";
+pub(super) const AIR2_CORE_SHA256: &str = "e0e3823e739c622297d6862bbe72c14eb9e355c32cfda511357be857a8488261";
 pub(super) const PREVIOUS_CORE_SHA256: &str = "25c44987589bd4cea3aec040cb4071225b3cd90219171f98c98b7ff47e0631fc";
 pub(super) const LEGACY_CORE_SHA256: &str = "3c107d54ef1b895e4980b53f517d52f3c1137101fa2637347c9ce343fc50d7b2";
 const LOADER_SHA256: &str = "8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4d3b123f1e0f1c";

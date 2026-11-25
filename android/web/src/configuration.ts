@@ -170,6 +170,7 @@ const defaultFakeIpFilter = [
   '+.local',
   '+.localdomain',
   'geosite:private',
+  'geosite:cn',
   'geosite:connectivity-check',
   '+.msftconnecttest.com',
   '+.msftncsi.com',

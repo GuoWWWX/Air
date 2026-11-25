@@ -287,7 +287,7 @@ export function NetworkPanel({ page, kernelPath, sources = [] }: { page: Network
         {list('systemProxyBypass', tr('Windows 系统代理绕过列表'), tr('默认已自动绕过本机与局域网地址，此处填写需要额外绕过的地址或通配符，每行一个。'), '<local>\n*.lan')}
         {toggle('ipv6', tr('允许 IPv6'), tr('允许代理内核使用 IPv6 网络。关闭时也会禁用 AAAA 解析。'))}
         {toggle('tcpConcurrent', tr('TCP 并发连接'), tr('同时尝试域名对应的多个 IP，使用最先成功的连接。'))}
-        {toggle('blockQuic', tr('拦截代理 QUIC（UDP 443）'), tr('默认关闭以兼容游戏和语音；仅在节点 UDP 不稳导致网页/视频加载缓慢时开启，强制代理流量回落 TCP（不影响直连与国内规则）。'))}
+        {toggle('blockQuic', tr('拦截境外 UDP 443'), tr('仅在规则模式的默认代理出口生效。支持回退的应用可改用 TCP，只支持 UDP 443 的服务可能无法连接。'))}
       </Section>}
       {page === 'monitoring' && <Section title={tr("延迟测试目标")} hint={tr("节点卡片、顶栏和后台测速使用同一目标。")}>
         <div className="flex flex-col gap-1.5">

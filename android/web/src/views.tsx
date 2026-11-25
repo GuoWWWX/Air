@@ -3,7 +3,7 @@ import { diagnostic, tr } from '@/shared/i18n/messages'
 import { formatDateTime } from '@/shared/lib/utils'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Activity, ArrowDown, ArrowUp, Bookmark, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, CloudDownload, Copy, Folder, FolderOpen, Globe2, Grid2X2, Layers, List, ListFilter, Loader2, Network, Pencil, Pin, Play, Plus, RefreshCw, Search, Server, Trash2, Waypoints, X, Zap } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, Bookmark, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, CloudDownload, Copy, Folder, FolderOpen, Globe2, Grid2X2, Layers, List, ListFilter, Loader2, Network, Pencil, Play, Plus, RefreshCw, Search, Server, Trash2, Waypoints, X, Zap } from 'lucide-react'
 import { Segmented } from '@/shared/ui/segmented'
 import { proxyModes } from '@/shared/proxy/modes'
 import { NodeLatencyButton } from '@/shared/ui/NodeLatencyButton'
@@ -1500,9 +1500,6 @@ export function Nodes({
               <small className="node-source-meta truncate">{node.sourceId === 'custom' ? tr('自定义节点') : library.sources.find(s => s.id === node.sourceId)?.name}{' · '}{protocol(node)}</small>
             </button>
           </div>
-          {chosen && !selecting && (
-            <Pin data-slot="node-outbound-marker" aria-hidden="true" className="node-chosen-pin" />
-          )}
           <div className="node-metrics">
             <span className="node-metric-availability">
               <small>{tr("24h 可用率")}</small>

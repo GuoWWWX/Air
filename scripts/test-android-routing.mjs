@@ -37,6 +37,33 @@ const library = {
 }
 const legacy = { ...library.routing, subscriptionId: 'first', inheritRules: false, fallback: { kind: 'selected' } }
 
+test('only untouched v3 network settings adopt the new defaults', () => {
+  const factory = { ...defaultLibrary.network, enhancedMode: 'redir-host', blockQuic: false }
+  const upgrade = network => restoreLibrary({ ...library, networkVersion: 3, network })
+  assert.deepEqual(upgrade(factory).network, defaultLibrary.network)
+  for (const change of [{ tunStack: 'mixed' }, { mixedPort: 27653 }, { nameserver: ['system'] }]) {
+    const edited = { ...factory, ...change }
+    const upgraded = upgrade(edited)
+    assert.deepEqual(upgraded.network, edited)
+    assert.deepEqual(restoreLibrary(upgraded).network, edited)
+  }
+  const partial = upgrade({ mixedPort: 27653 })
+  assert.equal(partial.network.enhancedMode, 'redir-host')
+  assert.equal(partial.network.blockQuic, false)
+})
+
+test('UDP 443 fallback respects subscription rules and direct exits', () => {
+  const quic = 'AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((GEOSITE,cn))),(NOT,((GEOIP,CN,no-resolve)))),REJECT'
+  const rules = compile(library).plan.config.rules
+  assert.ok(rules.indexOf(secondRule) >= 0)
+  assert.deepEqual(rules.slice(-2), [quic, 'MATCH,GLOBAL'])
+  const direct = compile({ ...library, choice: { type: 'node', id: 'first/Node' } }).plan.config.rules
+  assert.equal(direct.at(-1), 'MATCH,DIRECT')
+  assert.ok(!direct.includes(quic))
+  const disabled = compile({ ...library, network: { ...library.network, blockQuic: false } }).plan.config.rules
+  assert.deepEqual(disabled, rules.filter(rule => rule !== quic))
+})
+
 test('old saved bindings and an unchecked switch cannot override the selected node', () => {
   const restored = restoreLibrary({ ...library, routing: legacy })
   assert.deepEqual(parseSettings(stringify({ routing: legacy })).routing, restored.routing)

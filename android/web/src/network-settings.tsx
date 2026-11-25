@@ -200,7 +200,7 @@ export function NetworkSettings({ page, library, busy, sdk, backgroundResult, sa
           {flag('allowLan', tr('允许局域网连接'), tr('开启后，同一网络中的设备可连接该端口。'))}
           {flag('ipv6', tr('允许 IPv6'))}
           {flag('tcpConcurrent', tr('TCP 并发连接'), tr('同时尝试域名对应的多个 IP。'))}
-          {flag('blockQuic', tr('拦截代理 QUIC（UDP 443）'), tr('默认关闭以兼容游戏和语音；仅在节点 UDP 不稳导致网页/视频加载缓慢时开启，强制代理流量回落 TCP（不影响直连与国内规则）。'))}
+          {flag('blockQuic', tr('拦截境外 UDP 443'), tr('仅在规则模式的默认代理出口生效。支持回退的应用可改用 TCP，只支持 UDP 443 的服务可能无法连接。'))}
         </Section>}
         {page === 'monitoring' && <>
           <Section title={tr("后台监测")}>

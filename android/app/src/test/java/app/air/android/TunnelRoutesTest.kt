@@ -136,7 +136,7 @@ class TunnelRoutesTest {
             customExclusions = emptyList(),
         )
         assertFalse(sdk32Bypass.includeIpv4.contains(CidrRoute("0.0.0.0", 0)))
-        assertEquals(listOf(CidrRoute("2000::", 3), CidrRoute("64:ff9b::", 96)), sdk32Bypass.includeIpv6)
+        assertEquals(LEGACY_GLOBAL_IPV6_INCLUDES, sdk32Bypass.includeIpv6)
         assertTrue(sdk32Bypass.excludeCidrs.isEmpty())
 
         val sdk32Full = buildTunnelRoutePlan(
@@ -189,6 +189,8 @@ class TunnelRoutesTest {
         assertFalse(containsIpv6(plan.includeIpv6, "fd12:3456::1"))
         assertFalse(containsIpv6(plan.includeIpv6, "fe80::1"))
         assertFalse(containsIpv6(plan.includeIpv6, "ff02::1"))
-        assertFalse(containsIpv6(plan.includeIpv6, "64:ff9b:1::1"))
+        assertTrue(containsIpv6(plan.includeIpv6, "64:ff9b:1:2::c000:231"))
+        assertFalse(containsIpv6(plan.includeIpv6, "64:ff9b:2::1"))
+        assertTrue(buildTunnelRoutePlan(26, false, true, emptyList()).includeIpv6.isEmpty())
     }
 }

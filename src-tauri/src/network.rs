@@ -10,11 +10,12 @@ pub const QUIC_BLOCK_RULE: &str =
 
 const DEFAULT_BOOTSTRAP_DNS: [&str; 3] = ["223.5.5.5", "119.29.29.29", "1.1.1.1"];
 
-const DEFAULT_FAKE_IP_FILTER: [&str; 25] = [
+const DEFAULT_FAKE_IP_FILTER: [&str; 26] = [
     "+.lan",
     "+.local",
     "+.localdomain",
     "geosite:private",
+    "geosite:cn",
     "geosite:connectivity-check",
     "+.msftconnecttest.com",
     "+.msftncsi.com",
@@ -51,10 +52,6 @@ fn resolver_uses_hostname(value: &str) -> bool {
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
         .is_some_and(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().is_err())
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 fn default_true() -> bool {
@@ -100,7 +97,7 @@ pub struct NetworkSettings {
     pub allow_lan: bool,
     pub system_proxy_bypass: Vec<String>,
     pub tcp_concurrent: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default = "default_true")]
     pub block_quic: bool,
     pub probe_url: String,
     pub probe_status: u16,
@@ -130,7 +127,7 @@ impl Default for NetworkSettings {
             fallback: vec![],
             fallback_domains: vec![],
             domain_dns: vec![],
-            enhanced_mode: "redir-host".into(),
+            enhanced_mode: "fake-ip".into(),
             fake_ip_filter: vec![],
             respect_rules: true,
             ipv6: false,
@@ -149,7 +146,7 @@ impl Default for NetworkSettings {
             allow_lan: false,
             system_proxy_bypass: vec![],
             tcp_concurrent: true,
-            block_quic: false,
+            block_quic: true,
             probe_url: "https://www.gstatic.com/generate_204".into(),
             probe_status: 204,
             probe_interval_minutes: 5,
@@ -369,11 +366,15 @@ impl NetworkSettings {
         Ok(())
     }
 
-    pub(crate) fn tun_ipv6(&self) -> bool {
-        let ipv6 = self.ipv6;
+    pub(crate) fn tun_ipv6_supported() -> bool {
         #[cfg(windows)]
-        let ipv6 = ipv6 && crate::proxy::windows::tun_ipv6_available();
-        ipv6
+        {
+            crate::proxy::windows::tun_ipv6_available()
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
     }
 
     pub(crate) fn effective_route_exclude_address(&self, ipv6: bool) -> Vec<String> {
@@ -434,14 +435,16 @@ impl NetworkSettings {
     }
 
     pub(crate) fn tun(&self, enabled: bool) -> Json {
-        let ipv6 = self.tun_ipv6();
+        // Always assign a TUN IPv6 interface/route when the host supports IPv6 so dual-stack
+        // traffic cannot bypass Air-TUN when `ipv6` is off. `dns.ipv6` / `config.ipv6` remain gated.
+        let capture_ipv6 = Self::tun_ipv6_supported();
         let mut tun = json!({
             "enable": enabled, "device": "Air-TUN", "stack": self.tun_stack, "auto-route": true,
             "auto-detect-interface": true, "strict-route": self.strict_route,
             "endpoint-independent-nat": true,
-            "route-exclude-address": self.effective_route_exclude_address(ipv6),
+            "route-exclude-address": self.effective_route_exclude_address(capture_ipv6),
             "dns-hijack": if self.dns_hijack { vec!["any:53", "tcp://any:53"] } else { vec![] },
-            "inet6-address": if ipv6 { vec!["fdfe:dcba:9876::1/126"] } else { vec![] },
+            "inet6-address": if capture_ipv6 { vec!["fdfe:dcba:9876::1/126"] } else { vec![] },
         });
         if let Some(mtu) = self.tun_mtu {
             tun["mtu"] = json!(mtu);
@@ -615,9 +618,14 @@ mod tests {
             .iter()
             .filter_map(|value| value.as_str())
             .collect();
+        let mut expected = vec!["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"];
+        if NetworkSettings::tun_ipv6_supported() {
+            expected.extend(["fc00::/7", "fe80::/10"]);
+        }
+        assert_eq!(excludes, expected);
         assert_eq!(
-            excludes,
-            vec!["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+            yaml["tun"]["inet6-address"].as_sequence().unwrap().is_empty(),
+            !NetworkSettings::tun_ipv6_supported()
         );
         assert_eq!(yaml["tun"]["strict-route"].as_bool(), Some(true));
         assert_eq!(yaml["tun"]["mtu"].as_u64(), Some(1400));
@@ -702,15 +710,13 @@ mod tests {
     #[test]
     fn fake_ip_default_filter_and_block_quic_default() {
         let parsed: NetworkSettings = serde_json::from_str("{}").unwrap();
-        assert!(!parsed.block_quic);
-        let settings = NetworkSettings {
-            enhanced_mode: "fake-ip".into(),
-            ..NetworkSettings::default()
-        };
+        assert!(parsed.block_quic);
+        assert_eq!(parsed.enhanced_mode, "fake-ip");
         let mut yaml = Value::Mapping(Default::default());
-        settings.apply_dns(&mut yaml).unwrap();
+        parsed.apply_dns(&mut yaml).unwrap();
         let filters = yaml["dns"]["fake-ip-filter"].as_sequence().unwrap();
         assert!(filters.iter().any(|item| item == "geosite:private"));
+        assert!(filters.iter().any(|item| item == "geosite:cn"));
         assert!(filters.iter().any(|item| item == "stun.*.*"));
     }
 }

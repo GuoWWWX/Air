@@ -18,7 +18,7 @@ pub struct ProxyConfig {
     pub(crate) outbound: Outbound,
     pub(crate) node_names: HashMap<String, String>,
     pub(crate) dialers: HashMap<String, String>,
-    pub(crate) custom_rules_end: usize,
+    quic_fallback_index: Option<usize>,
 }
 
 // Reuse only single-node exits that already loaded successfully. A new rule,
@@ -76,13 +76,13 @@ impl ProxyConfig {
             }
         }
         network.apply_proxy(&mut self.yaml, tun, current_pool)?;
-        if network.block_quic {
-            if let Some(rules) = self.yaml["rules"].as_sequence_mut() {
-                let quic = Value::String(crate::network::QUIC_BLOCK_RULE.to_owned());
-                if !rules.iter().any(|entry| entry == &quic) {
-                    let pos = self.custom_rules_end.min(rules.len());
-                    rules.insert(pos, quic);
-                }
+        if let Some(pos) = self.quic_fallback_index {
+            let rules = self.yaml["rules"].as_sequence_mut().ok_or("无法读取运行规则")?;
+            let present = rules[pos].as_str() == Some(crate::network::QUIC_BLOCK_RULE);
+            if network.block_quic && !present {
+                rules.insert(pos, crate::network::QUIC_BLOCK_RULE.into());
+            } else if !network.block_quic && present {
+                rules.remove(pos);
             }
         }
         Ok(())
@@ -329,7 +329,6 @@ pub fn compile(
     }
 
     let mut providers = Mapping::new();
-    let custom_rules_end;
     let owner = if has_group {
         sources
             .iter()
@@ -382,7 +381,7 @@ pub fn compile(
     if automatic {
         rules.pop().ok_or("默认出口不存在")?;
         rules.extend(["GEOIP,private,DIRECT,no-resolve".into(), "GEOSITE,private,DIRECT".into()]);
-        custom_rules_end = rules.len();
+        let custom_rules_end = rules.len();
         let terminal = match rule_source.or(user_source.as_ref()) {
             Some(s) => rule_outbounds.inherit(s, &mut rules, &mut providers)?,
             None => None,
@@ -408,36 +407,24 @@ pub fn compile(
         if mode != Mode::Direct {
             return Err("请在节点库设为当前节点，或先配置至少 2 跳的链路".into());
         }
-        custom_rules_end = 0;
-    } else {
+    } else if routing.match_fallback.is_some() {
         let mut custom_only = routing.clone();
         custom_only.inherit_rules = false;
         custom_only.fallback = Target::Direct;
         let global_end = custom_only.compile(sources)?.len().saturating_sub(1);
-        custom_rules_end = if routing.match_fallback.is_some() {
-            rules.splice(
-                global_end..global_end,
-                [
-                    "GEOIP,private,DIRECT,no-resolve".to_owned(),
-                    "GEOSITE,private,DIRECT".to_owned(),
-                ],
-            );
-            let base_end = global_end + 2;
-            let has_inherited =
-                routing.inherit_rules && rule_source.is_some_and(|source| !source.rules.is_empty());
-            if !has_inherited {
-                rules.splice(
-                    base_end..base_end,
-                    [
-                        "GEOSITE,cn,DIRECT".to_owned(),
-                        "GEOIP,CN,DIRECT,no-resolve".to_owned(),
-                    ],
-                );
-            }
-            base_end
-        } else {
-            global_end
-        };
+        rules.splice(global_end..global_end, [
+            "GEOIP,private,DIRECT,no-resolve".to_owned(),
+            "GEOSITE,private,DIRECT".to_owned(),
+        ]);
+        let base_end = global_end + 2;
+        let has_inherited =
+            routing.inherit_rules && rule_source.is_some_and(|source| !source.rules.is_empty());
+        if !has_inherited {
+            rules.splice(base_end..base_end, [
+                "GEOSITE,cn,DIRECT".to_owned(),
+                "GEOIP,CN,DIRECT,no-resolve".to_owned(),
+            ]);
+        }
     }
 
     for entry in rule_outbounds.proxies {
@@ -565,6 +552,11 @@ pub fn compile(
         );
     }
 
+    // The generated rule applies only to the proxy fallback. Never remove a user-supplied copy.
+    let quic_fallback_index = rules.last().and_then(|rule| rule.strip_prefix("MATCH,"))
+        .filter(|policy| !matches!(*policy, "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS"))
+        .filter(|_| !rules.iter().any(|rule| rule == crate::network::QUIC_BLOCK_RULE))
+        .map(|_| rules.len() - 1);
     let mut yaml: Value = serde_yaml::to_value(serde_json::json!({
         "mode": "rule",
         "find-process-mode": "always",
@@ -576,8 +568,8 @@ pub fn compile(
         "sniffer": {
             "enable": true,
             "force-dns-mapping": true,
-            "parse-pure-ip": false,
-            "override-destination": false,
+            "parse-pure-ip": true,
+            "override-destination": true,
             "sniff": {
                 "HTTP": { "ports": [80, "8080-8880"], "override-destination": false },
                 "TLS": { "ports": [443, 8443] },
@@ -606,7 +598,7 @@ pub fn compile(
         outbound,
         node_names,
         dialers,
-        custom_rules_end,
+        quic_fallback_index,
     })
 }
 
@@ -1161,7 +1153,11 @@ mod tests {
         quic_net.block_quic = true;
         hk_cfg.apply_network(&quic_net, false, None).unwrap();
         let with_quic = serde_yaml::from_value::<Vec<String>>(hk_cfg.yaml["rules"].clone()).unwrap();
-        assert_eq!(with_quic[3], crate::network::QUIC_BLOCK_RULE);
+        assert_eq!(with_quic[with_quic.len() - 2], crate::network::QUIC_BLOCK_RULE);
+        assert_eq!(&with_quic[..rules.len() - 1], &rules[..rules.len() - 1]);
+        quic_net.block_quic = false;
+        hk_cfg.apply_network(&quic_net, false, None).unwrap();
+        assert_eq!(serde_yaml::from_value::<Vec<String>>(hk_cfg.yaml["rules"].clone()).unwrap(), rules);
     }
 
     #[test]
@@ -1202,8 +1198,8 @@ mod tests {
         assert_eq!(chain_cfg.yaml["keep-alive-interval"].as_u64(), Some(15));
         assert_eq!(chain_cfg.yaml["disable-keep-alive"].as_bool(), Some(false));
         assert_eq!(chain_cfg.yaml["sniffer"]["enable"].as_bool(), Some(true));
-        assert_eq!(chain_cfg.yaml["sniffer"]["parse-pure-ip"].as_bool(), Some(false));
-        assert_eq!(chain_cfg.yaml["sniffer"]["override-destination"].as_bool(), Some(false));
+        assert_eq!(chain_cfg.yaml["sniffer"]["parse-pure-ip"].as_bool(), Some(true));
+        assert_eq!(chain_cfg.yaml["sniffer"]["override-destination"].as_bool(), Some(true));
 
         let custom_cfg = compile(
             Mode::Rule,

@@ -190,11 +190,10 @@ class AirVpnService : VpnService() {
             .setMtu(sig.mtu)
             .addAddress(ADDRESS, 30)
             .addDisallowedApplication(packageName)
+        // VpnService blocks an address family when none of its addresses, routes or DNS servers are added.
+        if (sig.ipv6) builder.addAddress(IPV6, 126)
         if (Build.VERSION.SDK_INT >= 29) {
             builder.setMetered(false)
-        }
-        if (sig.ipv6) {
-            builder.addAddress(IPV6, 126)
         }
         for (route in routes.includeIpv4) {
             builder.addRoute(route.address, route.prefixLength)
@@ -210,9 +209,7 @@ class AirVpnService : VpnService() {
         }
         if (sig.dnsHijack) {
             builder.addDnsServer(DNS).addRoute(DNS, 32)
-            if (sig.ipv6) {
-                builder.addDnsServer(DNS_IPV6).addRoute(DNS_IPV6, 128)
-            }
+            if (sig.ipv6) builder.addDnsServer(DNS_IPV6).addRoute(DNS_IPV6, 128)
         }
         val ready = CompletableFuture<String?>()
         Clash.setEventListener { raw ->

@@ -2,7 +2,7 @@
 
 从 Windows 构建 `x86_64-pc-windows-gnu` 安装包。发布配置使用已核对版本和校验值的 Mihomo 可执行文件、许可证和构建信息。内核与图标的映射见 [Windows 基础配置](../../src-tauri/tauri.windows.conf.json) 和 [NSIS 配置](../../src-tauri/tauri.windows-release.conf.json)。
 
-构建前运行 `scripts/prepare-windows-kernel.ps1`、`scripts/prepare-windows-service.ps1` 和 `scripts/prepare-mihomo-data.ps1`，校验 Windows 内核、Wintun、`air-tun-service.exe` 和两份规则库。输入缓存在 `.cache/air/`。首次构建 Windows 内核需要 Go 1.26.8，可通过 `-GoExe` 指定路径。内核版本和摘要见 [内核构建记录](../../src-tauri/windows/Mihomo-build-info.txt)。安装程序内嵌 Wintun 及其许可证，安装虚拟网卡服务时将它们写入受保护的服务目录。程序内嵌 `GeoSite.dat` 和 `geoip.metadb`，供带地理规则的配置在离线时启动。
+构建前运行 `scripts/prepare-windows-kernel.ps1`、`scripts/prepare-windows-service.ps1` 和 `scripts/prepare-mihomo-data.ps1`，校验 Windows 内核、Wintun、`air-tun-service.exe` 和两份规则库。输入缓存在 `.cache/air/`。首次构建 Windows 内核需要 Git 和 Go 1.26.8，可通过 `-GoExe` 指定 Go 路径。内核版本和摘要见 [内核构建记录](../../src-tauri/windows/Mihomo-build-info.txt)。安装程序内嵌 Wintun 及其许可证，安装虚拟网卡服务时将它们写入受保护的服务目录。程序内嵌 `GeoSite.dat` 和 `geoip.metadb`，供带地理规则的配置在离线时启动。
 
 虚拟网卡服务由用户在 Air 内确认安装或更新，Windows 在这一步请求授权。服务启动时创建 `Air-TUN`，代理每次启用时复用这块网卡。停止代理或退出 Air 后，网卡继续显示为未连接，TUN 路由、地址和 DNS 设置已清理。卸载服务会移除网卡。
 

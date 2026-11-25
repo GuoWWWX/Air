@@ -81,7 +81,7 @@ export interface Library {
   monitoring: boolean
 }
 
-const mobileNetworkVersion = 3
+const mobileNetworkVersion = 4
 
 export const defaultLibrary: Library = {
   sources: [], nodes: [], groups: [], chains: [], probes: {}, edits: {}, hiddenNodes: [], sourceFilter: [],
@@ -92,8 +92,12 @@ export function restoreLibrary(saved: Partial<Library> & {
   dnsServers?: string[]; dnsMode?: 'redir-host' | 'fake-ip'; ipv6?: boolean; probeUrl?: string; inheritSource?: string
 }): Library {
   const { dnsServers, dnsMode, ipv6, probeUrl, inheritSource, network, routing, ...current } = saved
+  const version = saved.networkVersion ?? 0
+  const defaults: MobileNetwork = version < 4
+    ? { ...defaultMobileNetwork, enhancedMode: 'redir-host', blockQuic: false }
+    : defaultMobileNetwork
   const mergedNetwork: MobileNetwork = {
-    ...defaultMobileNetwork,
+    ...defaults,
     ...(dnsServers?.length && { nameserver: dnsServers }),
     ...(dnsMode && { enhancedMode: dnsMode }),
     ...(ipv6 !== undefined && { ipv6 }),
@@ -101,12 +105,18 @@ export function restoreLibrary(saved: Partial<Library> & {
     ...network,
   }
   const legacyIpv6 = !saved.networkVersion && network?.tunStack === 'gvisor' && mergedNetwork.ipv6 && mergedNetwork.dnsIpv6
-  const migrateStack = (saved.networkVersion ?? 0) < mobileNetworkVersion && mergedNetwork.tunStack === 'mixed'
+  const migrateStack = version < 3 && mergedNetwork.tunStack === 'mixed'
   const resolvedNetwork: MobileNetwork = {
     ...mergedNetwork,
     bypassLan: mergedNetwork.bypassLan ?? defaultMobileNetwork.bypassLan,
     ...(legacyIpv6 && { ipv6: false, dnsIpv6: false }),
     ...(migrateStack && { tunStack: defaultMobileNetwork.tunStack }),
+  }
+  if (version < 4 && (Object.keys(defaults) as (keyof MobileNetwork)[]).every(
+    key => JSON.stringify(resolvedNetwork[key]) === JSON.stringify(defaults[key]),
+  )) {
+    resolvedNetwork.enhancedMode = defaultMobileNetwork.enhancedMode
+    resolvedNetwork.blockQuic = defaultMobileNetwork.blockQuic
   }
   const validSourceIds = new Set((current.sources ?? []).map(source => source.id))
   const resolvedSourceFilter =
@@ -596,17 +606,17 @@ export function compile(library: Library, model = readLibrary(library), previewS
     !subscriptionDefault && inherited.length === 0
       ? ['GEOSITE,cn,DIRECT', 'GEOIP,CN,DIRECT,no-resolve']
       : []
-  const quicRule = network.blockQuic
-    ? ['AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((GEOSITE,cn))),(NOT,((GEOIP,CN,no-resolve)))),REJECT']
-    : []
+  const fallback = routeTarget(routing.fallback)
+  const proxyFallback = !builtin.has(fallback === 'GLOBAL' ? active : fallback)
+  const quicRule = 'AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((GEOSITE,cn))),(NOT,((GEOIP,CN,no-resolve)))),REJECT'
   const rules = [
     ...custom,
     'GEOIP,private,DIRECT,no-resolve',
     'GEOSITE,private,DIRECT',
-    ...quicRule,
     ...inherited,
     ...domesticFallback,
-    'MATCH,' + routeTarget(routing.fallback),
+    ...(network.blockQuic && proxyFallback && !inherited.includes(quicRule) ? [quicRule] : []),
+    'MATCH,' + fallback,
   ]
   const localHosts = localHostRecords(network)
   const hostSources = new Map([...model.profiles].filter(([, parsed]) => Object.keys(record(parsed.profile.hosts)).length))
@@ -665,8 +675,8 @@ export function compile(library: Library, model = readLibrary(library), previewS
     sniffer: {
       enable: true,
       'force-dns-mapping': true,
-      'parse-pure-ip': false,
-      'override-destination': false,
+      'parse-pure-ip': true,
+      'override-destination': true,
       sniff: {
         HTTP: { ports: [80, '8080-8880'], 'override-destination': false },
         TLS: { ports: [443, 8443] },

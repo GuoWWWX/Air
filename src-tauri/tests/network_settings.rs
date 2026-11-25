@@ -9,15 +9,15 @@ fn factory_dns_uses_real_ips_and_upgrades_only_the_generated_legacy_file() {
     let current = NetworkSettings::default();
     current.validate().unwrap();
     assert!(current.dns_hijack && current.respect_rules);
-    assert!(current.tcp_concurrent);
+    assert!(current.tcp_concurrent && current.block_quic);
     assert!(!current.strict_route && current.bypass_lan);
-    assert_eq!(current.enhanced_mode, "redir-host");
+    assert_eq!(current.enhanced_mode, "fake-ip");
     assert!(current.nameserver.iter().all(|host| host.starts_with("https://")));
     assert!(!current.proxy_server_nameserver.is_empty());
     let legacy = NetworkSettings {
         ipv6: true, dns_ipv6: true, tun_stack: "gvisor".into(),
         nameserver: vec!["system".into()], proxy_server_nameserver: vec![],
-        respect_rules: false, enhanced_mode: "auto".into(), strict_route: false, tcp_concurrent: false, ..current.clone()
+        respect_rules: false, enhanced_mode: "auto".into(), strict_route: false, tcp_concurrent: false, block_quic: false, ..current.clone()
     };
     let template = serde_yaml::to_string(&serde_json::json!({ "network": legacy, "routing": RoutingConfig::default() })).unwrap();
     fs::write(file.path(), format!("# custom\n{template}")).unwrap();
@@ -36,10 +36,13 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
         dns_ipv6: true,
         tun_stack: "gvisor".into(),
         strict_route: true,
+        enhanced_mode: "redir-host".into(),
+        block_quic: false,
         ..NetworkSettings::default()
     };
     let mut network_val = serde_json::to_value(&previous_windows).unwrap();
     network_val.as_object_mut().unwrap().remove("bypassLan");
+    network_val.as_object_mut().unwrap().remove("blockQuic");
     let untouched = serde_yaml::to_string(&serde_json::json!({
         "routing": RoutingConfig::default(),
         "network": network_val,
@@ -52,33 +55,35 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     file.upgrade_factory_network().unwrap();
     let upgraded = file.network().unwrap().settings;
     assert!(!upgraded.strict_route);
-    assert!(upgraded.bypass_lan);
+    assert!(upgraded.bypass_lan && upgraded.block_quic);
     assert!(!upgraded.ipv6 && !upgraded.dns_ipv6);
     assert_eq!(upgraded.tun_stack, "mixed");
+    assert_eq!(upgraded.enhanced_mode, "fake-ip");
 
-    let untouched_v110 = NetworkSettings {
-        ipv6: true,
-        dns_ipv6: true,
-        tun_stack: "gvisor".into(),
-        strict_route: false,
-        bypass_lan: true,
+    let untouched_v111 = NetworkSettings {
+        enhanced_mode: "redir-host".into(),
+        block_quic: false,
         ..NetworkSettings::default()
     };
-    let dir_v110 = tempfile::tempdir().unwrap();
-    let file_v110 = RoutingFile::new(dir_v110.path());
+    let mut v111_val = serde_json::to_value(&untouched_v111).unwrap();
+    v111_val.as_object_mut().unwrap().remove("blockQuic");
+    let dir_v111 = tempfile::tempdir().unwrap();
+    let file_v111 = RoutingFile::new(dir_v111.path());
     fs::write(
-        file_v110.path(),
+        file_v111.path(),
         serde_yaml::to_string(&serde_json::json!({
             "routing": RoutingConfig::default(),
-            "network": untouched_v110,
+            "network": v111_val,
         }))
         .unwrap(),
     )
     .unwrap();
-    file_v110.upgrade_factory_network().unwrap();
-    let upgraded_v110 = file_v110.network().unwrap().settings;
-    assert!(!upgraded_v110.ipv6 && !upgraded_v110.dns_ipv6);
-    assert_eq!(upgraded_v110.tun_stack, "mixed");
+    file_v111.upgrade_factory_network().unwrap();
+    let upgraded_v111 = file_v111.network().unwrap().settings;
+    assert!(!upgraded_v111.ipv6 && !upgraded_v111.dns_ipv6);
+    assert_eq!(upgraded_v111.tun_stack, "mixed");
+    assert_eq!(upgraded_v111.enhanced_mode, "fake-ip");
+    assert!(upgraded_v111.block_quic);
 
     let custom_dir = tempfile::tempdir().unwrap();
     let custom_file = RoutingFile::new(custom_dir.path());
@@ -87,9 +92,16 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     custom_file.upgrade_factory_network().unwrap();
     let preserved = custom_file.network().unwrap().settings;
     assert!(preserved.strict_route);
+    assert!(!preserved.block_quic);
     assert!(preserved.bypass_lan);
     assert!(preserved.ipv6 && preserved.dns_ipv6);
     assert_eq!(preserved.tun_stack, "gvisor");
+    fs::write(custom_file.path(), "network: {mixedPort: 27653}").unwrap();
+    custom_file.upgrade_factory_network().unwrap();
+    let partial = custom_file.network().unwrap().settings;
+    assert_eq!(partial.mixed_port, Some(27653));
+    assert_eq!(partial.enhanced_mode, "redir-host");
+    assert!(!partial.block_quic);
 }
 
 #[test]

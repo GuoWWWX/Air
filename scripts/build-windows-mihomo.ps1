@@ -14,6 +14,7 @@ $work = Join-Path $outputDir ('.mihomo-' + [Guid]::NewGuid().ToString('N'))
 New-Item -Path $work -ItemType Directory | Out-Null
 
 $goOptions = @{
+    GIT_CEILING_DIRECTORIES = $work
     GOTOOLCHAIN = 'local'
     GOENV = 'off'
     GOFLAGS = ''
@@ -101,8 +102,14 @@ try {
         & $go mod edit '-replace=github.com/metacubex/sing-tun=./sing-tun-local'
         if ($LASTEXITCODE -ne 0) { throw 'Could not select the patched sing-tun module.' }
 
+        $ipv6Patch = Join-Path $work 'ipv6.patch'
+        $patchText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'mihomo-windows-ipv6.patch'))
+        [IO.File]::WriteAllText($ipv6Patch, $patchText.Replace("`r`n", "`n"), $utf8)
+        & git apply --whitespace=error $ipv6Patch
+        if ($LASTEXITCODE -ne 0) { throw 'The IPv6 patch did not apply to the pinned Mihomo source.' }
+
         $binary = Join-Path $work 'mihomo.exe'
-        $ldflags = '-s -w -buildid= -X github.com/metacubex/mihomo/constant.Version=v1.19.32-air.2 -X github.com/metacubex/mihomo/constant.BuildTime=2026-09-30T17:00:11Z'
+        $ldflags = '-s -w -buildid= -X github.com/metacubex/mihomo/constant.Version=v1.19.32-air.3 -X github.com/metacubex/mihomo/constant.BuildTime=2026-09-30T17:00:11Z'
         & $go build -mod=readonly -buildvcs=false -trimpath -tags with_gvisor -ldflags $ldflags -o $binary .
         if ($LASTEXITCODE -ne 0) { throw 'Mihomo build failed.' }
         Move-Item -LiteralPath $binary -Destination $outputPath -Force

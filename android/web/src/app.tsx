@@ -24,7 +24,7 @@ import { ChainEditor, GroupEditor, ImportView, NodeEditor, YamlEditor, type Subs
 import { BottomNavigation, Empty, Header, Row, Sheet, Tag } from './ui'
 import { validateNetwork, validateRouting } from './configuration'
 import { NetworkSettings } from './network-settings'
-import { AboutSettings, ConfigSettings, KernelSettings, RoutingSettings, SettingsIndex, ThemeSettings, settingsTitles, type KernelInfo, type SettingsPage, type UpdateCheck } from './settings'
+import { AboutSettings, ConfigSettings, KernelSettings, RoutingSettings, SettingsIndex, ThemeSettings, settingsTitles, AndroidUpdatePanel, type AndroidUpdateState, type KernelInfo, type SettingsPage } from './settings'
 type Screen =
   | { kind: 'import' | 'yaml'; id?: string }
   | { kind: SettingsPage }
@@ -36,6 +36,7 @@ type Dialog =
   | { kind: 'chain' | 'join' }
   | { kind: 'connection'; id: string; snapshot: Connection }
   | { kind: 'tool'; name: string; data: SubscriptionToolData; key: string }
+  | { kind: 'update' }
   | { kind: 'delete'; label: string; apply: () => void }
 
 const emptyStatus: VpnStatus = { phase: 'idle', startedAt: 0, traffic: {} }
@@ -130,7 +131,12 @@ export function App() {
   const [pendingImports, setPendingImports] = useState<PendingImport[]>([])
   const lastStatusError = useRef<string | undefined>(undefined)
   const [kernelInfo, setKernelInfo] = useState(defaultKernel)
-  const [availableUpdate, setAvailableUpdate] = useState<UpdateCheck>()
+  const [updateState, setUpdateState] = useState<AndroidUpdateState>(() => ({
+    current: defaultKernel.appVersion,
+    phase: 'idle',
+    ignored: false,
+    progress: { received: 0, total: 0, speed: 0, reused: 0, apkSize: 0 },
+  }))
   const [backgroundResult, setBackgroundResult] = useState<MonitorResult>()
   const monitorAt = useRef(0)
   const [checked, setChecked] = useState<string[]>([])
@@ -240,7 +246,21 @@ export function App() {
       setLoadError(text)
       showMessage({ type: 'error', title: tr('读取节点库失败'), description: text })
     })
-    void native<KernelInfo>('kernelInfo').then(info => { if (active) setKernelInfo(info) }).catch(() => undefined)
+    void native<KernelInfo>('kernelInfo').then(info => {
+      if (!active) return
+      setKernelInfo(info)
+      setUpdateState(prev => ({ ...prev, current: info.appVersion }))
+    }).catch(() => undefined)
+    if (onAndroid) {
+      void native<AndroidUpdateState>('updateStatus').then(next => {
+        if (active && next) setUpdateState(next)
+      }).catch(() => undefined)
+    }
+    const onNativeUpdateStatus = (event: Event) => {
+      const detail = (event as CustomEvent<AndroidUpdateState>).detail
+      if (active && detail) setUpdateState(detail)
+    }
+    window.addEventListener('air-update-status', onNativeUpdateStatus)
     const media = matchMedia('(prefers-color-scheme: dark)')
     const update = () => setDarkSystem(media.matches)
     const onNativeSystemTheme = (event: Event) => {
@@ -253,6 +273,7 @@ export function App() {
       active = false
       media.removeEventListener('change', update)
       window.removeEventListener('air-system-theme', onNativeSystemTheme)
+      window.removeEventListener('air-update-status', onNativeUpdateStatus)
     }
   }, [])
 
@@ -265,14 +286,22 @@ export function App() {
       const lastChecked = Number(preferences.getItem('air.lastUpdateCheckAt') ?? 0)
       if (Number.isFinite(lastChecked) && Date.now() - lastChecked < 6 * 3_600_000) return
       inFlight = true
-      void native<UpdateCheck>('checkUpdate')
+      void native<AndroidUpdateState>('checkUpdate')
         .then(next => {
           preferences.setItem('air.lastUpdateCheckAt', String(Date.now()))
-          if (!active) return
-          if (next.version && next.version !== next.current && next.version !== kernelInfo.appVersion) {
-            setAvailableUpdate(next)
+          if (!active || !next) return
+          setUpdateState(next)
+          if (
+            next.version &&
+            next.version !== next.current &&
+            next.version !== kernelInfo.appVersion &&
+            !next.ignored &&
+            next.phase !== 'idle' &&
+            next.phase !== 'current'
+          ) {
             if (preferences.getItem('air.promptedUpdateVersion') !== next.version) {
               preferences.setItem('air.promptedUpdateVersion', next.version)
+              setDialog(currentDialog => currentDialog ?? { kind: 'update' })
               showMessage({ type: 'info', title: tr('发现新版本 Air Proxy ') + next.version })
             }
           }
@@ -1382,9 +1411,29 @@ export function App() {
         ? 'stopping'
         : status.phase
 
-  const pendingUpdate = availableUpdate?.version && availableUpdate.version !== kernelInfo.appVersion
-    ? availableUpdate
-    : undefined
+  const hasPendingUpdate = Boolean(
+    updateState.version &&
+    updateState.version !== kernelInfo.appVersion &&
+    !updateState.ignored &&
+    updateState.phase !== 'idle' &&
+    updateState.phase !== 'current',
+  )
+
+  async function runUpdateCommand(action: 'checkUpdate' | 'startUpdate' | 'pauseUpdate' | 'cancelUpdate' | 'ignoreUpdate' | 'installUpdate') {
+    try {
+      const payload = action === 'ignoreUpdate' && updateState.version ? { version: updateState.version } : undefined
+      const next = await native<AndroidUpdateState>(action, payload)
+      if (next) setUpdateState(next)
+      if (action === 'ignoreUpdate') {
+        setDialog(cur => (cur?.kind === 'update' ? undefined : cur))
+        notice(tr('已忽略此版本'))
+      }
+      return next
+    } catch (failure) {
+      showMessage({ type: 'error', title: errorText(failure) })
+      return undefined
+    }
+  }
 
   let page: ReactNode
   const back = () => { setDialog(undefined); setScreen(undefined); setNodesSelecting(false); setChecked([]) }
@@ -1411,7 +1460,16 @@ export function App() {
       {pageKind === 'kernel' && <KernelSettings info={kernelInfo} active={running}
         check={() => native<void>('validatePlan', { plan: prepareRouting(current.current).compiled.plan })} />}
       {pageKind === 'about' && (
-        <AboutSettings info={kernelInfo} update={pendingUpdate} onUpdateChecked={setAvailableUpdate} />
+        <AboutSettings
+          info={kernelInfo}
+          update={updateState}
+          onCheckUpdate={() => runUpdateCommand('checkUpdate')}
+          onStartUpdate={() => void runUpdateCommand('startUpdate')}
+          onPauseUpdate={() => void runUpdateCommand('pauseUpdate')}
+          onCancelUpdate={() => void runUpdateCommand('cancelUpdate')}
+          onIgnoreUpdate={() => void runUpdateCommand('ignoreUpdate')}
+          onInstallUpdate={() => void runUpdateCommand('installUpdate')}
+        />
       )}
       {(pageKind === 'dns' || pageKind === 'tun' || pageKind === 'inbound' || pageKind === 'monitoring') &&
         <NetworkSettings key={pageKind} page={pageKind} library={library} busy={busy} sdk={kernelInfo.sdk}
@@ -1474,7 +1532,7 @@ export function App() {
             onSelect={conn => setDialog({ kind: 'connection', id: conn.id, snapshot: conn })} /></>
         break
       case 'settings':
-        page = <><Header icon="settings" animateKey="tab:settings" statusPhase={currentPhase} title={tr("设置")} /><SettingsIndex library={library} open={kind => setScreen({ kind })} availableUpdate={pendingUpdate} /></>
+        page = <><Header icon="settings" animateKey="tab:settings" statusPhase={currentPhase} title={tr("设置")} /><SettingsIndex library={library} open={kind => setScreen({ kind })} update={updateState} /></>
         break
     }
   }
@@ -1688,6 +1746,31 @@ export function App() {
         }}
       />
     )
+  } else if (dialog?.kind === 'update') {
+    sheetTitle = updateState.version ? `Air Proxy ${updateState.version}${tr(' 可更新')}` : tr('软件更新')
+    const openUpdateFallback = (url: string) => {
+      if (!onAndroid) {
+        window.open(url, '_blank', 'noopener,noreferrer')
+        return
+      }
+      void native('openLink', { url }).catch(failure => showMessage({ type: 'error', title: errorText(failure) }))
+    }
+    sheet = (
+      <div className="sheet-form">
+        <AndroidUpdatePanel
+          update={updateState}
+          onOpenLink={openUpdateFallback}
+          onStart={() => void runUpdateCommand('startUpdate')}
+          onPause={() => void runUpdateCommand('pauseUpdate')}
+          onCancel={() => void runUpdateCommand('cancelUpdate')}
+          onIgnore={() => void runUpdateCommand('ignoreUpdate')}
+          onInstall={() => void runUpdateCommand('installUpdate')}
+          onDismiss={() => setDialog(undefined)}
+          notesMaxHeightClass="max-h-48"
+          inSheet
+        />
+      </div>
+    )
   } else if (dialog?.kind === 'delete') {
     sheetTitle = tr('确认操作')
     sheet = <div className="sheet-form"><p>{dialog.label}</p><div className="sheet-actions justify-end">
@@ -1699,8 +1782,8 @@ export function App() {
     {loaded && (
       <>
         {page}
-        <BottomNavigation page={tab} onChange={go} settingsBadge={Boolean(pendingUpdate?.version)} />
-        <Sheet open={Boolean(dialog && sheet)} title={sheetTitle} close={() => setDialog(undefined)}>{sheet}</Sheet>
+        <BottomNavigation page={tab} onChange={go} settingsBadge={hasPendingUpdate} />
+        <Sheet open={Boolean(dialog && sheet)} title={sheetTitle} close={() => { if (updateState.phase !== 'installing') setDialog(undefined) }}>{sheet}</Sheet>
       </>
     )}
     <AnimatePresence>

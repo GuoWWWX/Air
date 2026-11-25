@@ -24,8 +24,10 @@ internal val LOCAL_IPV4_EXCLUDES = listOf("224.0.0.0/4", "255.255.255.255/32", "
 internal val LOCAL_IPV6_EXCLUDES = listOf("fe80::/10", "ff00::/8")
 internal val PRIVATE_IPV4_EXCLUDES = listOf("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
 internal val PRIVATE_IPV6_EXCLUDES = listOf("fc00::/7", "fe80::/10")
-// RFC 6052 well-known NAT64 prefix sits outside 2000::/3 and must still be routed when bypassing LAN on API < 33.
-internal val LEGACY_GLOBAL_IPV6_INCLUDES = listOf(CidrRoute("2000::", 3), CidrRoute("64:ff9b::", 96))
+// Both the well-known and the local-use translation prefixes sit outside global unicast.
+internal val LEGACY_GLOBAL_IPV6_INCLUDES = listOf(
+    CidrRoute("2000::", 3), CidrRoute("64:ff9b::", 96), CidrRoute("64:ff9b:1::", 48),
+)
 internal val LEGACY_NON_GLOBAL_IPV4_EXCLUDES = listOf(
     "0.0.0.0/8",
     "10.0.0.0/8",

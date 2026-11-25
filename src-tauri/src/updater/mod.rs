@@ -4,6 +4,7 @@ mod tests;
 mod windows;
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -314,16 +315,42 @@ impl Updater {
             None => self.client.clone(),
         };
 
+        let mut use_patches = true;
         for attempt in 0..3 {
-            let plan = tokio::task::spawn_blocking({
+            let (selected_patches, plan) = tokio::task::spawn_blocking({
                 let (manifest, install, cache) = (manifest.clone(), install.clone(), cache.clone());
-                move || package::plan(&manifest, &install, &cache)
+                move || {
+                    let patches: Vec<(package::Asset, package::Patch)> = if use_patches {
+                        package::select_patches(&manifest, &install, &cache)
+                            .into_iter()
+                            .map(|(asset, patch)| (
+                                package::Asset {
+                                    name: asset.name.clone(),
+                                    size: asset.size,
+                                    sha256: asset.sha256.clone(),
+                                    blocks: asset.blocks.clone(),
+                                },
+                                patch.clone(),
+                            ))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let skip: HashSet<&str> = patches.iter().map(|(asset, _)| asset.name.as_str()).collect();
+                    let blocks = package::plan_without(&manifest, &install, &cache, &skip);
+                    (patches, blocks)
+                }
             })
             .await
             .map_err(|_| "无法准备更新数据")?;
 
-            let total: u64 = plan.iter().map(|block| block.length()).sum();
-            let initial_saved: u64 = plan.iter().map(|block| block.saved).sum();
+            let patch_total: u64 = selected_patches.iter().map(|(_, patch)| patch.size).sum();
+            let patch_saved: u64 = selected_patches
+                .iter()
+                .map(|(_, patch)| package::patch_saved_bytes(&cache, patch))
+                .sum();
+            let total: u64 = patch_total + plan.iter().map(|block| block.length()).sum::<u64>();
+            let initial_saved: u64 = patch_saved + plan.iter().map(|block| block.saved).sum::<u64>();
             let received = Arc::new(AtomicU64::new(initial_saved));
             let tracker = Arc::new(Mutex::new((Instant::now(), initial_saved)));
             self.emit(app, |view| {
@@ -370,12 +397,51 @@ impl Updater {
                 }
             };
 
+            let mut outcome: Result<(), package::FetchError> = Ok(());
+            for (asset, patch) in &selected_patches {
+                match package::fetch_patch(&download_client, patch, &cache, &mut ctrl_rx, &report_progress).await {
+                    Ok(patch_path) => {
+                        let old_path = install.join(&asset.name);
+                        let cache_dir = cache.clone();
+                        let asset_clone = package::Asset {
+                            name: asset.name.clone(),
+                            size: asset.size,
+                            sha256: asset.sha256.clone(),
+                            blocks: asset.blocks.clone(),
+                        };
+                        let applied = tokio::task::spawn_blocking(move || {
+                            package::apply_patch(&old_path, &patch_path, &asset_clone, &cache_dir)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("无法应用更新差分".into()));
+                        if let Err(err) = applied {
+                            use_patches = false;
+                            outcome = Err(package::FetchError::Failed(err));
+                            break;
+                        }
+                    }
+                    Err(package::FetchError::Paused) => {
+                        outcome = Err(package::FetchError::Paused);
+                        break;
+                    }
+                    Err(package::FetchError::Canceled) => {
+                        outcome = Err(package::FetchError::Canceled);
+                        break;
+                    }
+                    Err(package::FetchError::Failed(err)) => {
+                        use_patches = false;
+                        outcome = Err(package::FetchError::Failed(err));
+                        break;
+                    }
+                }
+            }
+
             let pending: Vec<_> = plan
                 .into_iter()
                 .filter(|block| block.saved < block.length())
                 .collect();
-            let mut outcome: Result<(), package::FetchError> = Ok(());
-            if let Some((first, rest)) = pending.split_first() {
+            if outcome.is_ok() {
+                if let Some((first, rest)) = pending.split_first() {
                 outcome = package::fetch_block(
                     &download_client,
                     &mut url,
@@ -458,6 +524,7 @@ impl Updater {
                             }
                         }
                     }
+                }
                 }
             }
 

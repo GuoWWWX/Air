@@ -3,12 +3,13 @@ import { RuleLibraryManager, readRuleProfile } from '@/shared/ui/RuleLibraryMana
 import { downloadSubscription } from '@/shared/proxy/subscription-extension'
 import { GlobalRuleList, type AppIdentity } from '@/shared/ui/GlobalRuleList'
 import { LanguagePicker } from '@/shared/i18n/LanguagePicker'
-import { savePreviewLanguage, tr, useLanguage } from '@/shared/i18n/messages'
+import { diagnostic, savePreviewLanguage, tr, useLanguage } from '@/shared/i18n/messages'
 import { selectLocalizedNotes } from '@/shared/i18n/releaseNotes'
+import { formatBytes, formatRate } from '@/shared/lib/utils'
 import { lazy, Suspense, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 let savedSettingsScrollTop = 0
-import { Activity, ArrowDown, ArrowUp, Check, FileCode2, GitBranch, Globe, Info, Monitor, Moon, Network, Palette, Plug, Plus, RefreshCw, Save, Search, Settings, Sun, Trash2, Waypoints } from 'lucide-react'
+import { Activity, ArrowDown, ArrowDownToLine, ArrowUp, Check, FileCode2, GitBranch, Globe, Info, Monitor, Moon, Network, Palette, Pause, Play, Plug, Plus, RefreshCw, Save, Search, Settings, Sun, Trash2, Waypoints } from 'lucide-react'
 import { LayoutGroup, motion } from 'motion/react'
 import { AirSelect } from '@/shared/ui/AirSelect'
 import { Button } from '@/shared/ui/button'
@@ -42,10 +43,13 @@ const settingsRows = [
   { page: 'configFile', icon: FileCode2, get description() { return tr('编辑和校验 Air Proxy 的 YAML 配置') } },
 ] as const
 
-export function SettingsIndex({ library, open, availableUpdate }: {
-  library: Library; open: (page: SettingsPage) => void; availableUpdate?: UpdateCheck
+export function SettingsIndex({ library, open, update }: {
+  library: Library; open: (page: SettingsPage) => void; update?: AndroidUpdateState
 }) {
   const scrollRef = useRef<HTMLElement>(null)
+  const hasVisibleUpdate = Boolean(
+    update?.version && !update.ignored && update.phase !== 'idle' && update.phase !== 'current',
+  )
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -81,10 +85,16 @@ export function SettingsIndex({ library, open, availableUpdate }: {
         icon={Info}
         title={settingsTitles.about}
         description={tr("Air Proxy 版本、软件更新与作者 GitHub")}
-        badge={availableUpdate?.version ? (
+        badge={hasVisibleUpdate && update?.version ? (
           <span className="inline-flex items-center gap-1">
             <span className="settings-update-dot" aria-hidden="true" />
-            <Tag tone="blue">v{availableUpdate.version}</Tag>
+            <Tag tone="blue">
+              {update.phase === 'ready'
+                ? tr('待安装')
+                : update.phase === 'paused'
+                  ? tr('已暂停')
+                  : `v${update.version}`}
+            </Tag>
           </span>
         ) : undefined}
         onClick={() => open('about')}
@@ -284,7 +294,39 @@ export function ConfigSettings({ library, busy, save }: {
 }
 
 export interface KernelInfo { version: string; appVersion: string; sdk: number; abi: string }
-export interface UpdateCheck { current: string; version?: string; url?: string; downloadUrl?: string; notes?: string }
+export type AndroidUpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'current'
+  | 'available'
+  | 'preparing'
+  | 'downloading'
+  | 'paused'
+  | 'ready'
+  | 'installing'
+  | 'interrupted'
+
+export interface AndroidUpdateProgress {
+  received: number
+  total: number
+  speed: number
+  reused: number
+  apkSize: number
+}
+
+export interface AndroidUpdateState {
+  current: string
+  phase: AndroidUpdatePhase
+  version?: string | null
+  notes?: string | null
+  releaseUrl?: string | null
+  url?: string | null
+  downloadUrl?: string | null
+  assetName?: string | null
+  message?: string | null
+  ignored: boolean
+  progress: AndroidUpdateProgress
+}
 
 export function KernelSettings({ info, active, check }: { info: KernelInfo; active: boolean; check: () => Promise<void> }) {
   const [checking, setChecking] = useState(false)
@@ -307,14 +349,205 @@ export function KernelSettings({ info, active, check }: { info: KernelInfo; acti
   </main>
 }
 
-export function AboutSettings({ info, update: initialUpdate, onUpdateChecked }: {
-  info: KernelInfo; update?: UpdateCheck; onUpdateChecked?: (next: UpdateCheck) => void
+const GitHubMark = () => (
+  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+    <path d="M8 0C3.58 0 0 3.58 0 8a8.01 8.01 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+  </svg>
+)
+
+export function AndroidUpdatePanel({
+  update,
+  onOpenLink,
+  onStart,
+  onPause,
+  onCancel,
+  onIgnore,
+  onInstall,
+  onDismiss,
+  notesMaxHeightClass = 'max-h-36',
+  inSheet = false,
+}: {
+  update: AndroidUpdateState
+  onOpenLink: (url: string) => void
+  onStart: () => void
+  onPause: () => void
+  onCancel: () => void
+  onIgnore: () => void
+  onInstall: () => void
+  onDismiss?: () => void
+  notesMaxHeightClass?: string
+  inSheet?: boolean
 }) {
   const lang = useLanguage()
+  if (!update.version) return null
+  const { received, total, speed, reused } = update.progress
+  const preparing = update.phase === 'preparing'
+  const downloading = update.phase === 'downloading'
+  const busy = preparing || downloading
+  const paused = update.phase === 'paused'
+  const ready = update.phase === 'ready'
+  const installing = update.phase === 'installing'
+  const interrupted = update.phase === 'interrupted'
+  const showProgress = busy || paused || ready || installing || (interrupted && received > 0)
+  const percent = total > 0 ? Math.min(100, Math.floor((received / total) * 100)) : 0
+  const localizedNotes = update.notes ? selectLocalizedNotes(update.notes, lang.code) : ''
+  const fallbackUrl = update.downloadUrl ?? update.releaseUrl ?? update.url ?? undefined
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+          <Tag tone="blue">v{update.version}</Tag>
+          {reused > 0 && (
+            <Tag tone="green">{tr('增量更新 · 已复用 {0}', formatBytes(reused))}</Tag>
+          )}
+          {update.ignored && update.phase === 'available' && (
+            <Tag tone="gray">{tr('已忽略此版本')}</Tag>
+          )}
+        </div>
+        {fallbackUrl && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="shrink-0 text-muted-foreground"
+            aria-label={tr('前往 GitHub 手动下载')}
+            title={tr('前往 GitHub 手动下载')}
+            onClick={() => onOpenLink(fallbackUrl)}
+          >
+            <GitHubMark />
+          </Button>
+        )}
+      </div>
+
+      {localizedNotes && (
+        <div className={`${notesMaxHeightClass} overflow-y-auto rounded-[8px] border border-border bg-muted/40 p-2.5`}>
+          {inSheet && <h3 className="mb-1 text-[11px] font-semibold text-muted-foreground">{tr('更新内容')}</h3>}
+          <Suspense fallback={<p className="text-xs text-muted-foreground">{tr('正在加载更新说明…')}</p>}>
+            <ReleaseNotes notes={localizedNotes} compact onOpenLink={onOpenLink} />
+          </Suspense>
+        </div>
+      )}
+
+      {showProgress && (
+        <div className="mobile-update-progress" aria-label={tr('更新下载进度')}>
+          <div className="mobile-update-progress-head">
+            <span>
+              {installing
+                ? tr('正在拉起系统安装…')
+                : ready
+                  ? tr('已准备就绪')
+                  : paused
+                    ? tr('已暂停')
+                    : preparing
+                      ? tr('正在准备更新')
+                      : interrupted
+                        ? tr('下载中断')
+                        : tr('正在下载更新')}
+            </span>
+            {total > 0 && <strong className="font-mono">{percent}%</strong>}
+          </div>
+          <div className="mobile-update-bar" role="progressbar" aria-valuemin={0} aria-valuemax={total || 100} aria-valuenow={total > 0 ? received : undefined}>
+            <div
+              className="mobile-update-bar-fill"
+              data-indeterminate={total <= 0 ? 'true' : undefined}
+              style={total > 0 ? { width: `${percent}%` } : undefined}
+            />
+          </div>
+          <div className="mobile-update-progress-meta">
+            <span>{total > 0 ? `${formatBytes(received)} / ${formatBytes(total)}` : tr('正在计算下载大小')}</span>
+            <span>{downloading && speed > 0 ? formatRate(speed) : '—'}</span>
+          </div>
+        </div>
+      )}
+
+      {update.message && (
+        <p role={interrupted ? 'alert' : 'status'} className={interrupted ? 'fine-print font-medium text-destructive' : 'fine-print'}>
+          {diagnostic(update.message)}
+        </p>
+      )}
+
+      {(() => {
+        const primary = busy ? (
+          <Button type="button" variant="default" disabled={!onAndroid} onClick={onPause}>
+            <Pause data-icon="inline-start" />{tr('暂停')}
+          </Button>
+        ) : paused ? (
+          <Button type="button" variant="default" disabled={!onAndroid} onClick={onStart}>
+            <Play data-icon="inline-start" />{tr('继续下载')}
+          </Button>
+        ) : ready || installing ? (
+          <Button type="button" variant="default" disabled={!onAndroid || installing} onClick={onInstall}>
+            <ArrowDownToLine data-icon="inline-start" />
+            {installing ? tr('正在拉起系统安装…') : tr('立即安装')}
+          </Button>
+        ) : interrupted ? (
+          <Button type="button" variant="default" disabled={!onAndroid} onClick={onStart}>
+            <RefreshCw data-icon="inline-start" />{tr('重试更新')}
+          </Button>
+        ) : (
+          <Button type="button" variant="default" disabled={!onAndroid} onClick={onStart}>
+            <ArrowDownToLine data-icon="inline-start" />{tr('立即更新')}
+          </Button>
+        )
+
+        const secondary = busy || paused || ready || installing || interrupted ? (
+          <Button type="button" variant="outline" disabled={!onAndroid || installing} onClick={onCancel}>
+            {tr('取消')}
+          </Button>
+        ) : !update.ignored ? (
+          <Button type="button" variant="outline" disabled={!onAndroid} onClick={onIgnore}>
+            {tr('忽略此版本')}
+          </Button>
+        ) : null
+
+        if (inSheet) {
+          return (
+            <div className="sheet-actions">
+              {onDismiss && (
+                <Button type="button" variant="ghost" className="mr-auto" disabled={installing} onClick={onDismiss}>
+                  {tr('稍后')}
+                </Button>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                {secondary}
+                {primary}
+              </div>
+            </div>
+          )
+        }
+
+        return (
+          <div className="flex flex-wrap items-center gap-2">
+            {primary}
+            {secondary}
+          </div>
+        )
+      })()}
+    </div>
+  )
+}
+
+export function AboutSettings({
+  info,
+  update,
+  onCheckUpdate,
+  onStartUpdate,
+  onPauseUpdate,
+  onCancelUpdate,
+  onIgnoreUpdate,
+  onInstallUpdate,
+}: {
+  info: KernelInfo
+  update: AndroidUpdateState
+  onCheckUpdate: () => Promise<AndroidUpdateState | undefined>
+  onStartUpdate: () => void
+  onPauseUpdate: () => void
+  onCancelUpdate: () => void
+  onIgnoreUpdate: () => void
+  onInstallUpdate: () => void
+}) {
   const [checking, setChecking] = useState(false)
-  const [update, setUpdate] = useState<UpdateCheck | undefined>(initialUpdate)
-  const [status, setStatus] = useState(() => initialUpdate?.version ? tr('发现新版本 Air Proxy ') + initialUpdate.version : '')
-  const localizedNotes = update?.notes ? selectLocalizedNotes(update.notes, lang.code) : ''
   function open(url: string) {
     if (!onAndroid) {
       window.open(url, '_blank', 'noopener,noreferrer')
@@ -322,10 +555,15 @@ export function AboutSettings({ info, update: initialUpdate, onUpdateChecked }: 
     }
     void native('openLink', { url }).catch(failure => showMessage({ type: 'error', title: errorText(failure) }))
   }
-  useEffect(() => {
-    setUpdate(initialUpdate)
-    setStatus(initialUpdate?.version ? tr('发现新版本 Air Proxy ') + initialUpdate.version : '')
-  }, [info.appVersion, initialUpdate])
+  const checkBusy = checking || update.phase === 'checking'
+  const activeTransfer =
+    update.phase === 'preparing' || update.phase === 'downloading' || update.phase === 'installing'
+  const statusText = update.version
+    ? `${tr('发现新版本 Air Proxy ')}${update.version}`
+    : update.phase === 'current'
+      ? tr('当前已是最新版本')
+      : tr('查找并应用 GitHub 上的最新 Android 更新。')
+
   return <main className="page-scroll">
     <section className="panel about">
       <div className="about-head">
@@ -339,50 +577,52 @@ export function AboutSettings({ info, update: initialUpdate, onUpdateChecked }: 
         </div>
         <Button type="button" variant="outline" size="icon-sm" className="shrink-0" aria-label={tr("作者的 GitHub 主页")} title="GuoWWWX · GitHub"
           onClick={() => open('https://github.com/GuoWWWX')}>
-          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M8 0C3.58 0 0 3.58 0 8a8.01 8.01 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
-          </svg>
+          <GitHubMark />
         </Button>
       </div>
       <p className="about-desc">{tr("Air Proxy 是一个基于 Mihomo 的 Android 代理客户端，支持管理订阅与节点、配置分流规则与多跳链路，并查看延迟和实时连接。")}</p>
     </section>
     <section className="panel settings-form">
       <h2 className="settings-form-title">{tr("软件更新")}</h2>
-      <p className="fine-print" role="status">{status || tr('查找 GitHub 上发布的 Android 安装包。')}</p>
-      {localizedNotes && (
-        <div className="max-h-36 overflow-y-auto rounded-[8px] border border-border bg-muted/40 p-2.5">
-          <Suspense fallback={<p className="text-xs text-muted-foreground">{tr("正在加载更新说明…")}</p>}>
-            <ReleaseNotes notes={localizedNotes} compact onOpenLink={open} />
-          </Suspense>
+      <p className="fine-print" role="status">{statusText}</p>
+      {update.version ? (
+        <AndroidUpdatePanel
+          update={update}
+          onOpenLink={open}
+          onStart={onStartUpdate}
+          onPause={onPauseUpdate}
+          onCancel={onCancelUpdate}
+          onIgnore={onIgnoreUpdate}
+          onInstall={onInstallUpdate}
+        />
+      ) : (
+        update.message && (
+          <p role={update.phase === 'interrupted' ? 'alert' : 'status'} className={update.phase === 'interrupted' ? 'fine-print font-medium text-destructive' : 'fine-print'}>
+            {diagnostic(update.message)}
+          </p>
+        )
+      )}
+      {!activeTransfer && (
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" disabled={checkBusy} onClick={async () => {
+            setChecking(true)
+            try {
+              const next = await onCheckUpdate()
+              if (next?.phase === 'interrupted') {
+                showMessage({ type: 'error', title: diagnostic(next.message || tr('当前已是最新版本')) })
+              } else {
+                const msg = next?.version ? tr('发现新版本 Air Proxy ') + next.version : tr('当前已是最新版本')
+                showMessage({ type: next?.version ? 'info' : 'success', title: msg })
+              }
+            } finally {
+              setChecking(false)
+            }
+          }}>
+            <RefreshCw data-icon="inline-start" className={checkBusy ? 'motion-safe:animate-spin' : undefined} />
+            {checkBusy ? tr('正在检查更新…') : tr('检查更新')}
+          </Button>
         </div>
       )}
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" disabled={checking} onClick={async () => {
-          setChecking(true)
-          try {
-            const available = await native<UpdateCheck>('checkUpdate')
-            setUpdate(available)
-            onUpdateChecked?.(available)
-            const msg = available.version ? tr('发现新版本 Air Proxy ') + available.version : tr('当前已是最新版本')
-            setStatus(msg)
-            showMessage({ type: available.version ? 'info' : 'success', title: msg })
-          } catch (failure) {
-            showMessage({ type: 'error', title: errorText(failure) })
-          } finally {
-            setChecking(false)
-          }
-        }}><RefreshCw data-icon="inline-start" className={checking ? 'motion-safe:animate-spin' : undefined} />
-          {checking ? tr('正在检查更新…') : tr('检查更新')}
-        </Button>
-        {update?.downloadUrl ? (
-          <>
-            <Button variant="default" onClick={() => open(update.downloadUrl!)}>{tr("下载安装包")}</Button>
-            {update.url && <Button variant="outline" onClick={() => open(update.url!)}>{tr("查看发布页")}</Button>}
-          </>
-        ) : (
-          update?.url && <Button variant="default" onClick={() => open(update.url!)}>{tr("查看更新")}</Button>
-        )}
-      </div>
     </section>
   </main>
 }

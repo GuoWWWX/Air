@@ -130,6 +130,8 @@ impl RoutingFile {
             ipv6: true,
             dns_ipv6: true,
             tun_stack: "gvisor".into(),
+            enhanced_mode: "redir-host".into(),
+            block_quic: false,
             ..NetworkSettings::default()
         };
         let legacy = NetworkSettings {
@@ -145,8 +147,13 @@ impl RoutingFile {
             strict_route: true,
             ..old_v1_base.clone()
         };
+        let v111_windows = NetworkSettings {
+            enhanced_mode: "redir-host".into(),
+            block_quic: false,
+            ..NetworkSettings::default()
+        };
         let mut templates = Vec::new();
-        for candidate in [&legacy, &previous_windows, &old_v1_base] {
+        for candidate in [&legacy, &previous_windows, &old_v1_base, &v111_windows] {
             templates.push(
                 serde_yaml::to_string(&serde_json::json!({
                     "routing": RoutingConfig::default(),
@@ -154,10 +161,23 @@ impl RoutingFile {
                 }))
                 .map_err(yaml_error)?,
             );
+            let mut without_quic = serde_json::to_value(candidate)
+                .map_err(|_| "无法序列化默认网络配置")?;
+            if let Some(obj) = without_quic.as_object_mut() {
+                obj.remove("blockQuic");
+            }
+            templates.push(
+                serde_yaml::to_string(&serde_json::json!({
+                    "routing": RoutingConfig::default(),
+                    "network": without_quic,
+                }))
+                .map_err(yaml_error)?,
+            );
             let mut network_val = serde_json::to_value(candidate)
                 .map_err(|_| "无法序列化默认网络配置")?;
             if let Some(obj) = network_val.as_object_mut() {
                 obj.remove("bypassLan");
+                obj.remove("blockQuic");
             }
             templates.push(
                 serde_yaml::to_string(&serde_json::json!({
@@ -290,9 +310,19 @@ fn parse_mapping(contents: &str) -> AirResult<Mapping> {
 }
 
 fn network_section(mapping: &Mapping) -> AirResult<NetworkSettings> {
+    let Some(network) = mapping.get("network") else {
+        return Ok(NetworkSettings::default());
+    };
     let mut settings: NetworkSettings = section(mapping, "network")?;
+    // New factory files write both choices explicitly. Older hand-edited files may omit them.
+    if network.get("blockQuic").is_none() {
+        settings.block_quic = false;
+    }
+    if network.get("enhancedMode").is_none() {
+        settings.enhanced_mode = "redir-host".into();
+    }
     if settings.proxy_server_nameserver.is_empty()
-        && mapping.get("network").and_then(|network| network.get("respectRules")).is_none()
+        && network.get("respectRules").is_none()
     {
         // Older partial configurations could leave node DNS empty and omit respectRules.
         settings.respect_rules = false;

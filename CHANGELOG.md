@@ -1,6 +1,23 @@
 # 更新日志 / Changelog
 
-本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.2.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.3.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+
+## [1.1.3] - 2026-11-26
+
+### Added
+
+- **Android 应用内块级增量更新**：支持基于本地已安装 APK 的 ZIP 条目复用与 4 路并发 Range 增量下载、进度条与速率展示、暂停/继续/取消/忽略控制、SHA-256 校验失败自动全量兜底，以及 `FileProvider` 自动拉起覆盖安装。
+- **Windows `AIRDLT1` 二进制差分补丁**：发行打包脚本与桌面端更新器支持从上一版本按移位不变锚点生成与校验二进制差分补丁，并保持与全量分块 `.pack` 及 `schema: 1` 的无缝兼容。
+
+### Changed
+
+- **双端默认网络策略升级**：默认启用 `fake-ip`（内置 `geosite:cn` 过滤）与海外 QUIC（UDP 443）拦截回落 TCP/TLS，并开启 Sniffer `parse-pure-ip` 与 `override-destination`；未改动的出厂默认配置升级时自动迁移。
+- **Windows 发行包体积优化**：桌面端 Release 编译启用 `opt-level = "s"`、`lto = "thin"` 与符号剥离。
+
+### Fixed
+
+- **双栈 IPv6 旁路漏流与高画质视频卡顿**：升级 Windows Mihomo 至 `v1.19.32-air.3`（合入 `Air-TUN` IPv6 接管与禁用前置拦截补丁）并调整 Android `VpnService`（含 `64:ff9b:1::/48` NAT64 前缀），彻底消除关闭出站 IPv6 时的双栈流量绕过 TUN 问题。
+- **Android 节点库卡片高度跳变**：移除节点卡片中的图钉图标及选中态额外右内边距，切换当前节点时标题与卡片高度保持稳定。
 
 ## [1.1.2] - 2026-11-25
 

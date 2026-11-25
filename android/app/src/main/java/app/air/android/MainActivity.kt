@@ -210,8 +210,16 @@ class MainActivity : ComponentActivity() {
                     AirDiagnostics.run(this, "cancelProbe", data)
                 }
                 "checkUpdate" -> work(message, networkRequests) {
-                    checkForAndroidUpdate(appVersion(), AirVpnService.snapshot().optInt("port", 0))
+                    AndroidUpdater.check(this, appVersion(), AirVpnService.snapshot().optInt("port", 0), ::emitUpdateStatus)
                 }
+                "updateStatus" -> message.send(AndroidUpdater.snapshot(this, appVersion()))
+                "startUpdate" -> message.send(
+                    AndroidUpdater.start(this, appVersion(), AirVpnService.snapshot().optInt("port", 0), ::emitUpdateStatus)
+                )
+                "pauseUpdate" -> message.send(AndroidUpdater.pause(::emitUpdateStatus))
+                "cancelUpdate" -> message.send(AndroidUpdater.cancel(this, ::emitUpdateStatus))
+                "ignoreUpdate" -> message.send(AndroidUpdater.ignore(this, data.optString("version"), ::emitUpdateStatus))
+                "installUpdate" -> message.send(AndroidUpdater.install(this, ::emitUpdateStatus))
                 "openLink" -> {
                     val url = data.getString("url")
                     require(url == "https://github.com/GuoWWWX" || url.startsWith(RELEASE_PAGE_PREFIX)) {
@@ -483,6 +491,26 @@ class MainActivity : ComponentActivity() {
                     message.send(JSONObject.NULL)
                 } else work(message, requests) { readDocument(uri, image) }
             }
+            INSTALL_PERMISSION_REQUEST -> {
+                AndroidUpdater.onActivityResumed(this, ::emitUpdateStatus)
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AndroidUpdater.onActivityResumed(this, ::emitUpdateStatus)
+    }
+
+    private fun emitUpdateStatus(state: JSONObject) {
+        val payload = state.toString()
+        runOnUiThread {
+            if (!isDestroyed && !isFinishing && ::web.isInitialized) {
+                web.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('air-update-status',{detail:$payload}))",
+                    null,
+                )
+            }
         }
     }
 
@@ -707,6 +735,7 @@ class MainActivity : ComponentActivity() {
         private const val FILE_REQUEST = 21
         private const val CAMERA_REQUEST = 22
         private const val NOTIFICATION_REQUEST = 23
+        internal const val INSTALL_PERMISSION_REQUEST = 25
         private const val UI_PREFS = "air_ui"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_NOTIFICATIONS_ASKED = "notifications_asked"
@@ -717,77 +746,6 @@ class MainActivity : ComponentActivity() {
 }
 
 private const val MAX_SUBSCRIPTION = 8 * 1024 * 1024
-private const val GITHUB_REPOSITORY = "GuoWWWX/Air-Proxy"
-private const val RELEASE_PAGE_PREFIX = "https://github.com/$GITHUB_REPOSITORY/releases/"
-
-private fun checkForAndroidUpdate(current: String, proxyPort: Int): JSONObject {
-    val api = URI("https://api.github.com/repos/$GITHUB_REPOSITORY/releases?per_page=20")
-    fun fetch(proxy: Proxy?): JSONArray {
-        val connection = (proxy?.let { api.toURL().openConnection(it) } ?: api.toURL().openConnection()) as HttpsURLConnection
-        connection.connectTimeout = 8500
-        connection.readTimeout = 8500
-        connection.setRequestProperty("User-Agent", "Air-Proxy-Android/$current")
-        connection.setRequestProperty("Accept", "application/vnd.github+json")
-        return try {
-            check(connection.responseCode == 200) { "无法检查 GitHub 版本 · HTTP ${connection.responseCode}" }
-            connection.inputStream.use { JSONArray(readBounded(it, 2 * 1024 * 1024).toString(Charsets.UTF_8)) }
-        } finally { connection.disconnect() }
-    }
-    val releases = if (proxyPort > 0) {
-        runCatching { fetch(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort))) }
-            .getOrElse { fetch(null) }
-    } else {
-        fetch(null)
-    }
-    val version = Regex("""^v?(\d+)\.(\d+)\.(\d+)$""")
-    fun number(value: String): List<Int>? = version.matchEntire(value)?.groupValues?.drop(1)?.map {
-        it.toIntOrNull() ?: return null
-    }
-    fun newer(left: List<Int>, right: List<Int>): Boolean {
-        val change = left.indices.firstOrNull { left[it] != right[it] } ?: return false
-        return left[change] > right[change]
-    }
-    val result = JSONObject().put("current", current)
-    var latest = number(current) ?: listOf(0, 0, 0)
-    for (index in 0 until releases.length()) {
-        val release = releases.getJSONObject(index)
-        if (release.optBoolean("draft") || release.optBoolean("prerelease")) continue
-        val tag = release.optString("tag_name")
-        val candidate = number(tag) ?: continue
-        if (!newer(candidate, latest)) continue
-        val assets = release.optJSONArray("assets") ?: continue
-        val apkAssets = (0 until assets.length())
-            .map { assets.getJSONObject(it) }
-            .filter { it.optString("name").endsWith(".apk", true) }
-        if (apkAssets.isEmpty()) continue
-        val page = release.optString("html_url")
-        if (!page.startsWith(RELEASE_PAGE_PREFIX)) continue
-        val downloadPrefix = "${RELEASE_PAGE_PREFIX}download/"
-        val validApks = apkAssets.filter { it.optString("browser_download_url").startsWith(downloadPrefix) }
-        val preferredAbi = Build.SUPPORTED_ABIS.firstOrNull { abi ->
-            abi == "arm64-v8a" || abi == "armeabi-v7a" || abi == "x86_64"
-        }
-        val bestApk = (preferredAbi?.let { abi ->
-            validApks.firstOrNull { it.optString("name").contains(abi, ignoreCase = true) }
-        } ?: validApks.firstOrNull {
-            it.optString("name").contains("universal", ignoreCase = true)
-        } ?: validApks.firstOrNull())
-        latest = candidate
-        result.put("version", tag.removePrefix("v")).put("url", page)
-        if (bestApk != null) {
-            result.put("downloadUrl", bestApk.optString("browser_download_url"))
-        } else {
-            result.remove("downloadUrl")
-        }
-        val notes = release.optString("body").trim().take(16000)
-        if (notes.isNotEmpty()) {
-            result.put("notes", notes)
-        } else {
-            result.remove("notes")
-        }
-    }
-    return result
-}
 
 private fun readBounded(stream: java.io.InputStream, limit: Int): ByteArray {
     val output = java.io.ByteArrayOutputStream()

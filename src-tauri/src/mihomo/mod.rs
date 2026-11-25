@@ -482,9 +482,17 @@ impl Kernel {
 
     #[cfg(windows)]
     pub(crate) async fn tun_enabled(&self) -> AirResult<bool> {
-        let enabled = self.config().await?["tun"]["enable"]
+        let config = self.config().await?;
+        let tun = &config["tun"];
+        let enabled = tun["enable"]
             .as_bool()
             .ok_or("当前 Mihomo 版本无法报告虚拟网卡状态")?;
+        if enabled && tun["device"] == "Air-TUN" && tun["auto-route"] == true
+            && tun["inet6-address"].as_array().is_none_or(Vec::is_empty)
+            && NetworkSettings::tun_ipv6_supported()
+        {
+            return Err("当前内核未接管 IPv6，请使用随附的 Mihomo 内核或更新虚拟网卡服务".into());
+        }
         if !enabled {
             if let Some(error) = self.tun_error.lock().unwrap().as_ref() {
                 return Err(format!("Mihomo 无法启动虚拟网卡：{error}"));
@@ -773,6 +781,50 @@ impl Drop for Kernel {
 #[cfg(all(test, windows))]
 mod standby_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires the bundled Windows Mihomo executable"]
+    async fn ipv6_capture_survives_cold_start_and_reload_while_literal_access_follows_the_switch() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache/air/windows-x64/mihomo.exe");
+        let workspace = tempfile::tempdir().unwrap();
+        let upstream = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).await.unwrap();
+        let target = format!("http://{}/", upstream.local_addr().unwrap());
+        let echo = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = upstream.accept().await {
+                let mut request = [0; 1024];
+                if stream.read(&mut request).await.is_ok_and(|n| n > 0) {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nv6-ack").await;
+                }
+            }
+        });
+        let capture = "fdfe:dcba:9876::1/126";
+        let mut config = serde_yaml::to_value(serde_json::json!({
+            "mode": "rule", "ipv6": false,
+            "tun": { "device": "Air-TUN", "enable": false, "inet6-address": [capture] },
+            "rules": ["MATCH,DIRECT"]
+        })).unwrap();
+        let (mut kernel, port) = Kernel::start_proxy(&binary, workspace.path(), config.clone(), None, false).await.unwrap();
+        let client = Client::builder().proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{port}")).unwrap())
+            .timeout(Duration::from_secs(3)).pool_max_idle_per_host(0).build().unwrap();
+        for enabled in [false, true, false] {
+            if config["ipv6"].as_bool() != Some(enabled) {
+                config["ipv6"] = enabled.into();
+                config["mixed-port"] = port.into();
+                kernel.reload_config(&config).await.unwrap();
+            }
+            let live = kernel.config().await.unwrap();
+            assert_eq!(live["ipv6"], enabled);
+            assert_eq!(live["tun"]["inet6-address"], serde_json::json!([capture]));
+            let reached = match client.get(&target).send().await {
+                Ok(response) => response.text().await.is_ok_and(|body| body == "v6-ack"),
+                Err(_) => false,
+            };
+            assert_eq!(reached, enabled);
+        }
+        kernel.stop().await.unwrap();
+        echo.abort();
+    }
 
     #[tokio::test]
     #[ignore = "requires the bundled Windows Mihomo executable"]

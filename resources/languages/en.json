@@ -674,6 +674,7 @@
     "引导 DNS 需使用 IP 地址 · ": "Bootstrap DNS must use an IP address · ",
     "引导 DNS（Default Nameserver）": "Bootstrap DNS (Default Nameserver)",
     "当前 Mihomo 版本无法报告虚拟网卡状态": "This version of Mihomo cannot report TUN status",
+    "当前内核未接管 IPv6，请使用随附的 Mihomo 内核或更新虚拟网卡服务": "The kernel has no IPv6 capture address. Use the bundled Mihomo kernel or update the TUN service.",
     "当前为新建链路": "New chain",
     "当前为非规则模式，自定义分流仅在「规则」模式下生效": "Not in Rule mode. Custom routing rules only take effect in Rule mode.",
     "当前代理": "Current proxy",
@@ -763,7 +764,7 @@
     "拖入本地订阅文件": "Drop a local subscription file here",
     "拖动调整列宽，双击重置": "Drag to resize column, double-click to reset",
     "拖动调整宽度，双击恢复默认": "Drag to resize. Double-click to reset.",
-    "拦截代理 QUIC（UDP 443）": "Block proxied QUIC (UDP 443)",
+    "拦截境外 UDP 443": "Block non-China UDP 443",
     "指定域名使用专属 DNS，例如让公司域名走内网 DNS。": "Use a dedicated DNS resolver for specific domains, such as an internal resolver for company domains.",
     "指定备用解析域名时，请同时填写备用 DNS": "Enter a fallback DNS server when specifying fallback domains",
     "指定节点": "Specific node",
@@ -1751,7 +1752,7 @@
     "高级 DNS 设置": "Advanced DNS settings",
     "高风险": "High risk",
     "默认": "Default",
-    "默认关闭以兼容游戏和语音；仅在节点 UDP 不稳导致网页/视频加载缓慢时开启，强制代理流量回落 TCP（不影响直连与国内规则）。": "Off by default for game & voice compatibility. Enable only if unstable UDP causes slow web/video loading to force proxied traffic back to TCP (does not affect Direct or domestic rules).",
+    "仅在规则模式的默认代理出口生效。支持回退的应用可改用 TCP，只支持 UDP 443 的服务可能无法连接。": "Applies to the fallback proxy in Rule mode. Apps that support TCP can fall back. Services that require UDP 443 may lose connectivity.",
     "默认出口": "Default outbound",
     "默认出口不存在": "Default outbound unavailable",
     "默认已自动绕过本机与局域网地址，此处填写需要额外绕过的地址或通配符，每行一个。": "Local and LAN addresses are bypassed automatically; enter any additional hosts or wildcards to bypass, one per line.",
@@ -1764,6 +1765,16 @@
     "暂停": "Pause",
     "继续下载": "Resume",
     "已暂停": "Paused",
-    "已暂停下载 · {0} / {1}": "Download paused · {0} / {1}"
+    "已暂停下载 · {0} / {1}": "Download paused · {0} / {1}",
+    "忽略此版本": "Ignore this version",
+    "立即安装": "Install now",
+    "已准备就绪": "Ready to install",
+    "待安装": "Ready",
+    "正在下载更新": "Downloading update",
+    "正在拉起系统安装…": "Opening Android installer…",
+    "已忽略此版本": "Update ignored",
+    "增量更新 · 已复用 {0}": "Delta update · Reused {0}",
+    "前往 GitHub 手动下载": "Download manually on GitHub",
+    "查找并应用 GitHub 上的最新 Android 更新。": "Check and apply the latest Android update from GitHub."
   }
 }

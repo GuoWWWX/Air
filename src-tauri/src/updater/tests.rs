@@ -255,3 +255,185 @@ async fn pause_and_cancel_controls_interrupt_block_download_cleanly() {
     assert_eq!(cancel_res, Err(package::FetchError::Canceled));
     server_task.abort();
 }
+
+#[tokio::test]
+async fn binary_delta_patch_applies_resumes_and_falls_back_cleanly() {
+    let old_exe = [
+        b"OLD_HEADER_".repeat(64),
+        vec![0xAB; 65_536],
+        b"_OLD_TAIL".repeat(64),
+    ]
+    .concat();
+    let new_exe = [
+        b"NEW_HEADER_".repeat(64),
+        vec![0xAB; 65_536],
+        b"_NEW_TAIL".repeat(64),
+    ]
+    .concat();
+
+    // Build AIRDLT1 delta stream: LITERAL(new head) + COPY(old 65536 middle) + LITERAL(new tail).
+    let mut raw_delta = Vec::from(package::DELTA_MAGIC.as_slice());
+    let new_head = b"NEW_HEADER_".repeat(64);
+    let old_head_len = b"OLD_HEADER_".repeat(64).len() as u64;
+    let new_tail = b"_NEW_TAIL".repeat(64);
+    raw_delta.push(0);
+    raw_delta.extend_from_slice(&(new_head.len() as u32).to_le_bytes());
+    raw_delta.extend_from_slice(&new_head);
+    raw_delta.push(1);
+    raw_delta.extend_from_slice(&old_head_len.to_le_bytes());
+    raw_delta.extend_from_slice(&(65_536u32).to_le_bytes());
+    raw_delta.push(0);
+    raw_delta.extend_from_slice(&(new_tail.len() as u32).to_le_bytes());
+    raw_delta.extend_from_slice(&new_tail);
+
+    let mut patch_gz = Vec::new();
+    let mut gzip = GzEncoder::new(&mut patch_gz, Compression::fast());
+    gzip.write_all(&raw_delta).unwrap();
+    gzip.finish().unwrap();
+
+    let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr().unwrap();
+    let pack_url = format!("http://{addr}/air.pack");
+    let patch_url = format!("http://{addr}/air.patch");
+
+    // Build release with new_exe as an incompressible big asset if needed so patch < pack_bytes.
+    let mut pack = Vec::new();
+    let input: [(&str, &[u8]); 6] = [
+        ("WebView2Loader.dll", b"loader"),
+        ("mihomo.exe", b"kernel"),
+        ("Mihomo-LICENSE.txt", b"license"),
+        ("Mihomo-build-info.txt", b"build"),
+        ("Air-Proxy.ico", b"icon"),
+        ("air-proxy.exe", &new_exe),
+    ];
+    let mut files = Vec::new();
+    for (name, bytes) in input {
+        let blocks: Vec<_> = bytes
+            .chunks(package::BLOCK)
+            .map(|block| {
+                let offset = pack.len();
+                let mut g = GzEncoder::new(&mut pack, Compression::none());
+                g.write_all(block).unwrap();
+                g.finish().unwrap();
+                json!({ "sha256": package::hash(block), "offset": offset, "length": pack.len() - offset })
+            })
+            .collect();
+        files.push(json!({ "name": name, "size": bytes.len(), "sha256": package::hash(bytes), "blocks": blocks }));
+    }
+    let manifest_json = json!({
+        "schema": 1,
+        "app": "app.air.client",
+        "target": "windows-x86_64",
+        "version": "1.0.3",
+        "notes": "## Air",
+        "asset": pack_url,
+        "assetSize": pack.len(),
+        "files": files,
+        "patches": [{
+            "file": "air-proxy.exe",
+            "baseSha256": package::hash(&old_exe),
+            "targetSha256": package::hash(&new_exe),
+            "asset": patch_url,
+            "size": patch_gz.len(),
+            "sha256": package::hash(&patch_gz),
+        }]
+    });
+    let (key, raw) = signed(&manifest_json);
+    let manifest = package::verify(&raw, &key.verifying_key()).unwrap();
+
+    let install = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    for (name, bytes) in [
+        ("WebView2Loader.dll", b"loader".as_slice()),
+        ("mihomo.exe", b"kernel"),
+        ("Mihomo-LICENSE.txt", b"license"),
+        ("Mihomo-build-info.txt", b"build"),
+        ("Air-Proxy.ico", b"icon"),
+        ("air-proxy.exe", &old_exe),
+    ] {
+        fs::write(install.path().join(name), bytes).unwrap();
+    }
+
+    let selected = package::select_patches(&manifest, install.path(), cache.path());
+    assert_eq!(selected.len(), 1);
+    let (asset, patch) = (selected[0].0, selected[0].1.clone());
+
+    let patch_bytes: Arc<[u8]> = patch_gz.into();
+    let server_task = tokio::spawn(async move {
+        // Request 1: partial patch before pause
+        let (mut s1, _) = server.accept().await.unwrap();
+        let mut req1 = Vec::new();
+        let mut buf = [0u8; 2048];
+        while !req1.ends_with(b"\r\n\r\n") {
+            let n = s1.read(&mut buf).await.unwrap();
+            req1.extend_from_slice(&buf[..n]);
+        }
+        let split = (patch_bytes.len() / 2).max(1);
+        let head1 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            patch_bytes.len()
+        );
+        s1.write_all(head1.as_bytes()).await.unwrap();
+        s1.write_all(&patch_bytes[..split]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        // Request 2: resume with Range
+        let (mut s2, _) = server.accept().await.unwrap();
+        let mut req2 = Vec::new();
+        while !req2.ends_with(b"\r\n\r\n") {
+            let n = s2.read(&mut buf).await.unwrap();
+            req2.extend_from_slice(&buf[..n]);
+        }
+        let headers = String::from_utf8_lossy(&req2).to_ascii_lowercase();
+        let (start, end) = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("range: bytes="))
+            .unwrap()
+            .split_once('-')
+            .unwrap();
+        let (start, end): (usize, usize) = (start.parse().unwrap(), end.parse().unwrap());
+        let slice = &patch_bytes[start..=end];
+        let head2 = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            patch_bytes.len(),
+            slice.len()
+        );
+        s2.write_all(head2.as_bytes()).await.unwrap();
+        s2.write_all(slice).await.unwrap();
+        s2.shutdown().await.unwrap();
+    });
+
+    let client = Client::builder().no_proxy().build().unwrap();
+    let (tx1, mut rx1) = tokio::sync::watch::channel(package::Control::Running);
+    let pause_res = package::fetch_patch(&client, &patch, cache.path(), &mut rx1, |len| {
+        if len > 0 {
+            let _ = tx1.send(package::Control::Pause);
+        }
+    })
+    .await;
+    assert_eq!(pause_res, Err(package::FetchError::Paused));
+    assert!(package::patch_saved_bytes(cache.path(), &patch) > 0);
+
+    let (_tx2, mut rx2) = tokio::sync::watch::channel(package::Control::Running);
+    let patch_path = package::fetch_patch(&client, &patch, cache.path(), &mut rx2, |_| {})
+        .await
+        .unwrap();
+    package::apply_patch(
+        &install.path().join("air-proxy.exe"),
+        &patch_path,
+        asset,
+        cache.path(),
+    )
+    .unwrap();
+
+    // After apply_patch, cache already has exact air-proxy.exe and plan() needs 0 blocks.
+    assert!(asset.matches(cache.path()));
+    assert!(package::plan(&manifest, install.path(), cache.path()).is_empty());
+
+    // Verify mismatched base falls back to empty select_patches.
+    fs::write(install.path().join("air-proxy.exe"), b"something else").unwrap();
+    let cache2 = tempfile::tempdir().unwrap();
+    assert!(package::select_patches(&manifest, install.path(), cache2.path()).is_empty());
+
+    server_task.abort();
+}

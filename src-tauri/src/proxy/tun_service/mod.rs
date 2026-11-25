@@ -84,7 +84,7 @@ fn service_status(require_current: bool) -> Option<(ServiceStatus, ServiceVersio
 }
 
 #[derive(Clone, Copy)]
-enum ServiceVersion { Current, V11, V10, V9, PreviousCore, V8, Compatible, Legacy }
+enum ServiceVersion { Current, V12, V11, V10, V9, PreviousCore, V8, Compatible, Legacy }
 
 impl ServiceVersion {
     fn has_persistent_adapter(self) -> bool {
@@ -92,7 +92,20 @@ impl ServiceVersion {
     }
 
     fn supports_standby(self) -> bool {
-        matches!(self, Self::Current | Self::V11 | Self::V10 | Self::V9 | Self::PreviousCore)
+        matches!(self, Self::Current | Self::V12 | Self::V11 | Self::V10 | Self::V9 | Self::PreviousCore)
+    }
+
+    fn check_ipv6_policy(self, ipv6_enabled: bool) -> AirResult<()> {
+        if ipv6_enabled || matches!(self, Self::Current) {
+            Ok(())
+        } else {
+            Err("请先安装或更新虚拟网卡服务".into())
+        }
+    }
+
+    fn config(self, config: &serde_yaml::Value) -> AirResult<Value> {
+        self.check_ipv6_policy(config["ipv6"].as_bool().unwrap_or(false))?;
+        Ok(compat_config(json_config(config)?, self.has_persistent_adapter()))
     }
 }
 
@@ -108,10 +121,11 @@ fn owned_service() -> Option<(Service, ServiceVersion)> {
     let version = arguments.next()?;
     let version = match version {
         install::RUN if engine == install::CORE_SHA256 => ServiceVersion::Current,
+        install::RUN if engine == install::AIR2_CORE_SHA256 => ServiceVersion::V12,
         install::RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::PreviousCore,
-        install::V11_RUN if engine == install::CORE_SHA256 || engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V11,
-        install::V10_RUN if engine == install::CORE_SHA256 || engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V10,
-        install::V9_RUN if engine == install::CORE_SHA256 || engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V9,
+        install::V11_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V11,
+        install::V10_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V10,
+        install::V9_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V9,
         install::V8_RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V8,
         install::OLDER_COMPATIBLE_RUN if engine == install::LEGACY_CORE_SHA256 => ServiceVersion::Compatible,
         install::RUN
@@ -182,7 +196,7 @@ fn compat_network_settings(settings: &NetworkSettings) -> AirResult<Value> {
         obj.remove("bypassLan");
         obj.insert(
             "routeExcludeAddress".into(),
-            json!(settings.effective_route_exclude_address(settings.tun_ipv6())),
+            json!(settings.effective_route_exclude_address(NetworkSettings::tun_ipv6_supported())),
         );
     }
     Ok(value)
@@ -197,21 +211,22 @@ pub(super) struct Session {
 impl Session {
     pub async fn start(config: serde_yaml::Value, port: Option<u16>, allow_lan: bool) -> AirResult<(Self, u16)> {
         let session = Self::connect(false).await?;
-        let config = compat_config(json_config(config)?, session.version.has_persistent_adapter());
+        let config = session.version.config(&config)?;
         let port = session.call(&Request::Start { config, port, allow_lan }).await?;
         Ok((session, port))
     }
 
     pub async fn prepare(config: &serde_yaml::Value) -> AirResult<Self> {
         let session = Self::connect(true).await?;
-        session.call::<()>(&Request::Prepare { config: json_config(config)? }).await?;
+        session.call::<()>(&Request::Prepare { config: session.version.config(config)? }).await?;
         Ok(session)
     }
 
     pub async fn activate(&self, settings: &NetworkSettings) -> AirResult<u16> {
         use super::loopback::PREFERRED_PORT;
+        self.version.check_ipv6_policy(settings.ipv6)?;
         let activate = |port| async move {
-            if matches!(self.version, ServiceVersion::Current | ServiceVersion::V11 | ServiceVersion::V10) {
+            if matches!(self.version, ServiceVersion::Current | ServiceVersion::V12 | ServiceVersion::V11 | ServiceVersion::V10) {
                 self.call(&Request::Activate { settings: Box::new(settings.clone()), port }).await
             } else {
                 let compat = compat_network_settings(settings)?;
@@ -286,7 +301,10 @@ impl Session {
     }
 
     pub async fn set_tun(&self, settings: &NetworkSettings, enabled: bool) -> AirResult<()> {
-        if matches!(self.version, ServiceVersion::Current | ServiceVersion::V11 | ServiceVersion::V10) {
+        if enabled {
+            self.version.check_ipv6_policy(settings.ipv6)?;
+        }
+        if matches!(self.version, ServiceVersion::Current | ServiceVersion::V12 | ServiceVersion::V11 | ServiceVersion::V10) {
             self.call(&Request::Tun { settings: Box::new(settings.clone()), enabled }).await
         } else {
             let compat = compat_network_settings(settings)?;
@@ -317,7 +335,7 @@ impl Session {
     }
 
     pub async fn reload(&self, config: &serde_yaml::Value) -> AirResult<()> {
-        let config = compat_config(json_config(config)?, self.version.has_persistent_adapter());
+        let config = self.version.config(config)?;
         self.call(&Request::Reload { config }).await
     }
 
@@ -719,6 +737,15 @@ mod tests {
     }
 
     #[test]
+    fn old_service_needs_new_core_for_ipv6_off_but_can_still_run_ipv6_on() {
+        let disabled = serde_yaml::to_value(json!({ "ipv6": false, "tun": { "enable": true } })).unwrap();
+        assert!(ServiceVersion::V12.config(&disabled).is_err());
+        assert!(ServiceVersion::Current.config(&disabled).is_ok());
+        let enabled = serde_yaml::to_value(json!({ "ipv6": true, "tun": { "enable": true } })).unwrap();
+        assert!(ServiceVersion::V12.config(&enabled).is_ok());
+    }
+
+    #[test]
     fn compat_config_preserves_v6_fields_and_strips_for_older_service() {
         let raw = json!({
             "unified-delay": true,
@@ -750,16 +777,17 @@ mod tests {
         };
         let compat = compat_network_settings(&settings).unwrap();
         assert!(compat.get("bypassLan").is_none());
-        assert_eq!(
-            compat["routeExcludeAddress"],
-            json!([
-                "10.0.0.0/8",
-                "172.16.0.0/12",
-                "192.168.0.0/16",
-                "169.254.0.0/16",
-                "203.0.113.0/24"
-            ])
-        );
+        let mut expected = vec![
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+        ];
+        if NetworkSettings::tun_ipv6_supported() {
+            expected.extend(["fc00::/7", "fe80::/10"]);
+        }
+        expected.push("203.0.113.0/24");
+        assert_eq!(compat["routeExcludeAddress"], json!(expected));
 
         let custom_only = NetworkSettings {
             bypass_lan: false,
