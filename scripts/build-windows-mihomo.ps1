@@ -109,7 +109,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'The IPv6 patch did not apply to the pinned Mihomo source.' }
 
         $binary = Join-Path $work 'mihomo.exe'
-        $ldflags = '-s -w -buildid= -X github.com/metacubex/mihomo/constant.Version=v1.19.32-air.3 -X github.com/metacubex/mihomo/constant.BuildTime=2026-09-30T17:00:11Z'
+        $ldflags = '-s -w -buildid= -X github.com/metacubex/mihomo/constant.Version=v1.19.32-air.4 -X github.com/metacubex/mihomo/constant.BuildTime=2026-09-30T17:00:11Z'
         & $go build -mod=readonly -buildvcs=false -trimpath -tags with_gvisor -ldflags $ldflags -o $binary .
         if ($LASTEXITCODE -ne 0) { throw 'Mihomo build failed.' }
         Move-Item -LiteralPath $binary -Destination $outputPath -Force

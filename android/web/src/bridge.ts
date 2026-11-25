@@ -71,11 +71,11 @@ export async function native<T>(
     }
     if (action === 'kernelInfo') {
       return (JSON.parse(localStorage.getItem('air.android.preview.kernel') ?? 'null')
-        ?? { version: 'v1.19.34', abi: 'arm64-v8a', sdk: 36, appVersion: '1.1.3' }) as T
+        ?? { version: 'v1.19.34', abi: 'arm64-v8a', sdk: 36, appVersion: '1.1.4' }) as T
     }
     if (action === 'updateStatus') {
       return {
-        current: '1.1.3',
+        current: '1.1.4',
         phase: 'idle',
         ignored: false,
         progress: { received: 0, total: 0, speed: 0, reused: 0, apkSize: 0 },

@@ -121,7 +121,7 @@ fn owned_service() -> Option<(Service, ServiceVersion)> {
     let version = arguments.next()?;
     let version = match version {
         install::RUN if engine == install::CORE_SHA256 => ServiceVersion::Current,
-        install::RUN if engine == install::AIR2_CORE_SHA256 => ServiceVersion::V12,
+        install::RUN if matches!(engine, install::AIR3_CORE_SHA256 | install::AIR2_CORE_SHA256) => ServiceVersion::V12,
         install::RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::PreviousCore,
         install::V11_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V11,
         install::V10_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V10,

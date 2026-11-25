@@ -828,6 +828,57 @@ mod standby_tests {
 
     #[tokio::test]
     #[ignore = "requires the bundled Windows Mihomo executable"]
+    async fn disabled_ipv6_still_allows_sniffed_domains_over_ipv4_while_dropping_raw_ipv6() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache/air/windows-x64/mihomo.exe");
+        let workspace = tempfile::tempdir().unwrap();
+        let upstream = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let ipv4_port = upstream.local_addr().unwrap().port();
+        let echo = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = upstream.accept().await {
+                let mut request = [0; 1024];
+                if stream.read(&mut request).await.is_ok_and(|n| n > 0) {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nv4-sniff-ok").await;
+                }
+            }
+        });
+        let config = serde_yaml::to_value(serde_json::json!({
+            "mode": "rule", "ipv6": false,
+            "hosts": { "sniff.test": "127.0.0.1" },
+            "tun": { "device": "Air-TUN", "enable": false, "inet6-address": ["fdfe:dcba:9876::1/126"] },
+            "sniffer": {
+                "enable": true, "force-dns-mapping": true, "parse-pure-ip": true, "override-destination": true,
+                "sniff": { "HTTP": { "ports": [ipv4_port], "override-destination": true } }
+            },
+            "rules": ["DOMAIN,sniff.test,DIRECT", "MATCH,DIRECT"]
+        })).unwrap();
+        let (mut kernel, port) = Kernel::start_proxy(&binary, workspace.path(), config, None, false).await.unwrap();
+        async fn socks_v6_connect(socks_port: u16, target_port: u16, payload: &[u8]) -> String {
+            let mut s = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, socks_port)).await.unwrap();
+            s.write_all(&[5, 1, 0]).await.unwrap();
+            let mut r = [0u8; 16];
+            s.read_exact(&mut r[..2]).await.unwrap();
+            assert_eq!(&r[..2], &[5, 0]);
+            let mut req = vec![5, 1, 0, 4];
+            req.extend_from_slice(&"2001::1".parse::<std::net::Ipv6Addr>().unwrap().octets());
+            req.extend_from_slice(&target_port.to_be_bytes());
+            s.write_all(&req).await.unwrap();
+            s.read_exact(&mut r[..10]).await.unwrap();
+            s.write_all(payload).await.unwrap();
+            let mut body = String::new();
+            let _ = tokio::time::timeout(Duration::from_secs(2), s.read_to_string(&mut body)).await;
+            body
+        }
+        let ok_body = socks_v6_connect(port, ipv4_port, b"GET / HTTP/1.1\r\nHost: sniff.test\r\nConnection: close\r\n\r\n").await;
+        assert!(ok_body.ends_with("v4-sniff-ok"), "expected sniffed domain to resolve over IPv4, got: {ok_body:?}");
+        let blocked_body = socks_v6_connect(port, ipv4_port, b"RAW-NO-HOST\r\n\r\n").await;
+        assert!(blocked_body.is_empty(), "expected domainless IPv6 destination to be rejected, got: {blocked_body:?}");
+        kernel.stop().await.unwrap();
+        echo.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the bundled Windows Mihomo executable"]
     async fn standby_reuses_the_kernel_without_leaving_a_proxy_listener() {
         let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache/air/windows-x64/mihomo.exe");
         let workspace = tempfile::tempdir().unwrap();

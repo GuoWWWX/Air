@@ -1,6 +1,12 @@
 # 更新日志 / Changelog
 
-本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.3.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.4.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+
+## [1.1.4] - 2026-11-26
+
+### Fixed
+
+- **Windows 关闭 IPv6 时双栈污染 AAAA 断网热修复**：升级内置 Mihomo 内核至 `v1.19.32-air.4`，将 `DisableIPv6` 校验后移至 TLS/HTTP/QUIC 域名嗅探之后；当连接通过被物理网卡 DNS 污染的 IPv6 地址（如 `2001::1`）进入 `Air-TUN` 时，嗅探出真实域名后清除 IPv6 目标地址改走域名代理/IPv4 直连，仅拦截无域名的纯 IPv6 字面量与 ICMPv6。
 
 ## [1.1.3] - 2026-11-26
 

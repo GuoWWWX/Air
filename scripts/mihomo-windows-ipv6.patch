@@ -102,26 +102,37 @@
  			return nil, nil
 --- a/tunnel/tunnel.go
 +++ b/tunnel/tunnel.go
-@@ -431,6 +431,11 @@
- 	}
- 	fixMetadata(metadata) // fix some metadata not set via metadata.SetRemoteAddr or metadata.SetRemoteAddress
+@@ -455,6 +455,16 @@
+ 			}
  
-+	if metadata.DstIP.Is6() && resolver.DisableIPv6.Load() {
-+		packet.Drop()
-+		return
-+	}
+ 			_ = preHandleMetadata(metadata) // error was pre-checked
 +
- 	if err := preHandleMetadata(metadata.Clone()); err != nil { // precheck without modify metadata
- 		packet.Drop()
- 		log.Debugln("[Metadata PreHandle] error: %s", err)
-@@ -515,6 +520,10 @@
++			if metadata.DstIP.Unmap().Is6() && resolver.DisableIPv6.Load() {
++				if metadata.Host == "" {
++					return nil, nil, resolver.ErrIPv6Disabled
++				}
++				if _, err := netip.ParseAddr(strings.Trim(metadata.Host, "[]")); err == nil {
++					return nil, nil, resolver.ErrIPv6Disabled
++				}
++				metadata.DstIP = netip.Addr{}
++			}
+ 
+ 			proxy, rule, err := resolveMetadata(metadata)
+ 			if err != nil {
+@@ -539,6 +549,16 @@
  		return
  	}
- 	fixMetadata(metadata) // fix some metadata not set via metadata.SetRemoteAddr or metadata.SetRemoteAddress
-+
-+	if metadata.DstIP.Is6() && resolver.DisableIPv6.Load() {
-+		return
-+	}
  
- 	preHandleFailed := false
- 	if err := preHandleMetadata(metadata); err != nil {
++	if metadata.DstIP.Unmap().Is6() && resolver.DisableIPv6.Load() {
++		if metadata.Host == "" {
++			return
++		}
++		if _, err := netip.ParseAddr(strings.Trim(metadata.Host, "[]")); err == nil {
++			return
++		}
++		metadata.DstIP = netip.Addr{}
++	}
++
+ 	peekMutex := sync.Mutex{}
+ 	if !conn.Peeked() {
+ 		peekMutex.Lock()
