@@ -258,23 +258,39 @@ export function App() {
 
   useEffect(() => {
     if (!onAndroid || !loaded) return
-    const lastChecked = Number(preferences.getItem('air.lastUpdateCheckAt') ?? 0)
-    if (Number.isFinite(lastChecked) && Date.now() - lastChecked < 6 * 3_600_000) return
     let active = true
-    void native<UpdateCheck>('checkUpdate')
-      .then(next => {
-        preferences.setItem('air.lastUpdateCheckAt', String(Date.now()))
-        if (!active) return
-        if (next.version && next.version !== next.current && next.version !== kernelInfo.appVersion) {
-          setAvailableUpdate(next)
-          if (preferences.getItem('air.promptedUpdateVersion') !== next.version) {
-            preferences.setItem('air.promptedUpdateVersion', next.version)
-            showMessage({ type: 'info', title: tr('发现新版本 Air Proxy ') + next.version })
+    let inFlight = false
+    function checkSilently() {
+      if (!active || inFlight || document.hidden) return
+      const lastChecked = Number(preferences.getItem('air.lastUpdateCheckAt') ?? 0)
+      if (Number.isFinite(lastChecked) && Date.now() - lastChecked < 6 * 3_600_000) return
+      inFlight = true
+      void native<UpdateCheck>('checkUpdate')
+        .then(next => {
+          preferences.setItem('air.lastUpdateCheckAt', String(Date.now()))
+          if (!active) return
+          if (next.version && next.version !== next.current && next.version !== kernelInfo.appVersion) {
+            setAvailableUpdate(next)
+            if (preferences.getItem('air.promptedUpdateVersion') !== next.version) {
+              preferences.setItem('air.promptedUpdateVersion', next.version)
+              showMessage({ type: 'info', title: tr('发现新版本 Air Proxy ') + next.version })
+            }
           }
-        }
-      })
-      .catch(() => undefined)
-    return () => { active = false }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false
+        })
+    }
+    checkSilently()
+    const onVisibilityChange = () => {
+      if (!document.hidden) checkSilently()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      active = false
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   }, [loaded, kernelInfo.appVersion])
 
   useEffect(() => {

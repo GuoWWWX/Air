@@ -384,8 +384,29 @@ small { font-size: 11px; }
 .bottom-nav button[aria-current="page"] { color: var(--blue); }
 .bottom-nav-pill { position: absolute; inset: 1px 2px; z-index: 0; border: 1px solid var(--blue-edge); border-radius: 8px; background: var(--blue-soft); pointer-events: none; }
 .bottom-nav-dot {
-  position: absolute; top: 1px; right: 4px; width: 7px; height: 7px; border-radius: 999px;
-  background: var(--blue); border: 1.5px solid var(--shell); pointer-events: none;
+  position: absolute; top: 1px; right: 3px; width: 8px; height: 8px; border-radius: 999px;
+  background: #f97316; border: 1.5px solid var(--shell);
+  box-shadow: 0 0 8px rgba(249, 115, 22, 0.75);
+  pointer-events: none;
+}
+.bottom-nav-dot::after {
+  content: ""; position: absolute; inset: -1.5px; border-radius: 999px;
+  background: rgba(249, 115, 22, 0.5);
+  animation: air-update-dot-pulse 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+.settings-update-dot {
+  position: relative; display: inline-block; width: 7px; height: 7px; border-radius: 999px;
+  background: #f97316; box-shadow: 0 0 7px rgba(249, 115, 22, 0.72);
+  margin-right: 4px; flex-shrink: 0;
+}
+.settings-update-dot::after {
+  content: ""; position: absolute; inset: 0; border-radius: 999px;
+  background: rgba(249, 115, 22, 0.45);
+  animation: air-update-dot-pulse 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+@keyframes air-update-dot-pulse {
+  0% { transform: scale(0.95); opacity: 0.75; }
+  70%, 100% { transform: scale(2.5); opacity: 0; }
 }
 
 .dashboard-node { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 132px; overflow: hidden; padding: 14px 12px 14px 14px; background: var(--exit-bg); border-color: var(--exit-border); }
@@ -1927,4 +1948,5 @@ input::placeholder, textarea::placeholder { color: var(--quiet); opacity: .8; }
   .air-latency-shimmer::before, .sub-card-glow::before { animation: none; opacity: 0; }
   .header-status-dot-core, .header-status-dot-ring { animation: none; }
   .header-status-dot-ring { opacity: 0; }
+  .bottom-nav-dot::after, .settings-update-dot::after { animation: none; opacity: 0; }
 }

@@ -743,6 +743,10 @@ fn main() {
             #[cfg(windows)]
             updater::start_update,
             #[cfg(windows)]
+            updater::pause_update,
+            #[cfg(windows)]
+            updater::cancel_update,
+            #[cfg(windows)]
             updater::ignore_update,
             #[cfg(windows)]
             updater::open_update_link,

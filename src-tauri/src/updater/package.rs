@@ -166,6 +166,37 @@ impl Asset {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Control {
+    Running,
+    Pause,
+    Cancel,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum FetchError {
+    Paused,
+    Canceled,
+    Failed(String),
+}
+
+async fn wait_stop(control: &mut tokio::sync::watch::Receiver<Control>) {
+    while *control.borrow_and_update() == Control::Running {
+        if control.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+fn stop_error(control: &tokio::sync::watch::Receiver<Control>) -> FetchError {
+    match *control.borrow() {
+        Control::Pause => FetchError::Paused,
+        Control::Cancel => FetchError::Canceled,
+        Control::Running => FetchError::Paused,
+    }
+}
+
+#[derive(Clone)]
 pub struct Needed {
     block: Block,
     decoded_size: usize,
@@ -249,20 +280,28 @@ pub async fn fetch_block(
     url: &mut Url,
     pack_size: u64,
     block: &Needed,
+    control: &mut tokio::sync::watch::Receiver<Control>,
     mut progress: impl FnMut(u64),
-) -> Result<(), String> {
+) -> Result<(), FetchError> {
+    match *control.borrow_and_update() {
+        Control::Running => {}
+        Control::Pause => return Err(FetchError::Paused),
+        Control::Cancel => return Err(FetchError::Canceled),
+    }
     if block.saved == block.length() {
         return Ok(());
     }
     let start = block.block.offset + block.saved;
     let end = block.block.offset + block.length() - 1;
-    let mut response = client
+    let send = client
         .get(url.clone())
         .header(header::RANGE, format!("bytes={start}-{end}"))
         .header(header::ACCEPT_ENCODING, "identity")
-        .send()
-        .await
-        .map_err(|_| "更新下载连接中断")?;
+        .send();
+    let mut response = tokio::select! {
+        res = send => res.map_err(|_| FetchError::Failed("更新下载连接中断".into()))?,
+        _ = wait_stop(control) => return Err(stop_error(control)),
+    };
     let expected = format!("bytes {start}-{end}/{pack_size}");
     if response.status() != StatusCode::PARTIAL_CONTENT
         || response
@@ -271,10 +310,10 @@ pub async fn fetch_block(
             .and_then(|v| v.to_str().ok())
             != Some(expected.as_str())
     {
-        return Err(format!(
+        return Err(FetchError::Failed(format!(
             "更新服务器未返回所需的数据范围（HTTP {}）",
             response.status().as_u16()
-        ));
+        )));
     }
     *url = response.url().clone();
     let mut file = fs::OpenOptions::new()
@@ -282,34 +321,49 @@ pub async fn fetch_block(
         .write(true)
         .truncate(false)
         .open(&block.cache)
-        .map_err(io_error)?;
-    file.set_len(block.saved).map_err(io_error)?;
-    file.seek(SeekFrom::Start(block.saved)).map_err(io_error)?;
+        .map_err(|e| FetchError::Failed(io_error(e)))?;
+    file.set_len(block.saved)
+        .map_err(|e| FetchError::Failed(io_error(e)))?;
+    file.seek(SeekFrom::Start(block.saved))
+        .map_err(|e| FetchError::Failed(io_error(e)))?;
     let mut remaining = end - start + 1;
     loop {
-        let data = match response.chunk().await {
-            Ok(Some(data)) => data,
-            Ok(None) => break,
-            Err(_) => {
-                file.sync_data().map_err(io_error)?;
-                return Err("更新下载中断，已保留下载进度".into());
+        let data = tokio::select! {
+            res = response.chunk() => match res {
+                Ok(Some(data)) => data,
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = file.flush();
+                    return Err(FetchError::Failed("更新下载中断，已保留下载进度".into()));
+                }
+            },
+            _ = wait_stop(control) => {
+                let _ = file.flush();
+                return Err(stop_error(control));
             }
         };
         if data.len() as u64 > remaining {
-            return Err("更新服务器返回了无效长度".into());
+            return Err(FetchError::Failed("更新服务器返回了无效长度".into()));
         }
-        file.write_all(&data).map_err(io_error)?;
+        file.write_all(&data)
+            .map_err(|e| FetchError::Failed(io_error(e)))?;
         remaining -= data.len() as u64;
         progress(data.len() as u64);
     }
-    file.sync_all().map_err(io_error)?;
+    file.flush().map_err(|e| FetchError::Failed(io_error(e)))?;
     drop(file);
     if remaining != 0 {
-        return Err("更新下载中断，已保留下载进度".into());
+        return Err(FetchError::Failed("更新下载中断，已保留下载进度".into()));
     }
-    if decode(&block.cache, &block.block, block.decoded_size).is_err() {
-        fs::remove_file(&block.cache).map_err(io_error)?;
-        return Err("更新数据校验失败，请重试".into());
+    let cache = block.cache.clone();
+    let decoded_block = block.block.clone();
+    let decoded_size = block.decoded_size;
+    let valid = tokio::task::spawn_blocking(move || decode(&cache, &decoded_block, decoded_size).is_ok())
+        .await
+        .unwrap_or(false);
+    if !valid {
+        let _ = fs::remove_file(&block.cache);
+        return Err(FetchError::Failed("更新数据校验失败，请重试".into()));
     }
     Ok(())
 }

@@ -733,12 +733,11 @@ private fun checkForAndroidUpdate(current: String, proxyPort: Int): JSONObject {
             connection.inputStream.use { JSONArray(readBounded(it, 2 * 1024 * 1024).toString(Charsets.UTF_8)) }
         } finally { connection.disconnect() }
     }
-    val releases = runCatching { fetch(null) }.getOrElse { directError ->
-        if (proxyPort > 0) {
-            fetch(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort)))
-        } else {
-            throw directError
-        }
+    val releases = if (proxyPort > 0) {
+        runCatching { fetch(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", proxyPort))) }
+            .getOrElse { fetch(null) }
+    } else {
+        fetch(null)
     }
     val version = Regex("""^v?(\d+)\.(\d+)\.(\d+)$""")
     fun number(value: String): List<Int>? = version.matchEntire(value)?.groupValues?.drop(1)?.map {
@@ -780,7 +779,7 @@ private fun checkForAndroidUpdate(current: String, proxyPort: Int): JSONObject {
         } else {
             result.remove("downloadUrl")
         }
-        val notes = release.optString("body").trim().take(4000)
+        val notes = release.optString("body").trim().take(16000)
         if (notes.isNotEmpty()) {
             result.put("notes", notes)
         } else {

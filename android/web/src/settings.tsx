@@ -3,7 +3,8 @@ import { RuleLibraryManager, readRuleProfile } from '@/shared/ui/RuleLibraryMana
 import { downloadSubscription } from '@/shared/proxy/subscription-extension'
 import { GlobalRuleList, type AppIdentity } from '@/shared/ui/GlobalRuleList'
 import { LanguagePicker } from '@/shared/i18n/LanguagePicker'
-import { savePreviewLanguage, tr } from '@/shared/i18n/messages'
+import { savePreviewLanguage, tr, useLanguage } from '@/shared/i18n/messages'
+import { selectLocalizedNotes } from '@/shared/i18n/releaseNotes'
 import { lazy, Suspense, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 let savedSettingsScrollTop = 0
@@ -24,6 +25,7 @@ import { Field } from './workflows'
 import type { Model } from './views'
 
 const ConfigCodeEditor = lazy(() => import('@/shared/ui/ConfigCodeEditor').then(module => ({ default: module.ConfigCodeEditor })))
+const ReleaseNotes = lazy(() => import('@/shared/ui/ReleaseNotes'))
 
 export type SettingsPage = 'theme' | NetworkPage | 'routing' | 'kernel' | 'configFile' | 'about'
 export const themeNames: Record<Theme, string> = { get system() { return tr('跟随系统') }, get light() { return tr('浅色') }, get dark() { return tr('深色') } }
@@ -79,7 +81,12 @@ export function SettingsIndex({ library, open, availableUpdate }: {
         icon={Info}
         title={settingsTitles.about}
         description={tr("Air Proxy 版本、软件更新与作者 GitHub")}
-        badge={availableUpdate?.version ? <Tag tone="blue">v{availableUpdate.version}</Tag> : undefined}
+        badge={availableUpdate?.version ? (
+          <span className="inline-flex items-center gap-1">
+            <span className="settings-update-dot" aria-hidden="true" />
+            <Tag tone="blue">v{availableUpdate.version}</Tag>
+          </span>
+        ) : undefined}
         onClick={() => open('about')}
       />
     </div></section>
@@ -303,9 +310,11 @@ export function KernelSettings({ info, active, check }: { info: KernelInfo; acti
 export function AboutSettings({ info, update: initialUpdate, onUpdateChecked }: {
   info: KernelInfo; update?: UpdateCheck; onUpdateChecked?: (next: UpdateCheck) => void
 }) {
+  const lang = useLanguage()
   const [checking, setChecking] = useState(false)
   const [update, setUpdate] = useState<UpdateCheck | undefined>(initialUpdate)
   const [status, setStatus] = useState(() => initialUpdate?.version ? tr('发现新版本 Air Proxy ') + initialUpdate.version : '')
+  const localizedNotes = update?.notes ? selectLocalizedNotes(update.notes, lang.code) : ''
   function open(url: string) {
     if (!onAndroid) {
       window.open(url, '_blank', 'noopener,noreferrer')
@@ -340,9 +349,11 @@ export function AboutSettings({ info, update: initialUpdate, onUpdateChecked }: 
     <section className="panel settings-form">
       <h2 className="settings-form-title">{tr("软件更新")}</h2>
       <p className="fine-print" role="status">{status || tr('查找 GitHub 上发布的 Android 安装包。')}</p>
-      {update?.notes && (
-        <div className="max-h-40 overflow-y-auto rounded-[8px] border border-border bg-muted/40 p-2.5 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
-          {update.notes}
+      {localizedNotes && (
+        <div className="max-h-36 overflow-y-auto rounded-[8px] border border-border bg-muted/40 p-2.5">
+          <Suspense fallback={<p className="text-xs text-muted-foreground">{tr("正在加载更新说明…")}</p>}>
+            <ReleaseNotes notes={localizedNotes} compact onOpenLink={open} />
+          </Suspense>
         </div>
       )}
       <div className="flex flex-wrap gap-2">

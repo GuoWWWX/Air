@@ -6,7 +6,7 @@ import { showMessage } from '@/shared/ui/message'
 import { version } from '../../../package.json'
 
 type Phase = 'idle' | 'checking' | 'current' | 'available' | 'preparing' | 'downloading'
-  | 'installing' | 'interrupted' | 'unconfigured'
+  | 'paused' | 'installing' | 'interrupted' | 'unconfigured'
 
 export interface UpdateStatus {
   current: string
@@ -89,6 +89,14 @@ export function useUpdates(onError: (error: unknown) => void) {
     void invoke('start_update').catch(onError)
   }
 
+  function pause() {
+    void invoke('pause_update').catch(onError)
+  }
+
+  function cancel() {
+    void invoke('cancel_update').catch(onError)
+  }
+
   async function ignore() {
     try {
       await invoke('ignore_update')
@@ -99,7 +107,7 @@ export function useUpdates(onError: (error: unknown) => void) {
   }
 
   const busy = ['preparing', 'downloading', 'installing'].includes(status.phase)
-  return { status, open, setOpen, busy, check, start, ignore, onError }
+  return { status, open, setOpen, busy, check, start, pause, cancel, ignore, onError }
 }
 
 export type Updates = ReturnType<typeof useUpdates>

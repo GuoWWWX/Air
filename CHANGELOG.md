@@ -1,6 +1,19 @@
 # 更新日志 / Changelog
 
-本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.1.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.2.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+
+## [1.1.2] - 2026-11-25
+
+### Added
+
+- **更新下载暂停与取消控制**：Windows 端更新弹窗与下载链路支持随时「暂停」/「继续下载」（保留已校验分块缓存）与「取消」（清理缓存并复位状态），避免下载过程中无法中断。
+- **Android 切回前台自动检测**：在启动静默检测（6 小时节流）之外，新增切换回前台时超过 6 小时的自动静默检查，覆盖长期挂机场景。
+- **双语更新说明自动适配**：支持在更新日志中使用 `<!-- lang:zh-CN -->` / `<!-- lang:en -->` 分区，桌面与手机端自动按当前界面语言展示对应版本说明。
+
+### Changed
+
+- **代理优先与 4 路并发分块下载**：Windows 与 Android 检查/下载更新在代理运行时优先通过本地代理端口请求并自动直连兜底；Windows 更新器默认复用连接池并使用 4 路并发下载分块，显著提升国内宽带环境下的更新下载速度。
+- **高辨识度更新提醒与紧凑弹窗**：桌面端左下角更新入口与手机端设置/关于徽标升级为带橙色脉冲呼吸灯的强调样式；桌面端更新弹窗收窄收矮并缩小正文字号，Android 关于页改用 Markdown 紧凑排版展示更新内容。
 
 ## [1.1.1] - 2026-11-25
 

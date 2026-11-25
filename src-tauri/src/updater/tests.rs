@@ -131,9 +131,10 @@ async fn skipped_version_reuses_installed_blocks_and_resumes_interrupted_range()
     assert_eq!(plan.len(), 2);
     let missing: u64 = plan.iter().map(package::Needed::length).sum();
     assert!(missing < manifest.asset_size / 2);
+    let (_ctrl_tx, mut ctrl_rx) = tokio::sync::watch::channel(package::Control::Running);
     let client = Client::builder().no_proxy().build().unwrap();
     assert!(
-        package::fetch_block(&client, &mut url, size, &plan[0], |_| {})
+        package::fetch_block(&client, &mut url, size, &plan[0], &mut ctrl_rx, |_| {})
             .await
             .is_err()
     );
@@ -141,7 +142,7 @@ async fn skipped_version_reuses_installed_blocks_and_resumes_interrupted_range()
     assert!(plan[0].saved > 0 && plan[0].saved < plan[0].length());
     let client = Client::builder().no_proxy().build().unwrap();
     for block in &plan {
-        package::fetch_block(&client, &mut url, size, block, |_| {})
+        package::fetch_block(&client, &mut url, size, block, &mut ctrl_rx, |_| {})
             .await
             .unwrap();
     }
@@ -172,4 +173,85 @@ async fn skipped_version_reuses_installed_blocks_and_resumes_interrupted_range()
         fs::read(install.path().join("mihomo.exe")).unwrap(),
         new_kernel
     );
+}
+
+#[tokio::test]
+async fn pause_and_cancel_controls_interrupt_block_download_cleanly() {
+    let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/air.pack", server.local_addr().unwrap());
+    let new_kernel: Vec<u8> = (0..65_536u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8 ^ (i as u8))
+        .collect();
+    let (content, bytes) = release(&url, &new_kernel);
+    let (key, raw) = signed(&content);
+    let manifest = package::verify(&raw, &key.verifying_key()).unwrap();
+    let install = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let plan = package::plan(&manifest, install.path(), cache.path());
+    let target_block = plan
+        .iter()
+        .find(|b| b.length() > 1024)
+        .expect("large block")
+        .clone();
+    let size = manifest.asset_size;
+    let bytes: Arc<[u8]> = bytes.into();
+
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = server.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut input = [0; 2048];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = socket.read(&mut input).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&input[..count]);
+            }
+            let headers = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            let (start, end) = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("range: bytes="))
+                .unwrap()
+                .split_once('-')
+                .unwrap();
+            let (start, end): (usize, usize) = (start.parse().unwrap(), end.parse().unwrap());
+            let data = &bytes[start..=end];
+            let head = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{size}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                data.len()
+            );
+            let _ = socket.write_all(head.as_bytes()).await;
+            let split = (data.len() / 2).max(1);
+            let _ = socket.write_all(&data[..split]).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    });
+
+    // Test Pause preserves saved bytes
+    let (ctrl_tx, mut ctrl_rx) = tokio::sync::watch::channel(package::Control::Running);
+    let mut url_pause = Url::parse(&url).unwrap();
+    let client = Client::builder().no_proxy().build().unwrap();
+    let paused_res = {
+        let tx = ctrl_tx.clone();
+        let fut = package::fetch_block(&client, &mut url_pause, size, &target_block, &mut ctrl_rx, |len| {
+            if len > 0 {
+                let _ = tx.send(package::Control::Pause);
+            }
+        });
+        fut.await
+    };
+    assert_eq!(paused_res, Err(package::FetchError::Paused));
+    let paused_plan = package::plan(&manifest, install.path(), cache.path());
+    assert!(paused_plan.iter().any(|b| b.saved > 0));
+
+    // Test Cancel returns Canceled cleanly
+    let (ctrl_tx2, mut ctrl_rx2) = tokio::sync::watch::channel(package::Control::Running);
+    let mut url_cancel = Url::parse(&url).unwrap();
+    let cancel_res = package::fetch_block(&client, &mut url_cancel, size, &paused_plan[0], &mut ctrl_rx2, |_| {
+        let _ = ctrl_tx2.send(package::Control::Cancel);
+    })
+    .await;
+    assert_eq!(cancel_res, Err(package::FetchError::Canceled));
+    server_task.abort();
 }

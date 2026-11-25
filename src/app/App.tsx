@@ -38,7 +38,7 @@ import { Subscriptions } from '../features/subscriptions/Subscriptions'
 import { useSelectedSubscriptions } from '../features/subscriptions/useSelectedSubscriptions'
 import { YamlEditor } from '../features/subscriptions/YamlEditor'
 import { UpdateDialog } from '../features/updates/UpdateDialog'
-import { useUpdates } from '../features/updates/useUpdates'
+import { useUpdates, type UpdateStatus } from '../features/updates/useUpdates'
 import {
   air,
   type ChainProbeResult,
@@ -216,6 +216,7 @@ interface AppSidebarProps {
   kernelMissing: boolean
   updateVersion?: string
   updateBusy: boolean
+  updatePhase?: UpdateStatus['phase']
   onNavigate: (target: Page) => void
   onOpenUpdate: () => void
   onOpenKernel: () => void
@@ -226,6 +227,7 @@ const AppSidebar = memo(function AppSidebar({
   kernelMissing,
   updateVersion,
   updateBusy,
+  updatePhase,
   onNavigate,
   onOpenUpdate,
   onOpenKernel,
@@ -319,24 +321,35 @@ const AppSidebar = memo(function AppSidebar({
       <div className="flex flex-col gap-1.5">
         {updateVersion && (
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
             aria-label={tr('软件更新')}
             title={`Air Proxy ${updateVersion}`}
             onClick={onOpenUpdate}
-            className="h-10 w-full justify-start gap-0 overflow-hidden px-0 text-sm"
+            className="h-10 w-full justify-start gap-0 overflow-hidden rounded-[8px] border border-accent-border/80 bg-accent-soft/85 px-0 text-sm text-primary hover:bg-accent-soft"
           >
-            <span className="grid size-10 shrink-0 place-items-center">
+            <span className="relative grid size-10 shrink-0 place-items-center">
               <ArrowDownToLine className="size-5 shrink-0" />
+              <span className="air-update-dot" aria-hidden="true">
+                <span className="air-update-dot-ring" />
+                <span className="air-update-dot-core" />
+              </span>
             </span>
             <span
               aria-hidden={collapsed}
               className={cn(
-                'whitespace-nowrap pr-3 transition-[opacity,transform,translate] duration-150 motion-reduce:transition-none',
+                'flex min-w-0 flex-1 items-center justify-between gap-2 pr-2.5 whitespace-nowrap transition-[opacity,transform,translate] duration-150 motion-reduce:transition-none',
                 collapsed ? 'pointer-events-none -translate-x-1 opacity-0' : 'translate-x-0 opacity-100',
               )}
             >
-              {updateBusy ? tr('正在更新') : tr('软件更新')}
+              <span className="truncate font-medium">
+                {updatePhase === 'paused' ? tr('已暂停') : updateBusy ? tr('正在更新') : tr('软件更新')}
+              </span>
+              {!updateBusy && updatePhase !== 'paused' && (
+                <span className="mono rounded-full border border-accent-border/70 bg-background/75 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary">
+                  v{updateVersion}
+                </span>
+              )}
             </span>
           </Button>
         )}
@@ -1068,6 +1081,7 @@ export function App() {
           kernelMissing={!kernelPath}
           updateVersion={updates.status.version && !updates.status.ignored ? updates.status.version : undefined}
           updateBusy={updates.busy}
+          updatePhase={updates.status.phase}
           onNavigate={navigate}
           onOpenUpdate={handleSidebarUpdate}
           onOpenKernel={handleSidebarKernel}

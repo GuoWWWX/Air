@@ -6,7 +6,10 @@ mod windows;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -49,6 +52,7 @@ enum Phase {
     Available,
     Preparing,
     Downloading,
+    Paused,
     Installing,
     Interrupted,
     Unconfigured,
@@ -84,6 +88,15 @@ pub struct Updater {
     client: Client,
     view: Mutex<View>,
     operation: Arc<tokio::sync::Mutex<()>>,
+    control: Mutex<Option<tokio::sync::watch::Sender<package::Control>>>,
+}
+
+struct ControlGuard<'a>(&'a Mutex<Option<tokio::sync::watch::Sender<package::Control>>>);
+
+impl Drop for ControlGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = None;
+    }
 }
 
 async fn active_proxy_port(app: &AppHandle) -> Option<u16> {
@@ -98,6 +111,8 @@ impl Updater {
             .connect_timeout(Duration::from_secs(12))
             .read_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(180))
+            .pool_max_idle_per_host(6)
+            .tcp_nodelay(true)
             .user_agent(concat!("Air-Proxy/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::custom(|redirect| {
                 if redirect.previous().len() < 5
@@ -139,6 +154,7 @@ impl Updater {
                 release: None,
             }),
             operation: Arc::new(tokio::sync::Mutex::new(())),
+            control: Mutex::new(None),
         })
     }
 
@@ -207,19 +223,17 @@ impl Updater {
     }
 
     async fn read_feed(&self, app: &AppHandle, url: Url) -> Result<Option<Arc<[u8]>>, String> {
-        match Self::read_feed_with(&self.client, url.clone()).await {
-            Ok(raw) => Ok(raw),
-            Err((true, error)) => {
-                let Some(port) = active_proxy_port(app).await else {
-                    return Err(error);
-                };
-                let proxy_client = Self::build_client(Some(port))?;
-                Self::read_feed_with(&proxy_client, url)
-                    .await
-                    .map_err(|(_, fallback_error)| fallback_error)
+        if let Some(port) = active_proxy_port(app).await {
+            let proxy_client = Self::build_client(Some(port))?;
+            match Self::read_feed_with(&proxy_client, url.clone()).await {
+                Ok(raw) => return Ok(raw),
+                Err((true, _)) => {}
+                Err((false, error)) => return Err(error),
             }
-            Err((false, error)) => Err(error),
         }
+        Self::read_feed_with(&self.client, url)
+            .await
+            .map_err(|(_, error)| error)
     }
 
     async fn check(&self, app: &AppHandle) {
@@ -286,8 +300,20 @@ impl Updater {
         let _ = fs::remove_file(self.root.join("install-error.txt"));
         self.phase(app, Phase::Preparing, None);
 
+        let (ctrl_tx, mut ctrl_rx) = tokio::sync::watch::channel(package::Control::Running);
+        *self.control.lock().unwrap() = Some(ctrl_tx.clone());
+        let _control_guard = ControlGuard(&self.control);
+
         let mut url = Url::parse(&manifest.asset).map_err(|_| "更新包地址无效")?;
-        let mut download_client = self.client.clone();
+        let mut using_proxy = false;
+        let mut download_client = match active_proxy_port(app).await {
+            Some(port) => {
+                using_proxy = true;
+                Self::build_client(Some(port))?
+            }
+            None => self.client.clone(),
+        };
+
         for attempt in 0..3 {
             let plan = tokio::task::spawn_blocking({
                 let (manifest, install, cache) = (manifest.clone(), install.clone(), cache.clone());
@@ -295,53 +321,213 @@ impl Updater {
             })
             .await
             .map_err(|_| "无法准备更新数据")?;
-            let mut progress = Progress {
-                received: plan.iter().map(|block| block.saved).sum(),
-                total: plan.iter().map(|block| block.length()).sum(),
-                speed: 0,
-            };
-            let mut last = Instant::now();
-            let mut last_bytes = progress.received;
+
+            let total: u64 = plan.iter().map(|block| block.length()).sum();
+            let initial_saved: u64 = plan.iter().map(|block| block.saved).sum();
+            let received = Arc::new(AtomicU64::new(initial_saved));
+            let tracker = Arc::new(Mutex::new((Instant::now(), initial_saved)));
             self.emit(app, |view| {
                 view.status.phase = Phase::Downloading;
-                view.status.progress = progress.clone();
+                view.status.progress = Progress {
+                    received: initial_saved,
+                    total,
+                    speed: 0,
+                };
                 view.status.message = None;
             });
-            let mut result = Ok(());
-            for block in &plan {
-                result = package::fetch_block(
+
+            let report_progress = {
+                let updater_app = app.clone();
+                let received = received.clone();
+                let tracker = tracker.clone();
+                move |len: u64| {
+                    let current = received.fetch_add(len, Ordering::Relaxed) + len;
+                    let mut guard = tracker.lock().unwrap();
+                    let elapsed = guard.0.elapsed();
+                    if elapsed >= Duration::from_millis(200) || current >= total {
+                        let delta = current.saturating_sub(guard.1);
+                        let speed = (delta as f64 / elapsed.as_secs_f64().max(0.001)) as u64;
+                        guard.0 = Instant::now();
+                        guard.1 = current;
+                        drop(guard);
+                        let _ = updater_app.emit(
+                            EVENT,
+                            Status {
+                                current: self.status().current,
+                                phase: Phase::Downloading,
+                                version: self.status().version,
+                                notes: self.status().notes,
+                                message: None,
+                                progress: Progress {
+                                    received: current,
+                                    total,
+                                    speed,
+                                },
+                                ignored: false,
+                            },
+                        );
+                    }
+                }
+            };
+
+            let pending: Vec<_> = plan
+                .into_iter()
+                .filter(|block| block.saved < block.length())
+                .collect();
+            let mut outcome: Result<(), package::FetchError> = Ok(());
+            if let Some((first, rest)) = pending.split_first() {
+                outcome = package::fetch_block(
                     &download_client,
                     &mut url,
                     manifest.asset_size,
-                    block,
-                    |len| {
-                        progress.received += len;
-                        let elapsed = last.elapsed();
-                        if elapsed >= Duration::from_millis(200)
-                            || progress.received == progress.total
-                        {
-                            progress.speed = ((progress.received - last_bytes) as f64
-                                / elapsed.as_secs_f64().max(0.001))
-                                as u64;
-                            last = Instant::now();
-                            last_bytes = progress.received;
-                            self.emit(app, |view| view.status.progress = progress.clone());
-                        }
-                    },
+                    first,
+                    &mut ctrl_rx,
+                    &report_progress,
                 )
                 .await;
-                if result.is_err() {
-                    break;
+                if outcome.is_ok() && !rest.is_empty() {
+                    let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+                    let mut tasks = tokio::task::JoinSet::new();
+                    for block in rest.iter().cloned() {
+                        let client = download_client.clone();
+                        let mut worker_url = url.clone();
+                        let mut worker_rx = ctrl_tx.subscribe();
+                        let permit_pool = semaphore.clone();
+                        let pack_size = manifest.asset_size;
+                        let received = received.clone();
+                        let tracker = tracker.clone();
+                        let worker_app = app.clone();
+                        let base_status = self.status();
+                        tasks.spawn(async move {
+                            let Ok(_permit) = permit_pool.acquire_owned().await else {
+                                return Err(package::FetchError::Canceled);
+                            };
+                            package::fetch_block(
+                                &client,
+                                &mut worker_url,
+                                pack_size,
+                                &block,
+                                &mut worker_rx,
+                                |len| {
+                                    let current = received.fetch_add(len, Ordering::Relaxed) + len;
+                                    let mut guard = tracker.lock().unwrap();
+                                    let elapsed = guard.0.elapsed();
+                                    if elapsed >= Duration::from_millis(200) || current >= total {
+                                        let delta = current.saturating_sub(guard.1);
+                                        let speed =
+                                            (delta as f64 / elapsed.as_secs_f64().max(0.001)) as u64;
+                                        guard.0 = Instant::now();
+                                        guard.1 = current;
+                                        drop(guard);
+                                        let _ = worker_app.emit(
+                                            EVENT,
+                                            Status {
+                                                current: base_status.current.clone(),
+                                                phase: Phase::Downloading,
+                                                version: base_status.version.clone(),
+                                                notes: base_status.notes.clone(),
+                                                message: None,
+                                                progress: Progress {
+                                                    received: current,
+                                                    total,
+                                                    speed,
+                                                },
+                                                ignored: false,
+                                            },
+                                        );
+                                    }
+                                },
+                            )
+                            .await
+                        });
+                    }
+                    while let Some(joined) = tasks.join_next().await {
+                        match joined {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                outcome = Err(error);
+                                tasks.abort_all();
+                                while tasks.join_next().await.is_some() {}
+                                break;
+                            }
+                            Err(_) => {
+                                outcome = Err(package::FetchError::Failed("更新下载任务异常".into()));
+                                tasks.abort_all();
+                                while tasks.join_next().await.is_some() {}
+                                break;
+                            }
+                        }
+                    }
                 }
             }
-            match result {
+
+            let saved_now = received.load(Ordering::Relaxed);
+            self.emit(app, |view| {
+                view.status.progress.received = saved_now;
+                view.status.progress.total = total;
+            });
+
+            match outcome {
                 Ok(()) => break,
-                Err(error) if attempt == 2 => return Err(error),
-                Err(error) => {
+                Err(package::FetchError::Paused) => {
+                    let _ = fs::remove_file(self.root.join(APPROVED));
+                    self.emit(app, |view| {
+                        view.status.phase = Phase::Paused;
+                        view.status.progress.received = saved_now;
+                        view.status.progress.total = total;
+                        view.status.progress.speed = 0;
+                        view.status.message = None;
+                    });
+                    return Ok(());
+                }
+                Err(package::FetchError::Canceled) => {
+                    let _ = fs::remove_file(self.root.join(APPROVED));
+                    let _ = fs::remove_dir_all(&cache);
+                    let _ = fs::remove_file(self.root.join("install-error.txt"));
+                    self.emit(app, |view| {
+                        view.status.phase = Phase::Available;
+                        view.status.progress = Progress::default();
+                        view.status.message = None;
+                    });
+                    return Ok(());
+                }
+                Err(package::FetchError::Failed(error)) if attempt == 2 => return Err(error),
+                Err(package::FetchError::Failed(error)) => {
                     self.phase(app, Phase::Downloading, Some(format!("{error}，正在重试")));
-                    tokio::time::sleep(Duration::from_secs(2 << attempt)).await;
-                    if let Some(port) = active_proxy_port(app).await {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(2 << attempt)) => {}
+                        _ = ctrl_rx.changed() => {
+                            match *ctrl_rx.borrow() {
+                                package::Control::Pause => {
+                                    let _ = fs::remove_file(self.root.join(APPROVED));
+                                    self.emit(app, |view| {
+                                        view.status.phase = Phase::Paused;
+                                        view.status.progress.speed = 0;
+                                        view.status.message = None;
+                                    });
+                                    return Ok(());
+                                }
+                                package::Control::Cancel => {
+                                    let _ = fs::remove_file(self.root.join(APPROVED));
+                                    let _ = fs::remove_dir_all(&cache);
+                                    let _ = fs::remove_file(self.root.join("install-error.txt"));
+                                    self.emit(app, |view| {
+                                        view.status.phase = Phase::Available;
+                                        view.status.progress = Progress::default();
+                                        view.status.message = None;
+                                    });
+                                    return Ok(());
+                                }
+                                package::Control::Running => {}
+                            }
+                        }
+                    }
+                    if using_proxy {
+                        using_proxy = false;
+                        download_client = self.client.clone();
+                    } else if let Some(port) = active_proxy_port(app).await {
                         if let Ok(client) = Self::build_client(Some(port)) {
+                            using_proxy = true;
                             download_client = client;
                         }
                     }
@@ -349,6 +535,7 @@ impl Updater {
                 }
             }
         }
+        drop(_control_guard);
         self.phase(app, Phase::Preparing, Some("正在校验更新文件…".into()));
         tokio::task::spawn_blocking({
             let (manifest, install, cache) = (manifest, install.clone(), cache.clone());
@@ -418,7 +605,9 @@ impl Updater {
     pub async fn background(self: Arc<Self>, app: AppHandle) {
         let mut next_check = Instant::now();
         loop {
-            if self.status().phase != Phase::Installing
+            let phase = self.status().phase;
+            if phase != Phase::Installing
+                && phase != Phase::Paused
                 && !self.resume(&app).await
                 && Instant::now() >= next_check
             {
@@ -475,6 +664,40 @@ pub fn start_update(app: AppHandle, state: State<'_, Arc<Updater>>) -> Result<()
         let _lock = lock;
         updater.start(&app, raw).await;
     });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pause_update(state: State<'_, Arc<Updater>>) -> Result<(), String> {
+    let sender = state.control.lock().unwrap().clone();
+    if let Some(sender) = sender {
+        let _ = sender.send(package::Control::Pause);
+        let _lock = state.operation.lock().await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_update(app: AppHandle, state: State<'_, Arc<Updater>>) -> Result<(), String> {
+    if state.status().phase == Phase::Installing {
+        return Err("正在安装更新".into());
+    }
+    let sender = state.control.lock().unwrap().clone();
+    if let Some(sender) = sender {
+        let _ = sender.send(package::Control::Cancel);
+    }
+    let _lock = state.operation.lock().await;
+    let _ = fs::remove_file(state.root.join(APPROVED));
+    let _ = fs::remove_file(state.root.join("install-error.txt"));
+    let release = state.view.lock().unwrap().release.clone();
+    if let Some(raw) = release {
+        let _ = fs::remove_dir_all(state.root.join(package::hash(&raw)));
+        state.emit(&app, |view| {
+            view.status.phase = Phase::Available;
+            view.status.progress = Progress::default();
+            view.status.message = None;
+        });
+    }
     Ok(())
 }
 

@@ -1760,6 +1760,10 @@
     "默认顺序": "Default order",
     "（已暂停）": "(paused)",
     "，列": ", column ",
-    "，引导地址须使用 IP": ". Bootstrap addresses must use IP addresses"
+    "，引导地址须使用 IP": ". Bootstrap addresses must use IP addresses",
+    "暂停": "Pause",
+    "继续下载": "Resume",
+    "已暂停": "Paused",
+    "已暂停下载 · {0} / {1}": "Download paused · {0} / {1}"
   }
 }

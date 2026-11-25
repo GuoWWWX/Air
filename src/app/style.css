@@ -883,6 +883,44 @@ code {
   user-select: text;
 }
 
+@keyframes air-update-dot-pulse {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.72;
+  }
+  70%, 100% {
+    transform: scale(2.55);
+    opacity: 0;
+  }
+}
+
+.air-update-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+}
+
+.air-update-dot-ring,
+.air-update-dot-core {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+}
+
+.air-update-dot-ring {
+  background: rgba(249, 115, 22, 0.52);
+  animation: air-update-dot-pulse 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.air-update-dot-core {
+  background: #f97316;
+  border: 1.5px solid var(--card);
+  box-shadow: 0 0 8px rgba(249, 115, 22, 0.75);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .air-popup,
   .air-dialog-backdrop,
@@ -895,7 +933,8 @@ code {
     width: 100%;
   }
   .air-latency-shimmer::before,
-  .air-sub-card-glow::before {
+  .air-sub-card-glow::before,
+  .air-update-dot-ring {
     animation: none;
     opacity: 0;
   }

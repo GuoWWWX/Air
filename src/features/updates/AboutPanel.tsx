@@ -16,6 +16,11 @@ export function AboutPanel({ updates }: { updates: Updates }) {
     status.phase === 'checking' ? tr('正在检查更新…')
       : status.phase === 'current' ? tr('当前没有可用更新。')
         : status.version ? (status.ignored ? tr("已忽略 Air Proxy {0}", status.version)
+          : status.phase === 'paused' ? (
+            status.progress.total
+              ? tr("已暂停下载 · {0} / {1}", formatBytes(status.progress.received), formatBytes(status.progress.total))
+              : tr('已暂停')
+          )
           : status.phase === 'downloading' && status.progress.total
             ? tr("已下载 {0} / {1}", formatBytes(status.progress.received), formatBytes(status.progress.total))
             : busy ? tr('正在准备安装更新…') : tr("发现新版本 Air Proxy {0}", status.version))
