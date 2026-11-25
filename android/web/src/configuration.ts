@@ -200,13 +200,17 @@ export function dnsConfiguration(settings: MobileNetwork, hosts: Record<string, 
     : ['223.5.5.5', '119.29.29.29', '1.1.1.1']
   const directNameserver = settings.directNameserver.length > 0
     ? settings.directNameserver
-    : defaultDirectNameserver
-  const nameserverPolicy: Record<string, string | string[]> = {
-    'geosite:cn,private': directNameserver,
+    : settings.respectRules
+      ? defaultDirectNameserver
+      : []
+  const nameserverPolicy: Record<string, string | string[]> = {}
+  if (settings.respectRules && directNameserver.length > 0) {
+    nameserverPolicy['geosite:cn,private'] = directNameserver
   }
   for (const row of settings.domainDns) {
     nameserverPolicy[row.domain] = row.server
   }
+  const hasPolicy = Object.keys(nameserverPolicy).length > 0
   const dns = {
     enable: true,
     ipv6: settings.ipv6 && settings.dnsIpv6,
@@ -218,10 +222,12 @@ export function dnsConfiguration(settings: MobileNetwork, hosts: Record<string, 
     'fake-ip-filter': settings.fakeIpFilter.length ? settings.fakeIpFilter : defaultFakeIpFilter,
     'default-nameserver': defaultNameserver,
     ...(settings.proxyServerNameserver.length > 0 && { 'proxy-server-nameserver': settings.proxyServerNameserver }),
-    'direct-nameserver': directNameserver,
-    'direct-nameserver-follow-policy': settings.directFollowPolicy,
+    ...(directNameserver.length > 0 && {
+      'direct-nameserver': directNameserver,
+      'direct-nameserver-follow-policy': settings.directFollowPolicy,
+    }),
     ...(settings.dnsCacheAlgorithm !== 'auto' && { 'cache-algorithm': settings.dnsCacheAlgorithm }),
-    'nameserver-policy': nameserverPolicy,
+    ...(hasPolicy && { 'nameserver-policy': nameserverPolicy }),
     ...(settings.fallback.length > 0 && { fallback: settings.fallback, 'fallback-filter': { geoip: settings.fallbackDomains.length === 0, domain: settings.fallbackDomains } }),
     ...(hasHosts && { 'use-hosts': true }),
   }

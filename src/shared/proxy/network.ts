@@ -40,9 +40,9 @@ export const defaultNetwork: NetworkSettings = {
   nameserver: ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query'], defaultNameserver: [], directNameserver: [],
   proxyServerNameserver: ['https://223.5.5.5/dns-query', 'https://1.1.1.1/dns-query'],
   fallback: [], fallbackDomains: [], domainDns: [], enhancedMode: 'redir-host', fakeIpFilter: [],
-  respectRules: true, ipv6: true, dnsIpv6: true, useSystemHosts: true,
+  respectRules: true, ipv6: false, dnsIpv6: false, useSystemHosts: true,
   hosts: [], directFollowPolicy: false, dnsCacheAlgorithm: 'auto',
-  tunStack: 'gvisor', tunMtu: null, strictRoute: false, dnsHijack: true, bypassLan: true, routeExcludeAddress: [],
+  tunStack: 'mixed', tunMtu: null, strictRoute: false, dnsHijack: true, bypassLan: true, routeExcludeAddress: [],
   mixedPort: null, allowLan: false, systemProxyBypass: [], tcpConcurrent: true, blockQuic: false,
   probeUrl: 'https://www.gstatic.com/generate_204', probeStatus: 204, probeIntervalMinutes: 5,
 }

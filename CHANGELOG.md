@@ -1,6 +1,18 @@
 # 更新日志 / Changelog
 
-本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.0.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.1.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+
+## [1.1.1] - 2026-11-25
+
+### Changed
+
+- **Windows 覆盖安装向导**：自定义 NSIS 安装模板，检测到当前设备已安装 Air Proxy 时直接展示「覆盖安装」并保留现有配置、订阅与本地数据。
+- **虚拟网卡识别名**：将 Wintun 驱动隧道类型由 `sing-tun` 更名为 `Air Tun`，并升级虚拟网卡服务协议版本（`v12`），保留对旧版服务的兼容。
+- **默认网络与国内直连 DNS 优化**：Windows 端默认关闭 IPv6 与 AAAA 解析、默认采用 `mixed` TUN 协议栈；只要开启「DNS 连接遵循分流规则」且未单独覆盖直连 DNS，即持续启用国内直连 DNS 与 `geosite:cn,private` 策略；未修改过默认网络配置的旧版本升级后自动迁移。
+
+### Fixed
+
+- **单上游 DNS 测速与双端分流策略对齐**：在桌面端「测试 DNS 解析」选择单个上游时跳过 `directNameserver` 与 `respectRules` 的分流干预；同步调整 Android `dnsConfiguration()`，仅在启用「DNS 连接遵循分流规则」时注入国内直连 DNS 兜底与 `geosite:cn,private` 策略。
 
 ## [1.1.0] - 2026-11-25
 
@@ -29,5 +41,6 @@
 - 支持订阅链接 / Clash YAML / 二维码导入、多订阅筛选、本地覆写、YAML / JS（QuickJS）扩展、自建策略组与可视化多跳链式代理。
 - Windows 支持系统代理与 Wintun 虚拟网卡服务（`AirTunService`）独立切换、DPAPI + SQLite 加密存储及 Ed25519 签名分块增量更新。
 
+[1.1.1]: https://github.com/GuoWWWX/Air-Proxy/releases/tag/v1.1.1
 [1.1.0]: https://github.com/GuoWWWX/Air-Proxy/releases/tag/v1.1.0
 [1.0.0]: https://github.com/GuoWWWX/Air-Proxy/releases/tag/v1.0.0

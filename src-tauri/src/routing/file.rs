@@ -126,19 +126,34 @@ impl RoutingFile {
         if self.path().with_file_name("air-config.previous.yaml").exists() {
             return Ok(());
         }
+        let old_v1_base = NetworkSettings {
+            ipv6: true,
+            dns_ipv6: true,
+            tun_stack: "gvisor".into(),
+            ..NetworkSettings::default()
+        };
         let legacy = NetworkSettings {
-            nameserver: vec!["system".into()], proxy_server_nameserver: vec![], enhanced_mode: "auto".into(),
-            respect_rules: false, strict_route: false, tcp_concurrent: false, ..NetworkSettings::default()
+            nameserver: vec!["system".into()],
+            proxy_server_nameserver: vec![],
+            enhanced_mode: "auto".into(),
+            respect_rules: false,
+            strict_route: false,
+            tcp_concurrent: false,
+            ..old_v1_base.clone()
         };
         let previous_windows = NetworkSettings {
             strict_route: true,
-            ..NetworkSettings::default()
+            ..old_v1_base.clone()
         };
-        let mut templates = vec![
-            serde_yaml::to_string(&serde_json::json!({ "routing": RoutingConfig::default(), "network": &legacy }))
+        let mut templates = Vec::new();
+        for candidate in [&legacy, &previous_windows, &old_v1_base] {
+            templates.push(
+                serde_yaml::to_string(&serde_json::json!({
+                    "routing": RoutingConfig::default(),
+                    "network": candidate,
+                }))
                 .map_err(yaml_error)?,
-        ];
-        for candidate in [&legacy, &previous_windows, &NetworkSettings::default()] {
+            );
             let mut network_val = serde_json::to_value(candidate)
                 .map_err(|_| "无法序列化默认网络配置")?;
             if let Some(obj) = network_val.as_object_mut() {

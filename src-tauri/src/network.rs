@@ -133,13 +133,13 @@ impl Default for NetworkSettings {
             enhanced_mode: "redir-host".into(),
             fake_ip_filter: vec![],
             respect_rules: true,
-            ipv6: true,
-            dns_ipv6: true,
+            ipv6: false,
+            dns_ipv6: false,
             use_system_hosts: true,
             hosts: vec![],
             direct_follow_policy: false,
             dns_cache_algorithm: "auto".into(),
-            tun_stack: "gvisor".into(),
+            tun_stack: "mixed".into(),
             tun_mtu: None,
             strict_route: false,
             dns_hijack: true,
@@ -288,17 +288,19 @@ impl NetworkSettings {
     pub(crate) fn apply_dns(&self, config: &mut Value) -> AirResult<()> {
         config["ipv6"] = self.ipv6.into();
         config["tcp-concurrent"] = self.tcp_concurrent.into();
-        let default_overseas_dns = self.respect_rules
-            && self.direct_nameserver.is_empty()
-            && self.nameserver.len() == 2
-            && self.nameserver[0] == "https://1.1.1.1/dns-query"
-            && self.nameserver[1] == "https://8.8.8.8/dns-query";
         let domestic_dns = [
             "https://223.5.5.5/dns-query",
             "https://120.53.53.53/dns-query",
             "223.5.5.5",
             "119.29.29.29",
         ];
+        let effective_direct = if !self.direct_nameserver.is_empty() {
+            Some(self.direct_nameserver.clone())
+        } else if self.respect_rules {
+            Some(domestic_dns.into_iter().map(str::to_owned).collect())
+        } else {
+            None
+        };
         let mut dns = json!({
             "enable": true, "nameserver": self.nameserver, "ipv6": self.ipv6 && self.dns_ipv6,
             "use-system-hosts": self.use_system_hosts, "respect-rules": self.respect_rules,
@@ -309,7 +311,7 @@ impl NetworkSettings {
         if config["hosts"].as_mapping().is_some_and(|hosts| !hosts.is_empty()) {
             dns["use-hosts"] = true.into();
         }
-        if !self.direct_nameserver.is_empty() || default_overseas_dns {
+        if effective_direct.is_some() {
             dns["direct-nameserver-follow-policy"] = self.direct_follow_policy.into();
         }
         if self.dns_cache_algorithm != "auto" {
@@ -317,7 +319,6 @@ impl NetworkSettings {
         }
         for (key, list) in [
             ("default-nameserver", &self.default_nameserver),
-            ("direct-nameserver", &self.direct_nameserver),
             ("proxy-server-nameserver", &self.proxy_server_nameserver),
             ("fallback", &self.fallback),
             ("fake-ip-filter", &self.fake_ip_filter),
@@ -325,6 +326,9 @@ impl NetworkSettings {
             if !list.is_empty() {
                 dns[key] = json!(list);
             }
+        }
+        if let Some(direct) = &effective_direct {
+            dns["direct-nameserver"] = json!(direct);
         }
         if self.default_nameserver.is_empty()
             && self
@@ -338,9 +342,6 @@ impl NetworkSettings {
         {
             dns["default-nameserver"] = json!(DEFAULT_BOOTSTRAP_DNS);
         }
-        if default_overseas_dns {
-            dns["direct-nameserver"] = json!(domestic_dns);
-        }
         if self.enhanced_mode == "fake-ip" && self.fake_ip_filter.is_empty() {
             dns["fake-ip-filter"] = json!(DEFAULT_FAKE_IP_FILTER);
         }
@@ -351,12 +352,14 @@ impl NetworkSettings {
             dns["fallback-filter"] = json!({ "geoip": self.fallback_domains.is_empty(), "domain": self.fallback_domains });
         }
         config["dns"] = serde_yaml::to_value(dns).expect("DNS fields serialize to YAML");
-        if default_overseas_dns || !self.domain_dns.is_empty() {
+        if (self.respect_rules && effective_direct.is_some()) || !self.domain_dns.is_empty() {
             let mut policy = serde_yaml::Mapping::new();
-            if default_overseas_dns {
-                let list = serde_yaml::to_value(domestic_dns)
-                    .expect("domestic DNS list serializes to YAML");
-                policy.insert("geosite:cn,private".into(), list);
+            if self.respect_rules {
+                if let Some(direct) = effective_direct {
+                    let list = serde_yaml::to_value(direct)
+                        .expect("domestic DNS list serializes to YAML");
+                    policy.insert("geosite:cn,private".into(), list);
+                }
             }
             for entry in &self.domain_dns {
                 policy.insert(entry.domain.clone().into(), entry.server.clone().into());
@@ -586,9 +589,22 @@ mod tests {
             yaml["dns"]["default-nameserver"].as_sequence().unwrap(),
             &vec![Value::from("223.5.5.5"), Value::from("119.29.29.29"), Value::from("1.1.1.1")]
         );
-        assert!(yaml["dns"]["direct-nameserver"].is_null());
+        assert_eq!(
+            yaml["dns"]["direct-nameserver"].as_sequence().unwrap()[0],
+            "https://223.5.5.5/dns-query"
+        );
+        assert_eq!(
+            yaml["dns"]["nameserver-policy"]["geosite:cn,private"].as_sequence().unwrap()[0],
+            "https://223.5.5.5/dns-query"
+        );
         assert_eq!(yaml["dns"]["nameserver"].as_sequence().unwrap().len(), 2);
         assert_eq!(yaml["dns"]["ipv6"].as_bool(), Some(false));
+        let mut no_rules = settings.clone();
+        no_rules.respect_rules = false;
+        let mut plain_yaml = Value::Mapping(Default::default());
+        no_rules.apply_dns(&mut plain_yaml).unwrap();
+        assert!(plain_yaml["dns"]["direct-nameserver"].is_null());
+        assert!(plain_yaml["dns"]["nameserver-policy"].is_null());
         assert_eq!(yaml["tun"]["dns-hijack"].as_sequence().unwrap().len(), 0);
         assert_eq!(yaml["tun"]["stack"], "mixed");
         assert_eq!(yaml["tun"]["endpoint-independent-nat"].as_bool(), Some(true));
@@ -671,6 +687,8 @@ mod tests {
     #[test]
     fn default_network_populates_domestic_dns_policy() {
         let settings = NetworkSettings::default();
+        assert!(!settings.ipv6 && !settings.dns_ipv6);
+        assert_eq!(settings.tun_stack, "mixed");
         let mut yaml = Value::Mapping(Default::default());
         settings.apply_dns(&mut yaml).unwrap();
         let direct = yaml["dns"]["direct-nameserver"].as_sequence().unwrap();

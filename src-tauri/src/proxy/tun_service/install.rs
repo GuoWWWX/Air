@@ -29,7 +29,8 @@ use windows_sys::Win32::{
     UI::{Shell::{SHGetKnownFolderPath, ShellExecuteExW, FOLDERID_ProgramFiles, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW}, WindowsAndMessaging::SW_HIDE},
 };
 
-pub(super) const RUN: &str = "--air-tun-service-v11";
+pub(super) const RUN: &str = "--air-tun-service-v12";
+pub(super) const V11_RUN: &str = "--air-tun-service-v11";
 pub(super) const V10_RUN: &str = "--air-tun-service-v10";
 pub(super) const V9_RUN: &str = "--air-tun-service-v9";
 pub(super) const V8_RUN: &str = "--air-tun-service-v8";

@@ -156,6 +156,8 @@ export function NetworkPanel({ page, kernelPath, sources = [] }: { page: Network
       const settings = cleanSettings(values)
       if (testUpstream !== 'all') {
         settings.nameserver = [testUpstream]
+        settings.directNameserver = []
+        settings.respectRules = false
         settings.domainDns = []
         settings.fallback = []
         settings.fallbackDomains = []

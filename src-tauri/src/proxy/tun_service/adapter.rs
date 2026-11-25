@@ -114,7 +114,7 @@ impl Adapter {
         let handle = NonNull::new(unsafe {
             create(
                 wide(NAME).as_ptr(),
-                wide("sing-tun").as_ptr(),
+                wide("Air Tun").as_ptr(),
                 &GUID::from_u128(INSTANCE_ID.as_u128()),
             )
         })

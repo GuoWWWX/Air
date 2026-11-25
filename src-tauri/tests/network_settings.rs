@@ -15,6 +15,7 @@ fn factory_dns_uses_real_ips_and_upgrades_only_the_generated_legacy_file() {
     assert!(current.nameserver.iter().all(|host| host.starts_with("https://")));
     assert!(!current.proxy_server_nameserver.is_empty());
     let legacy = NetworkSettings {
+        ipv6: true, dns_ipv6: true, tun_stack: "gvisor".into(),
         nameserver: vec!["system".into()], proxy_server_nameserver: vec![],
         respect_rules: false, enhanced_mode: "auto".into(), strict_route: false, tcp_concurrent: false, ..current.clone()
     };
@@ -31,6 +32,9 @@ fn factory_dns_uses_real_ips_and_upgrades_only_the_generated_legacy_file() {
 #[test]
 fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     let previous_windows = NetworkSettings {
+        ipv6: true,
+        dns_ipv6: true,
+        tun_stack: "gvisor".into(),
         strict_route: true,
         ..NetworkSettings::default()
     };
@@ -49,6 +53,32 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     let upgraded = file.network().unwrap().settings;
     assert!(!upgraded.strict_route);
     assert!(upgraded.bypass_lan);
+    assert!(!upgraded.ipv6 && !upgraded.dns_ipv6);
+    assert_eq!(upgraded.tun_stack, "mixed");
+
+    let untouched_v110 = NetworkSettings {
+        ipv6: true,
+        dns_ipv6: true,
+        tun_stack: "gvisor".into(),
+        strict_route: false,
+        bypass_lan: true,
+        ..NetworkSettings::default()
+    };
+    let dir_v110 = tempfile::tempdir().unwrap();
+    let file_v110 = RoutingFile::new(dir_v110.path());
+    fs::write(
+        file_v110.path(),
+        serde_yaml::to_string(&serde_json::json!({
+            "routing": RoutingConfig::default(),
+            "network": untouched_v110,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    file_v110.upgrade_factory_network().unwrap();
+    let upgraded_v110 = file_v110.network().unwrap().settings;
+    assert!(!upgraded_v110.ipv6 && !upgraded_v110.dns_ipv6);
+    assert_eq!(upgraded_v110.tun_stack, "mixed");
 
     let custom_dir = tempfile::tempdir().unwrap();
     let custom_file = RoutingFile::new(custom_dir.path());
@@ -58,6 +88,8 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     let preserved = custom_file.network().unwrap().settings;
     assert!(preserved.strict_route);
     assert!(preserved.bypass_lan);
+    assert!(preserved.ipv6 && preserved.dns_ipv6);
+    assert_eq!(preserved.tun_stack, "gvisor");
 }
 
 #[test]
