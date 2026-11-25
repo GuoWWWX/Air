@@ -15,6 +15,11 @@
       "nsis": {
         "installMode": "currentUser",
         "languages": ["English", "SimpChinese"],
+        "template": "windows/installer.nsi",
+        "customLanguageFiles": {
+          "English": "windows/nsis-languages/English.nsh",
+          "SimpChinese": "windows/nsis-languages/SimpChinese.nsh"
+        },
         "installerIcon": "../src/assets/air.ico",
         "installerHooks": "windows/shortcut-icons.nsh",
         "uninstallerIcon": "../src/assets/air.ico"
