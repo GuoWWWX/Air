@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend & Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify i18n language packs
+        run: node scripts/check-languages.mjs
+
+      - name: Type-check & build desktop frontend
+        run: pnpm build
+
+      - name: Type-check Android WebView frontend
+        run: pnpm exec tsc --noEmit -p android/web/tsconfig.json
+
+      - name: Build Android WebView bundle
+        run: pnpm exec vite build --config android/web/vite.config.ts
+
+      - name: Run Android routing & telemetry tests
+        run: |
+          node scripts/test-android-routing.mjs
+          node scripts/test-desktop-telemetry.mjs
+
+  rust:
+    name: Rust Core (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            src-tauri/tun-service
+
+      - name: Run core unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features
+
+      - name: Check TUN service crate
+        run: cargo check --manifest-path src-tauri/tun-service/Cargo.toml --locked
+
+  android:
+    name: Android Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run Android unit tests
+        run: ./android/gradlew -p android :app:testDebugUnitTest

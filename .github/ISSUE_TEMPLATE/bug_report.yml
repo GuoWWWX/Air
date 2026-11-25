@@ -1,0 +1,66 @@
+name: 问题反馈 / Bug Report
+description: 报告功能异常、崩溃、网络接管或界面问题 / Report a bug, crash, or UI issue
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请先前往 [Releases](https://github.com/GuoWWWX/Air-Proxy/releases/latest) 确认是否已在最新版本修复，并注意**切勿粘贴订阅链接、节点密码、Token 或真实出口 IP**。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 影响平台 / Platform
+      options:
+        - Windows x64
+        - Android
+        - Windows + Android
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本 / App Version
+      description: 可在「设置 → 关于」查看，例如 1.1.0
+      placeholder: "1.1.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境 / Environment
+      description: 操作系统 / 设备型号与 ABI / 代理接管模式（系统代理或 TUN/VPN）
+      placeholder: "Windows 11 24H2 x64 (TUN) / Android 15 arm64-v8a (VPN)"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to Reproduce
+      placeholder: |
+        1. 打开 ...
+        2. 切换 / 点击 ...
+        3. 出现 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 预期行为与实际结果 / Expected vs Actual Behavior
+      placeholder: |
+        预期：...
+        实际：...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志或截图 / Sanitized Logs or Screenshots
+      description: 如问题与连接日志、规则匹配或报错弹窗相关，请脱敏后粘贴关键内容。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私与信息核对 / Privacy Check
+      options:
+        - label: 我已确认内容不包含任何订阅地址、认证密钥、节点凭证或个人敏感信息 / I confirm no subscription URLs, credentials, or sensitive data are included.
+          required: true

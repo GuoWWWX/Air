@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 下载最新版本 / Latest Releases
+    url: https://github.com/GuoWWWX/Air-Proxy/releases/latest
+    about: 下载 Windows 安装包与 Android APK，并核对 SHA256SUMS.txt
+  - name: 文档中心 / Documentation Hub
+    url: https://github.com/GuoWWWX/Air-Proxy/blob/main/docs/README.md
+    about: 查阅使用说明、跨平台架构、开发构建与发布文档
+  - name: 安全政策 / Security Policy
+    url: https://github.com/GuoWWWX/Air-Proxy/blob/main/SECURITY.md
+    about: 私密反馈安全漏洞或了解更新签名校验机制

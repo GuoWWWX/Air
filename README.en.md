@@ -9,11 +9,12 @@ Cross-platform proxy client powered by the Mihomo core, supporting Windows deskt
 [简体中文](./README.md) · **English**
 
 [![Release](https://img.shields.io/github/v/release/GuoWWWX/Air-Proxy?color=2f63e8&label=Release)](https://github.com/GuoWWWX/Air-Proxy/releases/latest)
+[![CI](https://github.com/GuoWWWX/Air-Proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/GuoWWWX/Air-Proxy/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Android-0fa38b)](https://github.com/GuoWWWX/Air-Proxy/releases/latest)
 [![Core](https://img.shields.io/badge/Core-Mihomo-1e293b)](https://github.com/MetaCubeX/mihomo)
 [![License](https://img.shields.io/badge/License-MIT-64748b)](./LICENSE)
 
-[Latest Release](https://github.com/GuoWWWX/Air-Proxy/releases/latest) · [Feature Guide](./docs/页面功能说明.md) · [Docs Hub](./docs/README.md) · [Build & Dev](./docs/开发构建与清理.md)
+[Latest Release](https://github.com/GuoWWWX/Air-Proxy/releases/latest) · [Feature Guide](./docs/页面功能说明.md) · [Docs Hub](./docs/README.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
 
 </div>
 

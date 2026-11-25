@@ -9,11 +9,12 @@
 **简体中文** · [English](./README.en.md)
 
 [![Release](https://img.shields.io/github/v/release/GuoWWWX/Air-Proxy?color=2f63e8&label=Release)](https://github.com/GuoWWWX/Air-Proxy/releases/latest)
+[![CI](https://github.com/GuoWWWX/Air-Proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/GuoWWWX/Air-Proxy/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Android-0fa38b)](https://github.com/GuoWWWX/Air-Proxy/releases/latest)
 [![Core](https://img.shields.io/badge/Core-Mihomo-1e293b)](https://github.com/MetaCubeX/mihomo)
 [![License](https://img.shields.io/badge/License-MIT-64748b)](./LICENSE)
 
-[下载最新版](https://github.com/GuoWWWX/Air-Proxy/releases/latest) · [功能说明](./docs/页面功能说明.md) · [文档中心](./docs/README.md) · [开发指南](./docs/开发构建与清理.md)
+[下载最新版](https://github.com/GuoWWWX/Air-Proxy/releases/latest) · [功能说明](./docs/页面功能说明.md) · [文档中心](./docs/README.md) · [更新日志](./CHANGELOG.md) · [参与贡献](./CONTRIBUTING.md)
 
 </div>
 
@@ -103,6 +104,7 @@
 | [目录与跨平台架构](./docs/目录与跨平台架构.md) | 源码结构、双端共享边界及后续平台（iOS / macOS / HarmonyOS / Linux）接入规划 |
 | [开发、构建与清理](./docs/开发构建与清理.md) | 环境准备、本地调试、测试验收与自定义语言包格式 |
 | [Windows 发布指南](./docs/版本发布/windows.md) · [Android 发布指南](./docs/版本发布/android.md) | NSIS 安装包、Ed25519 增量包签名与 APK 对齐签名流程 |
+| [更新日志](./CHANGELOG.md) · [参与贡献](./CONTRIBUTING.md) · [安全政策](./SECURITY.md) | 版本变更记录、开发提交规范与安全漏洞反馈说明 |
 
 ### 工程目录速览
 
