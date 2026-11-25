@@ -1231,10 +1231,48 @@ export const browserAir = {
   resolveApplications: async () => [],
 }
 
+const svgDataUri = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+
+const demoAppIcons: Record<string, string> = {
+  chrome: svgDataUri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">' +
+      '<circle cx="24" cy="24" r="22" fill="#34A853"/>' +
+      '<path d="M43.6 14A22 22 0 0 1 22.86 45.97L32.66 29A10 10 0 0 0 24 14Z" fill="#FBBC05"/>' +
+      '<path d="M5.54 12.03A22 22 0 0 1 43.6 14H24L15.34 29Z" fill="#EA4335"/>' +
+      '<circle cx="24" cy="24" r="10.2" fill="#FFFFFF"/>' +
+      '<circle cx="24" cy="24" r="8" fill="#4285F4"/>' +
+    '</svg>',
+  ),
+  vscode: svgDataUri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">' +
+      '<path d="M35.5 6.5L42.5 10V38L35.5 41.5Z" fill="#1F9CF0"/>' +
+      '<path d="M7.5 31.5L35.5 6.5" fill="none" stroke="#0065A9" stroke-width="6.5" stroke-linecap="round"/>' +
+      '<path d="M7.5 16.5L35.5 41.5" fill="none" stroke="#007ACC" stroke-width="6.5" stroke-linecap="round"/>' +
+    '</svg>',
+  ),
+  telegram: svgDataUri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">' +
+      '<circle cx="24" cy="24" r="22" fill="#26A5E4"/>' +
+      '<path d="M10.8 23.6L35.4 14.1C36.6 13.6 37.6 14.4 37.2 16.1L33 35.9C32.7 37.3 31.8 37.6 30.6 37L24.1 32.2L20.9 35.2C20.6 35.6 20.3 35.8 19.7 35.8L20.2 29.1L32.4 18.1C32.9 17.6 32.3 17.3 31.6 17.8L16.5 27.3L10 25.3C8.6 24.8 8.6 24 10.8 23.6Z" fill="#FFFFFF"/>' +
+    '</svg>',
+  ),
+  git: svgDataUri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">' +
+      '<rect x="9" y="9" width="30" height="30" rx="5" transform="rotate(45 24 24)" fill="#F05032"/>' +
+      '<path d="M19.5 13.5L30.5 24.5M24 18V32.5" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>' +
+      '<circle cx="24" cy="18" r="3.2" fill="#FFFFFF"/>' +
+      '<circle cx="24" cy="32.5" r="3.2" fill="#FFFFFF"/>' +
+      '<circle cx="30.5" cy="24.5" r="3.2" fill="#FFFFFF"/>' +
+    '</svg>',
+  ),
+}
+
 const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-chrome',
       app: 'chrome.exe',
+      appExecutable: 'chrome.exe',
+      appIconKey: 'chrome',
       processName: 'chrome.exe',
       host: 'chatgpt.com',
       network: 'tcp',
@@ -1249,6 +1287,8 @@ const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-code',
       app: 'Code.exe',
+      appExecutable: 'Code.exe',
+      appIconKey: 'vscode',
       processName: 'Code.exe',
       host: 'copilot-proxy.githubusercontent.com',
       network: 'tcp',
@@ -1263,6 +1303,8 @@ const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-tg',
       app: 'Telegram.exe',
+      appExecutable: 'Telegram.exe',
+      appIconKey: 'telegram',
       processName: 'Telegram.exe',
       destinationIp: '149.154.167.91',
       network: 'tcp',
@@ -1277,6 +1319,8 @@ const demoConnections: ProxyConnection[] = [
     {
       id: 'conn-git',
       app: 'git.exe',
+      appExecutable: 'git.exe',
+      appIconKey: 'git',
       processName: 'git.exe',
       host: 'github.com',
       network: 'tcp',
@@ -1290,7 +1334,11 @@ const demoConnections: ProxyConnection[] = [
     },
 ]
 
+const uploadWaveKb = [24, 185, 58, 340, 92, 36, 460, 128, 44, 310, 74, 225, 28, 510, 112, 295, 168]
+const downloadWaveKb = [380, 2450, 720, 4950, 1180, 310, 6240, 1580, 560, 3840, 940, 2680, 430, 6480, 1420, 4120, 2280]
+
 const telemetryState = {
+  sampleIndex: 0,
   uploadRate: 0,
   downloadRate: 0,
   lastSampledAt: 0,
@@ -1305,19 +1353,19 @@ function stepBrowserTraffic() {
   if (now - telemetryState.lastSampledAt < 850) return
   telemetryState.lastSampledAt = now
 
-  const burst = Math.random()
-  const uploadRate = (burst > 0.72 ? randomInt(240, 520) : randomInt(18, 190)) * 1024
-  const downloadRate =
-    (burst > 0.7 ? randomInt(2_200, 6_400) : burst < 0.2 ? randomInt(16, 180) : randomInt(320, 1_850)) *
-    1024
+  const idx = telemetryState.sampleIndex++ % uploadWaveKb.length
+  const upBase = uploadWaveKb[idx]!
+  const downBase = downloadWaveKb[idx]!
+  const uploadRate = Math.max(12, Math.round(upBase * (0.9 + Math.random() * 0.2))) * 1024
+  const downloadRate = Math.max(120, Math.round(downBase * (0.9 + Math.random() * 0.2))) * 1024
   telemetryState.uploadRate = uploadRate
   telemetryState.downloadRate = downloadRate
   telemetryState.uploadTotal += uploadRate
   telemetryState.downloadTotal += downloadRate
-  telemetryState.connections = telemetryState.connections.map(item => ({
+  telemetryState.connections = telemetryState.connections.map((item, i) => ({
     ...item,
-    downloadBytes: item.downloadBytes + randomInt(8, 120) * 1024,
-    uploadBytes: item.uploadBytes + randomInt(2, 24) * 1024,
+    downloadBytes: item.downloadBytes + randomInt(16, 180) * (i === 0 ? 3 : 1) * 1024,
+    uploadBytes: item.uploadBytes + randomInt(4, 36) * 1024,
   }))
 }
 
@@ -1339,6 +1387,7 @@ function sampleBrowserTelemetry(): ProxyTelemetry | null {
     uploadTotal: telemetryState.uploadTotal,
     downloadTotal: telemetryState.downloadTotal,
     memoryBytes: 38 * 1024 * 1024 + randomInt(120, 960) * 1024,
+    appIcons: demoAppIcons,
     connections: mappedConnections,
     connectionLogs: [...mappedConnections, ...telemetryState.closedLogs],
   }

@@ -26,6 +26,11 @@ export function copySubscriptionText(text: string): Promise<unknown> {
   return onAndroid ? native('copy', { text }) : navigator.clipboard.writeText(text)
 }
 
+let previewStatusTick = 0
+let previewConnTick = 0
+const previewUploadWave = [28, 195, 62, 340, 88, 34, 460, 124, 46, 305, 76, 220, 30, 490, 118, 285, 174]
+const previewDownloadWave = [420, 2650, 740, 5120, 1240, 320, 6480, 1640, 580, 3920, 960, 2780, 450, 6720, 1480, 4240, 2360]
+
 export async function native<T>(
   action: string,
   data?: object,
@@ -40,8 +45,29 @@ export async function native<T>(
       return true as T
     }
     if (action === 'status') {
-      return (JSON.parse(localStorage.getItem('air.android.preview.status') ?? 'null')
-        ?? { phase: 'idle', traffic: {}, startedAt: 0 }) as T
+      const saved = JSON.parse(localStorage.getItem('air.android.preview.status') ?? 'null') as {
+        phase?: string
+        startedAt?: number
+        port?: number
+        traffic?: { up?: number; down?: number }
+        totals?: { up?: number; down?: number }
+      } | null
+      if (saved?.phase === 'running') {
+        const idx = previewStatusTick++ % previewUploadWave.length
+        const up = Math.round(previewUploadWave[idx]! * (0.9 + Math.random() * 0.2)) * 1024
+        const down = Math.round(previewDownloadWave[idx]! * (0.9 + Math.random() * 0.2)) * 1024
+        const next = {
+          ...saved,
+          traffic: { up, down },
+          totals: {
+            up: (saved.totals?.up ?? 0) + up,
+            down: (saved.totals?.down ?? 0) + down,
+          },
+        }
+        localStorage.setItem('air.android.preview.status', JSON.stringify(next))
+        return next as T
+      }
+      return (saved ?? { phase: 'idle', traffic: {}, startedAt: 0 }) as T
     }
     if (action === 'kernelInfo') {
       return (JSON.parse(localStorage.getItem('air.android.preview.kernel') ?? 'null')
@@ -53,7 +79,21 @@ export async function native<T>(
     }
     if (action === 'connections') {
       const savedConnections = localStorage.getItem('air.android.preview.connections')
-      if (savedConnections) return JSON.parse(savedConnections) as T
+      if (savedConnections) {
+        const parsed = JSON.parse(savedConnections) as {
+          revision?: number
+          connections?: Array<{ upload?: number; download?: number }>
+        }
+        const tick = previewConnTick++
+        const nextConnections = (parsed.connections ?? []).map((row, i) => ({
+          ...row,
+          download: (row.download ?? 0) + (i === 0 ? 1_450_000 : i === 1 ? 520_000 : 180_000) + (tick % 3) * 45_000,
+          upload: (row.upload ?? 0) + (i === 0 ? 120_000 : i === 1 ? 68_000 : 32_000) + (tick % 2) * 14_000,
+        }))
+        const next = { revision: (parsed.revision ?? 1) + 1, connections: nextConnections }
+        localStorage.setItem('air.android.preview.connections', JSON.stringify(next))
+        return next as T
+      }
     }
     if (action === 'applications') return {} as T
     if (action === 'theme' || action === 'ready' || action === 'cancelProbe') return true as T

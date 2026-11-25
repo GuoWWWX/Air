@@ -298,7 +298,8 @@ small { font-size: 11px; }
   }
 }
 .page-stage { position: relative; isolation: isolate; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.page-scroll { position: relative; z-index: 0; flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 9px; }
+.page-scroll { position: relative; z-index: 0; flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 9px; }
+.page-scroll::-webkit-scrollbar { display: none; }
 .page-scroll.has-fab { padding-bottom: 92px; }
 .page-scroll > :not(.yaml-editor):not(.air-config-editor) { flex-shrink: 0; }
 .page-scroll > .panel { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
