@@ -33,6 +33,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactElement, type ReactNode } from 'react'
 import { cn, formatProtocol } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
+import { orderedProbeIds } from '@/shared/proxy/probeOrder'
 import { Button } from '@/shared/ui/button'
 import { Card } from '@/shared/ui/card'
 import { FlagText } from '@/shared/ui/FlagText'
@@ -338,6 +339,12 @@ export function NodeLibrary({
   }, [store.loaded, scope, activeSource, activeGroup, activeCustomGroup])
 
   const query = search.trim().toLocaleLowerCase()
+  const batchTesting = Boolean(store.batchPending || store.progress?.running)
+  const [sortSnapshot, setSortSnapshot] = useState<Map<string, NodeRecord>>()
+  const sortNodes = batchTesting ? sortSnapshot : undefined
+  useEffect(() => {
+    if (!batchTesting) setSortSnapshot(undefined)
+  }, [batchTesting])
   const filtered = useMemo(() => {
     const members = activeGroup?.members ?? activeCustomGroup?.members
     if ((scope.kind === 'group' || scope.kind === 'customGroup') && !members) return []
@@ -374,15 +381,15 @@ export function NodeLibrary({
     if (sort === 'name') result.sort((a, b) => a.name.localeCompare(b.name))
     else if (sort !== 'default') {
       result.sort((a, b) => {
-        const left = a[sort]
-        const right = b[sort]
+        const left = (sortNodes?.get(a.id) ?? a)[sort]
+        const right = (sortNodes?.get(b.id) ?? b)[sort]
         if (left === null) return right === null ? 0 : 1
         if (right === null) return -1
         return sort === 'availability' ? right - left : left - right
       })
     }
     return result
-  }, [activeCustomGroup, activeGroup, customSourceIds, query, scope, sort, visibleNodes])
+  }, [activeCustomGroup, activeGroup, customSourceIds, query, scope, sort, sortNodes, visibleNodes])
 
   const validNodeIds = useMemo(() => new Set(visibleNodes.map(node => node.id)), [visibleNodes])
   const selectedIds = useMemo(() => new Set(store.selected.filter(id => validNodeIds.has(id))), [store.selected, validNodeIds])
@@ -391,8 +398,12 @@ export function NodeLibrary({
   const maxPage = Math.max(1, Math.ceil(filtered.length / pageSize))
   const page = Math.min(requestedPage, maxPage)
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
+  function startBatch(selection: string[]) {
+    setSortSnapshot(new Map(visibleNodes.map(node => [node.id, node])))
+    return store.batch(orderedProbeIds(filtered, selection, (page - 1) * pageSize))
+  }
   const checked = selecting ? visible.filter(node => selectedIds.has(node.id)).length : 0
-  const batchTesting = Boolean(store.batchPending || store.progress?.running)
+  const batchProgress = store.batchProgress
   const showStopMeasure = batchTesting && hoveredTool === 'measure'
   const hasInspector = Boolean(children)
   const dualSidebars = treeOpen && hasInspector
@@ -864,6 +875,19 @@ export function NodeLibrary({
             )}
           </AnimatePresence>
 
+          {batchProgress && (
+            <Badge
+              variant="accent"
+              className="mono shrink-0 whitespace-nowrap tabular-nums"
+              role="progressbar"
+              aria-label={tr('测速进度')}
+              aria-valuemin={0}
+              aria-valuemax={batchProgress.total}
+              aria-valuenow={batchProgress.completed}
+            >
+              {batchProgress.completed}/{batchProgress.total}
+            </Badge>
+          )}
           <div
             role="group"
             aria-label={tr("节点常用操作")}
@@ -909,8 +933,8 @@ export function NodeLibrary({
               aria-busy={batchTesting}
               aria-label={
                 batchTesting
-                  ? store.progress?.total
-                    ? tr('停止测速 ({0}/{1})', store.progress.completed, store.progress.total)
+                  ? batchProgress
+                    ? tr('停止测速 ({0}/{1})', batchProgress.completed, batchProgress.total)
                     : tr('停止测速')
                   : activeSelected.length
                     ? tr("批量测速（已选 {0} 个）", activeSelected.length)
@@ -918,8 +942,8 @@ export function NodeLibrary({
               }
               title={
                 batchTesting
-                  ? store.progress?.total
-                    ? tr('停止测速 ({0}/{1})', store.progress.completed, store.progress.total)
+                  ? batchProgress
+                    ? tr('停止测速 ({0}/{1})', batchProgress.completed, batchProgress.total)
                     : tr('停止测速')
                   : activeSelected.length
                     ? tr("批量测速（已选 {0} 个）", activeSelected.length)
@@ -936,11 +960,7 @@ export function NodeLibrary({
                   return
                 }
                 setHoveredTool(null)
-                run(() =>
-                  store.batch(
-                    activeSelected.length ? activeSelected : filtered.map(node => node.id),
-                  ),
-                )
+                run(() => startBatch(activeSelected))
               }}
               className={cn(
                 toolButtonClass,
@@ -1726,11 +1746,7 @@ export function NodeLibrary({
                       void store.cancelBatch().catch(onError)
                       return
                     }
-                    run(() =>
-                      store.batch(
-                        activeSelected.length ? activeSelected : filtered.map(node => node.id),
-                      ),
-                    )
+                    run(() => startBatch(activeSelected))
                   }}
                 >
                   {batchTesting ? <Pause /> : <Zap />}
@@ -1802,7 +1818,7 @@ export function NodeLibrary({
                 <ContextMenuItem onClick={() => run(async () => {
                   await store.refresh()
                   if (store.kernelPath && filtered.length && !batchTesting) {
-                    await store.batch(filtered.map(node => node.id))
+                    await startBatch([])
                   }
                 })}>
                   <RefreshCw />{tr("刷新列表和测速结果")}</ContextMenuItem>

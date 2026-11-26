@@ -38,7 +38,7 @@ export interface DnsResult {
 
 export const defaultNetwork: NetworkSettings = {
   nameserver: ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query'], defaultNameserver: [], directNameserver: [],
-  proxyServerNameserver: ['https://223.5.5.5/dns-query', 'https://1.1.1.1/dns-query'],
+  proxyServerNameserver: ['https://223.5.5.5/dns-query', 'https://120.53.53.53/dns-query', '223.5.5.5', '119.29.29.29'],
   fallback: [], fallbackDomains: [], domainDns: [], enhancedMode: 'fake-ip', fakeIpFilter: [],
   respectRules: true, ipv6: false, dnsIpv6: false, useSystemHosts: true,
   hosts: [], directFollowPolicy: false, dnsCacheAlgorithm: 'auto',

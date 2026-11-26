@@ -1,4 +1,4 @@
-import { preferences } from '@/shared/lib/preferences'
+import { highSpeedProbe, preferences } from '@/shared/lib/preferences'
 import { tr } from '@/shared/i18n/messages'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -22,7 +22,7 @@ export function useNodes() {
     } catch { return [] }
   })
   const [testing, setTesting] = useState<string[]>([])
-  const [batchPending, setBatchPending] = useState(false)
+  const [pendingBatch, setPendingBatch] = useState<{ total: number; previousId: number }>()
   const [kernelOverride, setPath] = useState(() => preferences.getItem('air.kernelPath') ?? '')
   const [defaultKernelPath, setDefaultKernelPath] = useState('')
   const kernelPath = kernelOverride || defaultKernelPath
@@ -36,6 +36,7 @@ export function useNodes() {
   const inFlight = useRef(new Set<string>())
   const batching = useRef(false)
   const batchVersion = useRef(0)
+  const cancelRequest = useRef(Promise.resolve())
 
   useEffect(() => {
     preferences.setItem('air.checkedNodeIds', JSON.stringify(selected))
@@ -94,10 +95,11 @@ export function useNodes() {
   }), [queueLibraryUpdate])
 
   const poll = useCallback(() => {
+    const version = batchVersion.current
     const task = pollQueue.current.then(async () => {
       const next = await air.status()
       const prior = progressRef.current
-      setProgress(next)
+      if (version === batchVersion.current) setProgress(next)
       const previousBatch = prior?.batchId ?? 0
       if (next.batchId > previousBatch + 1 || (prior?.running && next.batchId !== previousBatch)) {
         // A hidden window can miss completed batches between polls.
@@ -128,27 +130,38 @@ export function useNodes() {
   }
 
   async function batch(ids: string[]) {
-    if (batching.current) return
+    if (!ids.length || batching.current) return
+    const highSpeed = highSpeedProbe.get()
     const version = ++batchVersion.current
     batching.current = true
-    setBatchPending(true)
-    try { await air.batch(kernelPath, ids) }
+    const previousId = progressRef.current?.batchId ?? 0
+    setPendingBatch({ total: ids.length, previousId })
+    try {
+      await cancelRequest.current
+      if (version !== batchVersion.current) return
+      const afterCancel = progressRef.current?.batchId ?? 0
+      if (afterCancel !== previousId) setPendingBatch({ total: ids.length, previousId: afterCancel })
+      await air.batch(kernelPath, ids, highSpeed)
+    }
     finally {
-      if (batchVersion.current === version) {
-        batching.current = false
-        setBatchPending(false)
+      try { if (version === batchVersion.current) await poll() }
+      finally {
+        if (batchVersion.current === version) {
+          batching.current = false
+          setPendingBatch(undefined)
+        }
       }
-      await poll()
     }
   }
 
   async function cancelBatch() {
     batchVersion.current += 1
     batching.current = false
-    setBatchPending(false)
+    setPendingBatch(undefined)
     setProgress(current => (current ? { ...current, running: false, activeIds: [] } : current))
-    await air.cancelBatch()
-    await poll()
+    const request = air.cancelBatch().then(() => poll())
+    cancelRequest.current = request.catch(() => {})
+    await request
   }
 
   function toggleBackground(enabled: boolean) {
@@ -191,7 +204,11 @@ export function useNodes() {
     selected,
     setSelected,
     isMeasuring,
-    batchPending,
+    batchPending: Boolean(pendingBatch),
+    batchProgress: pendingBatch
+      ? progress && progress.batchId > pendingBatch.previousId && progress.total > 0
+        ? progress : { completed: 0, total: pendingBatch.total }
+      : progress?.running && progress.total > 0 ? progress : undefined,
     kernelPath,
     kernelOverride,
     defaultKernelPath,

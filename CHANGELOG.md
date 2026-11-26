@@ -1,6 +1,12 @@
 # 更新日志 / Changelog
 
-本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.4.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.5.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+
+## [1.1.5] - 2026-11-26
+
+- 手动测速按页面顺序进行，Windows 默认同时测 32 个节点，Android 默认 24 个。在设置中开启「高速测速」后，按可用逻辑处理器数增加并发，Windows 最多 64 个，Android 最多 48 个。
+- Windows 节点库在工具栏左侧显示测速进度，测速期间保持列表顺序。
+- 更新双端出厂节点 DNS，修复 Windows 测速内核切网复用及临时配置留存问题。
 
 ## [1.1.4] - 2026-11-26
 

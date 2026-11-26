@@ -63,12 +63,13 @@ class AirDiagnosticProvider : ContentProvider() {
         val input = ParcelFileDescriptor.AutoCloseInputStream(file).bufferedReader().use { JSONObject(it.readText()) }
         val progress: Messenger? = extras.getParcelable("progress")
         val result = runCatching {
-            Core.worker.submit<JSONObject> {
+            val task = Core.worker.submit<JSONObject> {
                 when (method) {
                     "probe" -> {
                         var completed = 0
                         Core.probe(owner, input.getJSONObject("plan"), input.getJSONArray("aliases"),
-                            input.getString("url"), input.optInt("expected", 204), generation) { alias, delay ->
+                            input.getString("url"), input.optInt("expected", 204), generation,
+                            highSpeed = input.optBoolean("highSpeed", false)) { alias, delay ->
                             completed++
                             if (progress != null) {
                                 runCatching {
@@ -89,7 +90,9 @@ class AirDiagnosticProvider : ContentProvider() {
                     }
                     else -> error("Air Proxy 不支持该诊断操作")
                 }
-            }.get(45, TimeUnit.SECONDS)
+            }
+            val nodes = if (method == "probe") input.getJSONArray("aliases").length().coerceIn(1, 72) else 0
+            task.get(45_000L + nodes * DEFAULT_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         }
         return Bundle().apply {
             result.fold(

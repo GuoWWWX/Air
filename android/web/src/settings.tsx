@@ -15,6 +15,7 @@ import { AirSelect } from '@/shared/ui/AirSelect'
 import { Button } from '@/shared/ui/button'
 import { EditorSearchBar, useEditorSearch } from '@/shared/ui/EditorSearchBar'
 import { Input } from '@/shared/ui/input'
+import { HighSpeedProbeSetting } from '@/shared/ui/HighSpeedProbeSetting'
 import { showMessage } from '@/shared/ui/message'
 import logo from '@/assets/air-m1.svg'
 import { native, onAndroid } from './bridge'
@@ -79,6 +80,7 @@ export function SettingsIndex({ library, open, update }: {
     <section><h2>{tr("监测")}</h2><div className="panel settings-panel">
       <Row icon={Activity} title={settingsTitles.monitoring} description={tr("自动刷新节点可用率和延迟")}
         value={library.monitoring ? tr('已开启') : tr('已关闭')} onClick={() => open('monitoring')} />
+      <HighSpeedProbeSetting mobile />
     </div></section>
     <section aria-label={settingsTitles.about}><div className="panel settings-panel">
       <Row

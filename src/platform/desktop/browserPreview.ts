@@ -1040,14 +1040,15 @@ export const browserAir = {
     return { ...proxyState }
   },
 
-  batch: async (_kernelPath: string, ids: string[]): Promise<void> => {
+  batch: async (_kernelPath: string, ids: string[], highSpeed = false): Promise<void> => {
     if (progress.running) return
-    const targetIds = ids.length ? ids : state.nodes.map(item => item.record.id)
+    const entries = new Map(state.nodes.map(item => [item.record.id, item]))
+    const targetIds = ids.length ? [...new Set(ids)].filter(id => entries.has(id)) : [...entries.keys()]
     const runBatchId = progress.batchId + 1
     progress = {
       running: true,
       batchId: runBatchId,
-      activeIds: targetIds.slice(0, 3),
+      activeIds: [],
       completedIds: [],
       total: targetIds.length,
       completed: 0,
@@ -1056,24 +1057,25 @@ export const browserAir = {
       failed: 0,
       error: null,
     }
-    for (let i = 0; i < targetIds.length; i += 2) {
-      if (!progress.running || progress.batchId !== runBatchId) return
-      const chunk = targetIds.slice(i, i + 2)
-      progress = { ...progress, activeIds: chunk }
-      await sleep(280)
-      if (!progress.running || progress.batchId !== runBatchId) return
-      for (const id of chunk) {
-        const entry = state.nodes.find(item => item.record.id === id)
-        if (entry) sampleNodeLatency(entry)
-      }
-      progress = {
-        ...progress,
-        activeIds: targetIds.slice(i + 2, i + 4),
-        completedIds: [...progress.completedIds, ...chunk],
-        completed: Math.min(targetIds.length, i + chunk.length),
-        available: Math.min(targetIds.length, i + chunk.length),
+    let next = 0
+    const active = new Set<string>()
+    async function worker() {
+      while (next < targetIds.length && progress.running && progress.batchId === runBatchId) {
+        const id = targetIds[next++]
+        active.add(id)
+        progress.activeIds = [...active]
+        await sleep(randomInt(350, 800))
+        if (!progress.running || progress.batchId !== runBatchId) return
+        sampleNodeLatency(entries.get(id)!)
+        active.delete(id)
+        progress.activeIds = [...active]
+        progress.completedIds.push(id)
+        progress.completed++
+        progress.available++
       }
     }
+    const limit = highSpeed ? Math.min(64, Math.max(32, (navigator.hardwareConcurrency || 1) * 4)) : 32
+    await Promise.all(Array.from({ length: Math.min(limit, targetIds.length) }, worker))
     if (!progress.running || progress.batchId !== runBatchId) return
     progress = {
       ...progress,

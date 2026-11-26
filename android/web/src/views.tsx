@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { Activity, ArrowDown, ArrowUp, Bookmark, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, CloudDownload, Copy, Folder, FolderOpen, Globe2, Grid2X2, Layers, List, ListFilter, Loader2, Network, Pencil, Play, Plus, RefreshCw, Search, Server, Trash2, Waypoints, X, Zap } from 'lucide-react'
 import { Segmented } from '@/shared/ui/segmented'
 import { proxyModes } from '@/shared/proxy/modes'
+import { orderedProbeIds } from '@/shared/proxy/probeOrder'
 import { NodeLatencyButton } from '@/shared/ui/NodeLatencyButton'
 import { ConnectionApp } from '@/shared/ui/ConnectionApp'
 import { DashboardPowerButton } from '@/shared/ui/DashboardPowerButton'
@@ -1298,7 +1299,7 @@ export function Nodes({
               if (isProbing) {
                 onCancelProbe?.()
               } else {
-                probe(validChecked.length ? validChecked : current.map(n => n.id))
+                probe(orderedProbeIds(current, validChecked))
               }
             }}
           >
@@ -1552,7 +1553,7 @@ export function Nodes({
           size="sm"
           variant="outline"
           disabled={busy || (!isProbing && !validChecked.length)}
-          onClick={() => (isProbing ? onCancelProbe?.() : probe(validChecked))}
+          onClick={() => (isProbing ? onCancelProbe?.() : probe(orderedProbeIds(current, validChecked)))}
         >
           {isProbing ? (
             <RefreshCw data-icon="inline-start" className="motion-safe:animate-spin" />

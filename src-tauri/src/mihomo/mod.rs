@@ -42,6 +42,14 @@ struct MixedPortReservation {
     _udp: UdpSocket,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbeRoute {
+    pub interface: String,
+    pub luid: u64,
+    pub gateway: IpAddr,
+    pub network_id: Uuid,
+}
+
 impl Kernel {
     pub async fn start(
         binary: &Path,
@@ -62,11 +70,32 @@ impl Kernel {
         Self::launch_diagnostic(binary, app_dir, nodes, hosts, exit, network, None).await
     }
 
-    pub fn probe_interface() -> Option<String> {
+    pub fn probe_route() -> Option<ProbeRoute> {
         #[cfg(windows)]
-        { crate::proxy::windows::probe_interface() }
+        { crate::proxy::windows::probe_route() }
         #[cfg(not(windows))]
         { None }
+    }
+
+    pub fn probe_interface() -> Option<String> {
+        Self::probe_route().map(|route| route.interface)
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    pub async fn is_healthy(&self) -> bool {
+        let Ok(url) = self.api.join("version") else {
+            return false;
+        };
+        self.client
+            .get(url)
+            .bearer_auth(&self.secret)
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
     }
 
     pub async fn start_probes(binary: &Path, app_dir: &Path, nodes: Vec<Value>, hosts: &Mapping, network: &NetworkSettings, interface: Option<&str>) -> AirResult<Self> {
@@ -97,6 +126,10 @@ impl Kernel {
         network.apply_dns(&mut config)?;
         // An isolated probe has no copy of the user's traffic rules or outbound groups.
         config["dns"]["respect-rules"] = false.into();
+        config["dns"]["enhanced-mode"] = "redir-host".into();
+        if let Some(dns) = config["dns"].as_mapping_mut() {
+            dns.remove("fake-ip-filter");
+        }
         config["allow-lan"] = false.into();
         config["bind-address"] = "127.0.0.1".into();
         if let Some(reservation) = &mixed {
@@ -105,6 +138,8 @@ impl Kernel {
         }
         let mixed_info = mixed.as_ref().map(|reservation| (reservation.port, password));
         let mut kernel = Self::launch(binary, app_dir, config, mixed, mixed_info, "probe-").await?;
+        // Diagnostic cores use their in-memory configuration after the controller is ready.
+        let _ = std::fs::remove_file(kernel._workspace.path().join("config.yaml"));
         kernel.probe_url.clone_from(&network.probe_url);
         kernel.probe_status = network.probe_status;
         Ok(kernel)
@@ -519,23 +554,8 @@ impl Kernel {
         }
         let cloudflare = "https://cp.cloudflare.com/generate_204";
         let alternate = if target == cloudflare { default.probe_url.as_str() } else { cloudflare };
-        use futures_util::{stream::FuturesUnordered, StreamExt};
-        let mut attempts = FuturesUnordered::new();
-        for (url, wait) in [(target, Duration::ZERO), (alternate, Duration::from_secs(2))] {
-            attempts.push(async move {
-                tokio::time::sleep(wait).await;
-                self.delay_at(name, url, "204", PROBE_TIMEOUT - wait).await
-            });
-        }
-        let mut failure = Probe::Unreachable;
-        while let Some(result) = attempts.next().await {
-            match result {
-                Probe::Available(_) => return result,
-                Probe::Timeout => failure = Probe::Timeout,
-                Probe::Unreachable => {}
-            }
-        }
-        failure
+        probe_with_fallback(self.delay_at(name, target, status, PROBE_TIMEOUT),
+            |remaining| self.delay_at(name, alternate, "204", remaining)).await
     }
 
     async fn delay_at(&self, name: &str, target: &str, expected: &str, timeout: Duration) -> Probe {
@@ -550,7 +570,7 @@ impl Kernel {
             .client
             .get(url)
             .bearer_auth(&self.secret)
-            .timeout(TIMEOUT)
+            .timeout(timeout + Duration::from_secs(1))
             .send()
             .await;
         match response {
@@ -775,6 +795,46 @@ fn json_port(port: &Option<serde_json::Value>) -> Option<u16> {
 impl Drop for Kernel {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+    }
+}
+
+async fn probe_with_fallback<F: std::future::Future<Output = Probe>>(
+    primary: impl std::future::Future<Output = Probe>,
+    fallback: impl FnOnce(Duration) -> F,
+) -> Probe {
+    // Mihomo keeps a URL test running even if its controller client disconnects.
+    let started = tokio::time::Instant::now();
+    let primary = primary.await;
+    if matches!(primary, Probe::Available(_)) { return primary; }
+    let remaining = (TIMEOUT - Duration::from_secs(1)).saturating_sub(started.elapsed()).min(PROBE_TIMEOUT);
+    if remaining.as_millis() == 0 { return Probe::Timeout; }
+    match fallback(remaining).await {
+        Probe::Unreachable if primary == Probe::Timeout => Probe::Timeout,
+        result => result,
+    }
+}
+
+#[cfg(test)]
+mod probe_timing_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn fallback_starts_on_failure_and_uses_only_remaining_time() {
+        let ok = Probe::Available(40);
+        let one = probe_with_fallback(async { ok.clone() }, |_| async { panic!("unnecessary fallback") }).await;
+        assert_eq!(one, ok);
+        for primary_time in [Duration::from_millis(20), PROBE_TIMEOUT] {
+            let start = tokio::time::Instant::now();
+            let result = probe_with_fallback(async {
+                tokio::time::sleep(primary_time).await;
+                Probe::Timeout
+            }, |budget| async move {
+                assert_eq!(start.elapsed(), primary_time);
+                assert_eq!(budget, PROBE_TIMEOUT.min(TIMEOUT - Duration::from_secs(1) - primary_time));
+                Probe::Unreachable
+            }).await;
+            assert_eq!(result, Probe::Timeout);
+        }
     }
 }
 

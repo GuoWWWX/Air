@@ -315,7 +315,7 @@ const tauriAir = {
   clearConnectionLogs: () => invoke<void>('clear_connection_logs'),
   closeMatchingConnections: (processName?: string, host?: string) =>
     invoke<void>('close_matching_connections', { processName: processName ?? null, host: host ?? null }),
-  batch: (kernelPath: string, ids: string[]) => invoke<void>('batch_probe', { kernelPath, ids }),
+  batch: (kernelPath: string, ids: string[], highSpeed = false) => invoke<void>('batch_probe', { kernelPath, ids, highSpeed }),
   cancelBatch: () => invoke<void>('cancel_batch_probe'),
   probe: (kernelPath: string, id: string) => invoke<unknown>('probe_node', { kernelPath, id }),
   nodeMetrics: (ids: string[]) => invoke<NodeMetrics[]>('node_metrics', { ids }),

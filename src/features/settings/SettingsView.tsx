@@ -31,6 +31,7 @@ import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { showMessage } from '@/shared/ui/message'
 import { Separator } from '@/shared/ui/separator'
+import { HighSpeedProbeSetting } from '@/shared/ui/HighSpeedProbeSetting'
 import { Switch } from '@/shared/ui/switch'
 import { PageHeaderIcon } from '@/shared/ui/PageHeaderIcon'
 import type { Nodes } from '../nodes/useNodes'
@@ -290,6 +291,8 @@ export function SettingsView({
                   }
                   onClick={() => onOpenSettings('monitoring')}
                 />
+                <Separator />
+                <HighSpeedProbeSetting />
               </Card>
             </section>
             <Card className="overflow-hidden p-0">

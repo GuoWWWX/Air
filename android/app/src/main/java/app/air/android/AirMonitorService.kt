@@ -10,6 +10,7 @@ import android.util.AtomicFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.Executors
 
 internal object AirLibrary {
     private fun library(context: Context) = ConfigFiles(configDirectory(context), File(context.noBackupFilesDir, "library.json"))
@@ -60,10 +61,11 @@ internal object AirLibrary {
 
 class AirMonitorService : JobService() {
     @Volatile private var active: JobParameters? = null
+    private val jobs = Executors.newSingleThreadExecutor()
 
     override fun onStartJob(params: JobParameters): Boolean {
         active = params
-        Core.worker.execute {
+        jobs.execute {
             val request = runCatching { AirLibrary.read(this).optJSONObject("monitorPlan") }.getOrNull()
             try {
                 if (request != null) runProbe(params, request)
@@ -88,6 +90,12 @@ class AirMonitorService : JobService() {
     override fun onStopJob(params: JobParameters): Boolean {
         if (active === params) active = null
         return true
+    }
+
+    override fun onDestroy() {
+        active = null
+        jobs.shutdownNow()
+        super.onDestroy()
     }
 
     private fun runProbe(params: JobParameters, request: JSONObject) {
@@ -115,10 +123,13 @@ class AirMonitorService : JobService() {
             if (retained.length() > 0) samples.put(id, retained)
         }
         var available = 0
-        for (chunk in batch.chunked(12)) {
+        // Let foreground diagnostics use the core between chunks, including when every entry is shared.
+        for (chunk in batch.chunked(6)) {
             if (active !== params) return
             val aliases = JSONArray(chunk.map { targets.getString(it) })
-            val measured = Core.probe(this, plan, aliases, url, status)
+            val measured = Core.worker.submit<JSONObject> {
+                if (active === params) Core.probe(this, plan, aliases, url, status, background = true) else JSONObject()
+            }.get()
             for (id in chunk) {
                 val delay = measured.optInt(targets.getString(id), -1)
                 if (delay > 0) available++

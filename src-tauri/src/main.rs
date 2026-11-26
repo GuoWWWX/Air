@@ -759,9 +759,7 @@ fn main() {
             }
             tauri::RunEvent::Exit => {
                 let state = app.state::<Arc<commands::App>>();
-                if let Err(error) =
-                    tauri::async_runtime::block_on(async { state.proxy.lock().await.stop().await })
-                {
+                if let Err(error) = tauri::async_runtime::block_on(state.shutdown()) {
                     eprintln!("{error}");
                 }
             }

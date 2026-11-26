@@ -3,9 +3,9 @@ use air::{
         chain_hops, custom_node_mapping, node_configs, probe_revisions, CustomNodeInput, EXIT_NAME,
     },
     custom_groups::{self, CustomGroup, CustomGroupInput, MemberAction},
-    mihomo::Kernel,
+    mihomo::{Kernel, ProbeRoute},
     network::NetworkSettings,
-    monitoring::{Probe, Scheduler, BACKGROUND_CONCURRENCY, BACKGROUND_INTERVAL, FOREGROUND_CONCURRENCY, TIMEOUT},
+    monitoring::{foreground_concurrency, server_key, Probe, Scheduler, BACKGROUND_CONCURRENCY, BACKGROUND_INTERVAL, TIMEOUT},
     proxy::{
         self, Action as ProxyAction, Mode, ProxyConfig, Runtime as ProxyRuntime, StartTarget,
         Status as ProxyStatus,
@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{watch, Mutex, OnceCell, RwLock};
 pub mod startup;
 
 const CUSTOM_SOURCE_ID: &str = "custom";
@@ -78,6 +78,130 @@ mod subscription_deletion_tests {
         let updated = app.probe_batches(std::slice::from_ref(&old.0.id)).await.unwrap();
         assert_eq!(updated.len(), 1);
         assert_ne!(old.1, updated[0].selected[0].1);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires AIR_TEST_MIHOMO pointing to a local kernel"]
+    async fn foreground_probes_fill_device_slots_in_display_order() {
+        check_foreground_order(1, false).await;
+        check_foreground_order(1, true).await;
+        check_foreground_order(5, true).await;
+    }
+
+    #[cfg(windows)]
+    async fn check_foreground_order(entrances: usize, high_speed: bool) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::sync::{mpsc, Semaphore};
+
+        let binary = PathBuf::from(std::env::var_os("AIR_TEST_MIHOMO").unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let app = App::open(directory.path().to_owned()).unwrap();
+        let file = RoutingFile::new(app.config_dir());
+        let mut network = file.network().unwrap();
+        network.settings.probe_url = "http://192.0.2.49/health".into();
+        file.save_network(&network.settings, &network.revision).unwrap();
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let gate = Arc::new(Semaphore::new(0));
+        let (opened, mut connections) = mpsc::unbounded_channel();
+        let unblock = gate.clone();
+        let entrance = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let gate = gate.clone();
+                let opened = opened.clone();
+                tokio::spawn(async move {
+                    let mut stream = BufReader::new(stream);
+                    let mut line = String::new();
+                    if stream.read_line(&mut line).await.unwrap_or(0) == 0 { return; }
+                    let _ = opened.send(());
+                    gate.acquire().await.unwrap().forget();
+                    loop {
+                        let connect = line.starts_with("CONNECT ");
+                        loop {
+                            line.clear();
+                            if stream.read_line(&mut line).await.unwrap_or(0) == 0 { return; }
+                            if line == "\r\n" { break; }
+                        }
+                        let response: &[u8] = if connect { b"HTTP/1.1 200 Connection Established\r\n\r\n" }
+                            else { b"HTTP/1.1 204 No Content\r\n\r\n" };
+                        tokio::time::sleep(Duration::from_millis(8)).await;
+                        if stream.get_mut().write_all(response).await.is_err() { return; }
+                        line.clear();
+                        if stream.read_line(&mut line).await.unwrap_or(0) == 0 { return; }
+                    }
+                });
+            }
+        });
+        for (source, first) in [("odd", 1), ("even", 0)] {
+            let mut yaml = String::from("hosts:\n");
+            for entrance in 0..entrances {
+                yaml.push_str(&format!("  entry-{entrance}.air.test: 127.0.0.1\n"));
+            }
+            yaml.push_str("proxies:\n");
+            for index in (first..106).step_by(2) {
+                let entrance = index % entrances;
+                yaml.push_str(&format!("  - {{name: n{index:03}, type: http, server: entry-{entrance}.air.test, port: {port}}}\n"));
+            }
+            app.store.save_source(source, source, &Download { profile_title: None, yaml, interval_hours: None, usage: None }, "file", None).unwrap();
+        }
+        app.reload().await.unwrap();
+        let library = app.library.read().await;
+        let mut nodes: Vec<_> = library.nodes().collect();
+        nodes.sort_by(|a, b| b.name.cmp(&a.name));
+        let ids: Vec<_> = nodes.into_iter().map(|node| node.id.clone()).collect();
+        drop(library);
+        let mut requested = ids.clone();
+        requested.extend([ids[0].clone(), "removed-node".into()]);
+        let jobs = foreground_jobs(app.probe_batches(&requested).await.unwrap(), &requested);
+        assert_eq!(jobs.iter().map(|(node, _, _)| &node.id).collect::<Vec<_>>(), ids.iter().collect::<Vec<_>>());
+        drop(jobs);
+        let processors = std::thread::available_parallelism().map_or(1, usize::from);
+        let limit = if high_speed { foreground_concurrency(processors) } else { air::monitoring::BASE_FOREGROUND_CONCURRENCY };
+        let first_window = ids[..limit].iter().cloned().collect();
+        let check = async {
+            tokio::time::timeout(Duration::from_secs(7), async {
+                for _ in 0..limit { connections.recv().await.unwrap(); }
+            }).await.expect("all slots must connect before any response is released");
+            assert_eq!(app.progress.lock().unwrap().active_ids, first_window);
+            unblock.add_permits(1024);
+        };
+        let (run, ()) = tokio::join!(app.run_batch(binary, requested, high_speed), check);
+        run.unwrap();
+        let progress = app.progress.lock().unwrap();
+        assert_eq!((progress.total, progress.completed, progress.available), (106, 106, 106));
+        assert!(!progress.running && progress.active_ids.is_empty());
+        println!("logical processors={processors}, concurrent connections={limit}, entrances={entrances}, completed={}", progress.completed);
+        entrance.abort();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires AIR_TEST_MIHOMO pointing to a local kernel"]
+    async fn probe_cache_reuses_live_kernel_and_replaces_changed_idle_or_stopped_kernel() {
+        let binary = PathBuf::from(std::env::var_os("AIR_TEST_MIHOMO").unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let app = App::open(directory.path().to_owned()).unwrap();
+        let batch = ProbeBatch { revision: "local".into(), nodes: vec![], hosts: Mapping::new(), selected: vec![] };
+        let initial = app.probe_kernel(&binary, &batch, true).await.unwrap();
+        assert!(Arc::ptr_eq(&initial, &app.probe_kernel(&binary, &batch, true).await.unwrap()));
+
+        app.kernel.lock().await.as_mut().unwrap().route = Some(ProbeRoute {
+            interface: "old network".into(), luid: 0, gateway: "192.0.2.1".parse().unwrap(),
+            network_id: uuid::Uuid::nil(),
+        });
+        let moved = app.probe_kernel(&binary, &batch, true).await.unwrap();
+        assert!(!Arc::ptr_eq(&initial, &moved));
+        app.kernel.lock().await.as_mut().unwrap().last_used = Instant::now() - BACKGROUND_INTERVAL;
+        let resumed = app.probe_kernel(&binary, &batch, true).await.unwrap();
+        assert!(!Arc::ptr_eq(&moved, &resumed));
+        drop(resumed);
+        {
+            let mut cached = app.kernel.lock().await;
+            Arc::get_mut(&mut cached.as_mut().unwrap().kernel).unwrap().stop().await.unwrap();
+        }
+        assert!(app.probe_kernel(&binary, &batch, true).await.unwrap().is_healthy().await);
     }
 
     #[tokio::test]
@@ -245,9 +369,33 @@ struct ProbeBatch {
     selected: Vec<(Node, String)>,
 }
 
+struct ForegroundScope {
+    batch: ProbeBatch,
+    kernel: OnceCell<AirResult<Arc<Kernel>>>,
+}
+
+fn foreground_jobs(batches: Vec<ProbeBatch>, requested: &[String]) -> Vec<(Node, String, Arc<ForegroundScope>)> {
+    let mut jobs = Vec::new();
+    for mut batch in batches {
+        let selected = std::mem::take(&mut batch.selected);
+        let scope = Arc::new(ForegroundScope { batch, kernel: OnceCell::new() });
+        jobs.extend(selected.into_iter().map(|(node, revision)| (node, revision, scope.clone())));
+    }
+    // A source owns its DNS overrides and kernel, but does not determine queue order.
+    if !requested.is_empty() {
+        let mut position = HashMap::new();
+        for (index, id) in requested.iter().enumerate() {
+            position.entry(id).or_insert(index);
+        }
+        jobs.sort_unstable_by_key(|(node, _, _)| position[&node.id]);
+    }
+    jobs
+}
+
 struct CachedKernel {
     network: NetworkSettings,
-    interface: Option<String>,
+    route: Option<ProbeRoute>,
+    last_used: Instant,
     revision: String,
     path: PathBuf,
     kernel: Arc<Kernel>,
@@ -278,7 +426,7 @@ impl App {
             store,
             library: RwLock::new(library),
             edits: Mutex::new(()),
-            scheduler: Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT),
+            scheduler: Scheduler::new(foreground_concurrency(std::thread::available_parallelism().map_or(1, usize::from)), TIMEOUT),
             kernel: Mutex::new(None),
             batch: Mutex::new(()),
             batch_cancel,
@@ -445,35 +593,42 @@ impl App {
     }
 
     async fn probe_kernel(&self, path: &std::path::Path, batch: &ProbeBatch, reuse: bool) -> AirResult<Arc<Kernel>> {
-        let cached = if reuse { Some(self.kernel.lock().await) } else { None };
+        let mut cached = if reuse { Some(self.kernel.lock().await) } else { None };
         let network = RoutingFile::new(&self.directory).network()?.settings;
-        let interface = Kernel::probe_interface();
-        if let Some(active) = cached.as_deref().and_then(Option::as_ref)
-            .filter(|active| active.revision == batch.revision && active.path == path && active.network == network && active.interface == interface)
+        let route = Kernel::probe_route();
+        if let Some(active) = cached.as_deref_mut().and_then(Option::as_mut)
+            .filter(|active| active.revision == batch.revision && active.path == path
+                && active.network == network && active.route == route
+                && active.last_used.elapsed() < BACKGROUND_INTERVAL)
         {
-            return Ok(active.kernel.clone());
+            if active.kernel.is_healthy().await {
+                active.last_used = Instant::now();
+                return Ok(active.kernel.clone());
+            }
         }
         let config = node_configs(&batch.nodes)?;
-        let kernel = Arc::new(Kernel::start_probes(path, &self.runtime, config, &batch.hosts, &network, interface.as_deref()).await?);
+        let interface = route.as_ref().map(|route| route.interface.as_str());
+        let kernel = Arc::new(Kernel::start_probes(path, &self.runtime, config, &batch.hosts, &network, interface).await?);
         if let Some(mut cached) = cached {
             *cached = Some(CachedKernel {
-                network, interface, revision: batch.revision.clone(), path: path.to_owned(), kernel: kernel.clone(),
+                network, route, last_used: Instant::now(), revision: batch.revision.clone(), path: path.to_owned(), kernel: kernel.clone(),
             });
         }
         Ok(kernel)
     }
 
-    async fn measure(&self, revision: String, kernel: Arc<Kernel>, node: Node) -> AirResult<Probe> {
+    async fn measure(&self, revision: String, kernel: Arc<Kernel>, node: Node, high_speed: bool) -> AirResult<Probe> {
         let name = node.kernel_name();
         let target = node.probe_target.clone();
         let store = self.store.clone();
-        let key = format!("{revision}:{}", node.id);
+        let key = format!("{revision}:{}:{:?}", node.id, kernel.process_id());
         let saved = Arc::new(StdMutex::new(Ok(())));
         let record = saved.clone();
         let result = self
             .scheduler
             .probe(
                 key,
+                high_speed,
                 async move { kernel.delay_for(&name, target.as_ref()).await },
                 move |probe| {
                     *record.lock().expect("sample result lock") =
@@ -493,9 +648,25 @@ impl App {
         progress.active_ids.clear();
     }
 
-    async fn run_batch(&self, path: PathBuf, requested: Vec<String>) -> AirResult<()> {
+    pub async fn shutdown(&self) -> AirResult<()> {
+        self.cancel_batch();
+        self.background.send_modify(|setting| setting.kernel_path = None);
+        if let Some(cached) = self.kernel.lock().await.take() {
+            if let Ok(mut kernel) = Arc::try_unwrap(cached.kernel) {
+                let _ = kernel.stop().await;
+            }
+        }
+        self.proxy.lock().await.stop().await
+    }
+
+    async fn run_batch(&self, path: PathBuf, requested: Vec<String>, high_speed: bool) -> AirResult<()> {
         let mut cancel = self.batch_cancel.subscribe();
         cancel.borrow_and_update();
+        let _batch = tokio::select! {
+            biased;
+            _ = cancel.changed() => return Ok(()),
+            lock = self.batch.lock() => lock,
+        };
         {
             let mut progress = self.progress.lock().expect("progress lock");
             *progress = Progress {
@@ -509,48 +680,39 @@ impl App {
             _ = cancel.changed() => Ok(()),
             outcome = async {
                 let batches = self.probe_batches(&requested).await?;
-                self.progress.lock().expect("progress lock").total = batches.iter().map(|batch| batch.selected.len()).sum();
+                let jobs = foreground_jobs(batches, &requested);
+                self.progress.lock().expect("progress lock").total = jobs.len();
                 self.store.prune_samples()?;
                 let mut write_error = None;
-                for batch in batches {
-                    let kernel = self.probe_kernel(&path, &batch, true).await?;
-                    self.scheduler
-                        .batch(
-                            batch.selected,
-                            FOREGROUND_CONCURRENCY,
-                            |(node, revision)| {
-                                let kernel = kernel.clone();
-                                async move {
-                                    let id = node.id.clone();
-                                    self.progress
-                                        .lock()
-                                        .expect("progress lock")
-                                        .active_ids
-                                        .insert(id.clone());
-                                    let probe = self.measure(revision, kernel, node).await;
-                                    (id, probe)
-                                }
-                            },
-                            |(id, probe)| {
-                                let mut progress = self.progress.lock().expect("progress lock");
-                                progress.active_ids.remove(&id);
-                                progress.completed += 1;
-                                if probe.is_ok() {
-                                    progress.completed_ids.push(id);
-                                }
-                                match probe {
-                                    Ok(Probe::Available(_)) => progress.available += 1,
-                                    Ok(Probe::Timeout) => progress.timeouts += 1,
-                                    Ok(Probe::Unreachable) => progress.failed += 1,
-                                    Err(error) => {
-                                        progress.failed += 1;
-                                        write_error = Some(error);
-                                    }
-                                }
-                            },
-                        )
-                        .await;
-                }
+                let path = path.as_path();
+                self.scheduler.foreground_batch(jobs, high_speed, |(node, revision, scope)| {
+                    let id = node.id.clone();
+                    self.progress.lock().expect("progress lock").active_ids.insert(id.clone());
+                    async move {
+                        let kernel = scope.kernel.get_or_init(|| self.probe_kernel(path, &scope.batch, true)).await;
+                        let probe = match kernel {
+                            Ok(kernel) => self.measure(revision, kernel.clone(), node, high_speed).await,
+                            Err(error) => Err(error.clone()),
+                        };
+                        (id, probe)
+                    }
+                }, |(id, probe)| {
+                    let mut progress = self.progress.lock().expect("progress lock");
+                    progress.active_ids.remove(&id);
+                    progress.completed += 1;
+                    if probe.is_ok() {
+                        progress.completed_ids.push(id);
+                    }
+                    match probe {
+                        Ok(Probe::Available(_)) => progress.available += 1,
+                        Ok(Probe::Timeout) => progress.timeouts += 1,
+                        Ok(Probe::Unreachable) => progress.failed += 1,
+                        Err(error) => {
+                            progress.failed += 1;
+                            write_error = Some(error);
+                        }
+                    }
+                }).await;
                 write_error.map_or(Ok(()), Err)
             } => outcome,
         };
@@ -593,14 +755,15 @@ impl App {
             for batch in batches {
                 let kernel = self.probe_kernel(&path, &batch, false).await?;
                 self.scheduler
-                    .batch(
+                    .background_batch(
                         batch.selected,
                         BACKGROUND_CONCURRENCY,
+                        |(node, _)| server_key(&node.server),
                         |(node, revision)| {
                             let kernel = &kernel;
                             async move {
                                 let name = node.kernel_name();
-                                let probe = self.scheduler.measure(kernel.delay_for(&name, node.probe_target.as_ref())).await;
+                                let probe = self.scheduler.measure_background(&server_key(&node.server), kernel.delay_for(&name, node.probe_target.as_ref())).await;
                                 (node.id, revision, probe)
                             }
                         },
@@ -1850,9 +2013,9 @@ pub async fn batch_probe(
     state: State<'_, Arc<App>>,
     kernel_path: PathBuf,
     ids: Vec<String>,
+    high_speed: Option<bool>,
 ) -> AirResult<()> {
-    let _batch = state.batch.lock().await;
-    state.run_batch(kernel_path, ids).await
+    state.run_batch(kernel_path, ids, high_speed.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -1869,7 +2032,7 @@ pub async fn probe_node(
     let batch = state.probe_batches(&[id]).await?.pop().ok_or("节点已不存在")?;
     let kernel = state.probe_kernel(&kernel_path, &batch, true).await?;
     let (node, revision) = batch.selected.into_iter().next().ok_or("节点已不存在")?;
-    state.measure(revision, kernel, node).await
+    state.measure(revision, kernel, node, false).await
 }
 
 #[tauri::command]

@@ -1,6 +1,6 @@
 import { setBinding } from '@/shared/proxy/rule-library'
 import { RuleBindingPicker } from '@/shared/ui/RuleLibraryManager'
-import { preferences } from '@/shared/lib/preferences'
+import { highSpeedProbe, preferences } from '@/shared/lib/preferences'
 import { diagnostic, tr, useLanguage } from '@/shared/i18n/messages'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, CalendarClock, ChevronDown, Copy, Download, Eye, Puzzle, QrCode, Check, CloudDownload, Code2, FileCode2, Network, Plus, RefreshCw, Trash2 } from 'lucide-react'
@@ -41,7 +41,7 @@ type Dialog =
 
 const emptyStatus: VpnStatus = { phase: 'idle', startedAt: 0, traffic: {} }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
-const defaultKernel: KernelInfo = { version: '1.19.34', appVersion: '1.1.0', sdk: 35, abi: 'Android' }
+const defaultKernel: KernelInfo = { version: '1.19.34', appVersion: '1.1.5', sdk: 35, abi: 'Android' }
 const PROBE_REQUEST_SIZE = 72
 const MANUAL_PROBE_COALESCE_MS = 80
 type MonitorResult = { at: number; available: number; checked: number; error?: string; samples?: Record<string, ProbeSample[]> }
@@ -113,7 +113,7 @@ export function App() {
   const activeManualIdsRef = useRef(new Set<string>())
   const activeBatchIdsRef = useRef(new Set<string>())
   const activeCustomIdsRef = useRef(new Set<string>())
-  const batchQueueRef = useRef<{ ids: string[]; total: number; done: number } | null>(null)
+  const batchQueueRef = useRef<{ ids: string[]; total: number; done: number; highSpeed: boolean } | null>(null)
   const customTasksRef = useRef<Array<{
     ids: string[]
     libraryForTest: Library
@@ -1024,24 +1024,19 @@ export function App() {
 
   function groupProbeChunks(ids: string[], libraryForTest: Library) {
     const plan = prepareRouting(libraryForTest).compiled
-    // A request stays within one hosts scope while the core fills its probe slots.
-    const byScope = new Map<number, ProbeNode[]>()
+    const chunks: ProbeNode[][] = []
+    let lastScope: number | undefined
     for (const id of new Set(ids)) {
       const alias = plan.byId.get(id)
       if (!alias) continue
       const scope = plan.plan.hostScopes?.byProxy[alias] ?? 0
-      let nodes = byScope.get(scope)
-      if (!nodes) {
-        nodes = []
-        byScope.set(scope, nodes)
+      let chunk = chunks.at(-1)
+      if (!chunk || scope !== lastScope || chunk.length === PROBE_REQUEST_SIZE) {
+        chunk = []
+        chunks.push(chunk)
+        lastScope = scope
       }
-      nodes.push({ id, alias })
-    }
-    const chunks: ProbeNode[][] = []
-    for (const nodes of byScope.values()) {
-      for (let offset = 0; offset < nodes.length; offset += PROBE_REQUEST_SIZE) {
-        chunks.push(nodes.slice(offset, offset + PROBE_REQUEST_SIZE))
-      }
+      chunk.push({ id, alias })
     }
     return { plan, chunks }
   }
@@ -1051,7 +1046,7 @@ export function App() {
     plan: ReturnType<typeof compile>,
     libraryForTest: Library,
     runId: number,
-    options: { record: boolean; isBatch: boolean; onNodeDone?: (id: string, delay: number) => void },
+    options: { record: boolean; isBatch: boolean; highSpeed?: boolean; onNodeDone?: (id: string, delay: number) => void },
   ) {
     await probeCancel.current
     if (probeRunId.current !== runId) return { aborted: true, last: -1 }
@@ -1087,6 +1082,7 @@ export function App() {
           expected: libraryForTest.network.probeStatus,
           aliases: chunk.map(item => item.alias),
           reportProgress: options.record || options.isBatch,
+          highSpeed: options.highSpeed === true,
         },
         (_completed, alias, delay) => {
           if (probeRunId.current !== runId || !alias || typeof delay !== 'number') return
@@ -1236,8 +1232,10 @@ export function App() {
             await runProbeChunk(nextChunk, plan, libraryForTest, runId, {
               record: true,
               isBatch: true,
+              highSpeed: batch.highSpeed,
               onNodeDone: id => {
                 if (probeRunId.current !== runId) return
+                chunkSet.delete(id)
                 activeBatchIdsRef.current.delete(id)
                 if (batchQueueRef.current) {
                   batchQueueRef.current.done = Math.min(batchQueueRef.current.total, batchQueueRef.current.done + 1)
@@ -1257,6 +1255,10 @@ export function App() {
                 batchQueueRef.current = null
                 activeBatchIdsRef.current.clear()
                 setBatchProgress(null)
+              } else if (chunkSet.size) {
+                // A failed native request also finishes its remaining nodes.
+                batch.done += chunkSet.size
+                setBatchProgress({ done: batch.done, total: batch.total })
               }
               syncProbing()
             }
@@ -1335,7 +1337,7 @@ export function App() {
       const { chunks } = groupProbeChunks(ids, libraryForTest)
       const validIds = chunks.flat().map(item => item.id)
       if (!validIds.length) return undefined
-      batchQueueRef.current = { ids: validIds, total: validIds.length, done: 0 }
+      batchQueueRef.current = { ids: validIds, total: validIds.length, done: 0, highSpeed: highSpeedProbe.get() }
       for (const id of validIds) activeBatchIdsRef.current.add(id)
       setBatchProgress({ done: 0, total: validIds.length })
       syncProbing()

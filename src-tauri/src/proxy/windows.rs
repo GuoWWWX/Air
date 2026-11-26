@@ -151,12 +151,16 @@ pub(super) fn adapter_active(name: &str) -> bool {
     (unsafe { GetIfEntry2(&mut row) } == 0) && row.MediaConnectState == MediaConnectStateConnected
 }
 
-pub(crate) fn probe_interface() -> Option<String> {
-    physical_default_interfaces().into_iter().flatten().next().map(|(_, name)| name)
+pub(crate) fn probe_route() -> Option<crate::mihomo::ProbeRoute> {
+    physical_default_routes().into_iter().flatten().next()
 }
 
 // Best hardware uplink for each address family, IPv4 first for node probes.
 pub(super) fn physical_default_interfaces() -> [Option<(u64, String)>; 2] {
+    physical_default_routes().map(|entry| entry.map(|route| (route.luid, route.interface)))
+}
+
+fn physical_default_routes() -> [Option<crate::mihomo::ProbeRoute>; 2] {
     use windows_sys::Win32::{
         NetworkManagement::{
             IpHelper::{FreeMibTable, GetIfEntry2, GetIpForwardTable2, GetIpInterfaceEntry,
@@ -188,15 +192,25 @@ pub(super) fn physical_default_interfaces() -> [Option<(u64, String)>; 2] {
         }
         let priority = (r.Metric.saturating_add(ip.Metric), r.InterfaceIndex);
         let slot = &mut best[usize::from(family != AF_INET)];
-        if slot.as_ref().is_none_or(|(current, _, _)| priority < *current) {
+        if slot.as_ref().is_none_or(|(current, _)| priority < *current) {
             let end = adapter.Alias.iter().position(|&ch| ch == 0).unwrap_or(adapter.Alias.len());
             if let Ok(name) = String::from_utf16(&adapter.Alias[..end]) {
-                *slot = Some((priority, unsafe { r.InterfaceLuid.Value }, name));
+                let luid = unsafe { r.InterfaceLuid.Value };
+                let gateway = if family == AF_INET {
+                    std::net::Ipv4Addr::from(unsafe { r.NextHop.Ipv4.sin_addr.S_un.S_addr }.to_ne_bytes()).into()
+                } else {
+                    std::net::Ipv6Addr::from(unsafe { r.NextHop.Ipv6.sin6_addr.u.Byte }).into()
+                };
+                let guid = adapter.NetworkGuid;
+                let network_id = uuid::Uuid::from_fields(guid.data1, guid.data2, guid.data3, &guid.data4);
+                *slot = Some((priority, crate::mihomo::ProbeRoute {
+                    interface: name, luid, gateway, network_id,
+                }));
             }
         }
     }
     unsafe { FreeMibTable(table.cast()) };
-    best.map(|entry| entry.map(|(_, luid, name)| (luid, name)))
+    best.map(|entry| entry.map(|(_, route)| route))
 }
 
 pub(crate) fn free_tun_pool() -> AirResult<String> {

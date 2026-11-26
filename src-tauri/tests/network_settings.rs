@@ -31,6 +31,10 @@ fn factory_dns_uses_real_ips_and_upgrades_only_the_generated_legacy_file() {
 
 #[test]
 fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
+    let old_proxy_dns: Vec<String> = vec![
+        "https://223.5.5.5/dns-query".into(),
+        "https://1.1.1.1/dns-query".into(),
+    ];
     let previous_windows = NetworkSettings {
         ipv6: true,
         dns_ipv6: true,
@@ -38,6 +42,7 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
         strict_route: true,
         enhanced_mode: "redir-host".into(),
         block_quic: false,
+        proxy_server_nameserver: old_proxy_dns.clone(),
         ..NetworkSettings::default()
     };
     let mut network_val = serde_json::to_value(&previous_windows).unwrap();
@@ -59,10 +64,15 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     assert!(!upgraded.ipv6 && !upgraded.dns_ipv6);
     assert_eq!(upgraded.tun_stack, "mixed");
     assert_eq!(upgraded.enhanced_mode, "fake-ip");
+    assert_eq!(
+        upgraded.proxy_server_nameserver,
+        NetworkSettings::default().proxy_server_nameserver
+    );
 
     let untouched_v111 = NetworkSettings {
         enhanced_mode: "redir-host".into(),
         block_quic: false,
+        proxy_server_nameserver: old_proxy_dns.clone(),
         ..NetworkSettings::default()
     };
     let mut v111_val = serde_json::to_value(&untouched_v111).unwrap();
@@ -84,6 +94,54 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     assert_eq!(upgraded_v111.tun_stack, "mixed");
     assert_eq!(upgraded_v111.enhanced_mode, "fake-ip");
     assert!(upgraded_v111.block_quic);
+    assert_eq!(
+        upgraded_v111.proxy_server_nameserver,
+        NetworkSettings::default().proxy_server_nameserver
+    );
+
+    let untouched_v114 = NetworkSettings {
+        proxy_server_nameserver: old_proxy_dns.clone(),
+        ..NetworkSettings::default()
+    };
+    let v114_text = serde_yaml::to_string(&serde_json::json!({
+        "routing": RoutingConfig::default(),
+        "network": untouched_v114,
+    }))
+    .unwrap();
+    // v1.1.3 upgrades used save_network and left the first factory file as a backup.
+    let historical_dir = tempfile::tempdir().unwrap();
+    let historical = RoutingFile::new(historical_dir.path());
+    fs::write(historical.path(), &untouched).unwrap();
+    historical.save_network(&untouched_v114, &historical.network().unwrap().revision).unwrap();
+    let backup = historical_dir.path().join("air-config.previous.yaml");
+    assert_eq!(fs::read_to_string(&backup).unwrap(), untouched);
+    historical.upgrade_factory_network().unwrap();
+    assert_eq!(historical.network().unwrap().settings, NetworkSettings::default());
+    historical.upgrade_factory_network().unwrap();
+    assert_eq!(fs::read_to_string(&backup).unwrap(), untouched);
+
+    fs::write(historical.path(), &v114_text).unwrap();
+    fs::write(&backup, "# user backup\n").unwrap();
+    historical.upgrade_factory_network().unwrap();
+    assert_eq!(fs::read_to_string(historical.path()).unwrap(), v114_text);
+    assert_eq!(fs::read_to_string(&backup).unwrap(), "# user backup\n");
+    let dir_v114 = tempfile::tempdir().unwrap();
+    let file_v114 = RoutingFile::new(dir_v114.path());
+    fs::write(file_v114.path(), &v114_text).unwrap();
+    file_v114.upgrade_factory_network().unwrap();
+    assert_eq!(
+        file_v114.network().unwrap().settings.proxy_server_nameserver,
+        NetworkSettings::default().proxy_server_nameserver
+    );
+
+    let edited_v114_dir = tempfile::tempdir().unwrap();
+    let edited_v114_file = RoutingFile::new(edited_v114_dir.path());
+    fs::write(edited_v114_file.path(), format!("# edited\n{v114_text}")).unwrap();
+    edited_v114_file.upgrade_factory_network().unwrap();
+    assert_eq!(
+        edited_v114_file.network().unwrap().settings.proxy_server_nameserver,
+        old_proxy_dns
+    );
 
     let custom_dir = tempfile::tempdir().unwrap();
     let custom_file = RoutingFile::new(custom_dir.path());
@@ -102,6 +160,7 @@ fn factory_upgrade_disables_strict_route_for_untouched_windows_defaults_only() {
     assert_eq!(partial.mixed_port, Some(27653));
     assert_eq!(partial.enhanced_mode, "redir-host");
     assert!(!partial.block_quic);
+    assert_eq!(partial.proxy_server_nameserver, old_proxy_dns);
 }
 
 #[test]
@@ -256,24 +315,8 @@ fn legacy_settings_remain_usable_and_network_edits_preserve_other_sections() {
 }
 
 #[cfg(windows)]
-#[tokio::test]
-#[ignore = "requires AIR_TEST_MIHOMO pointing to a local kernel"]
-async fn kernel_resolves_through_selected_dns_and_reuses_active_settings_on_node_switch() {
-    use air::{
-        proxy::{compile, Mode, Runtime, StartTarget},
-        subscriptions::parse,
-    };
-    use std::{
-        net::{Ipv4Addr, TcpListener},
-        path::PathBuf,
-        time::Duration,
-    };
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::UdpSocket;
-
-    let binary = PathBuf::from(std::env::var_os("AIR_TEST_MIHOMO").unwrap());
-    let dir = tempfile::tempdir().unwrap();
-    let dns = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+async fn local_a_resolver(address: [u8; 4]) -> (String, tokio::task::JoinHandle<()>) {
+    let dns = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
     let upstream = format!("udp://{}", dns.local_addr().unwrap());
     let responder = tokio::spawn(async move {
         let mut buf = [0; 2048];
@@ -291,11 +334,26 @@ async fn kernel_resolves_through_selected_dns_and_reuses_active_settings_on_node
             reply[2..4].copy_from_slice(&[0x81, 0x80]);
             reply[6..12].copy_from_slice(&[0, u8::from(a), 0, 0, 0, 0]);
             if a {
-                reply.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 5, 0, 4, 127, 0, 0, 1]);
+                reply.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 5, 0, 4]);
+                reply.extend_from_slice(&address);
             }
             dns.send_to(&reply, from).await.unwrap();
         }
     });
+    (upstream, responder)
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires AIR_TEST_MIHOMO pointing to a local kernel"]
+async fn kernel_resolves_through_selected_dns_and_reuses_active_settings_on_node_switch() {
+    use air::{proxy::{compile, Mode, Runtime, StartTarget}, subscriptions::parse};
+    use std::{net::{Ipv4Addr, TcpListener}, path::PathBuf, time::Duration};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let binary = PathBuf::from(std::env::var_os("AIR_TEST_MIHOMO").unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, responder) = local_a_resolver([127, 0, 0, 1]).await;
     let http = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let http_port = http.local_addr().unwrap().port();
     let http = tokio::net::TcpListener::from_std({
@@ -407,4 +465,90 @@ async fn kernel_resolves_through_selected_dns_and_reuses_active_settings_on_node
     assert_eq!(check("local").await.unwrap().status(), 204);
     runtime.stop().await.unwrap();
     web.abort();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires AIR_TEST_MIHOMO pointing to a local kernel"]
+async fn node_dns_selects_the_same_entrance_for_latency_and_proxied_http() {
+    use air::{chains::node_configs, mihomo::Kernel, monitoring::Probe,
+        proxy::{compile, Mode, Runtime, StartTarget}, subscriptions::parse};
+    use std::{path::PathBuf, time::Duration};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let binary = PathBuf::from(std::env::var_os("AIR_TEST_MIHOMO").unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let (main_dns, main_task) = local_a_resolver([127, 0, 0, 2]).await;
+    let (node_dns, node_task) = local_a_resolver([127, 0, 0, 1]).await;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let entry = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut stream = BufReader::new(stream);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if stream.read_line(&mut line).await.unwrap_or(0) == 0 { return; }
+                    let connect = line.starts_with("CONNECT ");
+                    loop {
+                        line.clear();
+                        if stream.read_line(&mut line).await.unwrap_or(0) == 0 { return; }
+                        if line == "\r\n" { break; }
+                    }
+                    tokio::time::sleep(Duration::from_millis(8)).await;
+                    let reply: &[u8] = if connect { b"HTTP/1.1 200 Connection Established\r\n\r\n" }
+                        else { b"HTTP/1.1 204 No Content\r\n\r\n" };
+                    if stream.get_mut().write_all(reply).await.is_err() { return; }
+                }
+            });
+        }
+    });
+    let source = parse("local".into(), "fixture".into(), &format!(
+        "proxies: [{{name: node, type: http, server: entry.air.test, port: {port}}}]"
+    )).unwrap();
+    let settings = NetworkSettings {
+        nameserver: vec![main_dns.clone()], proxy_server_nameserver: vec![node_dns],
+        probe_url: "http://192.0.2.49/health".into(), ..NetworkSettings::default()
+    };
+    let node = &source.nodes[0];
+    for usable in [false, true] {
+        let mut network = settings.clone();
+        if !usable { network.proxy_server_nameserver = vec![main_dns.clone()]; }
+        let mut kernel = Kernel::start_probes(&binary, dir.path(), node_configs(&source.nodes).unwrap(),
+            &source.hosts, &network, None).await.unwrap();
+        assert_eq!(matches!(kernel.delay(&node.kernel_name()).await, Probe::Available(_)), usable);
+        kernel.stop().await.unwrap();
+    }
+    let file = RoutingFile::new(dir.path());
+    file.save_network(&settings, &file.network().unwrap().revision).unwrap();
+    let mut runtime = Runtime::new(dir.path().to_owned());
+    runtime.set_system_proxy(false).unwrap();
+    runtime.set_mode(Mode::Global).await.unwrap();
+    let config = compile(Mode::Global, &RoutingConfig::default(), std::slice::from_ref(&source), None,
+        &StartTarget::Node { group_id: None, id: node.id.clone() }).unwrap();
+    runtime.start(&binary, config).await.unwrap();
+    let mixed = runtime.subscription_proxy_port().unwrap();
+    let client = reqwest::Client::builder().no_proxy()
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{mixed}")).unwrap())
+        .timeout(Duration::from_secs(4)).build().unwrap();
+    assert_eq!(client.get(&settings.probe_url).send().await.unwrap().status(), 204);
+    runtime.stop().await.unwrap();
+    entry.abort();
+    main_task.abort();
+    node_task.abort();
+}
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires AIR_TEST_MIHOMO pointing to a local kernel"]
+async fn dropping_a_probe_releases_its_temporary_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = std::path::PathBuf::from(std::env::var_os("AIR_TEST_MIHOMO").unwrap());
+    let kernel = air::mihomo::Kernel::start_probes(&binary, root.path(), vec![], &serde_yaml::Mapping::new(),
+        &air::network::NetworkSettings::default(), None).await.unwrap();
+    let workspace = std::fs::read_dir(root.path()).unwrap().next().unwrap().unwrap().path();
+    assert!(workspace.is_dir());
+    assert!(!workspace.join("config.yaml").exists(), "loaded diagnostic config still on disk");
+    drop(kernel);
+    assert!(!workspace.exists(), "diagnostic workspace survived kernel shutdown");
 }

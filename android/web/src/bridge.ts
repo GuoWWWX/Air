@@ -71,11 +71,11 @@ export async function native<T>(
     }
     if (action === 'kernelInfo') {
       return (JSON.parse(localStorage.getItem('air.android.preview.kernel') ?? 'null')
-        ?? { version: 'v1.19.34', abi: 'arm64-v8a', sdk: 36, appVersion: '1.1.4' }) as T
+        ?? { version: 'v1.19.34', abi: 'arm64-v8a', sdk: 36, appVersion: '1.1.5' }) as T
     }
     if (action === 'updateStatus') {
       return {
-        current: '1.1.4',
+        current: '1.1.5',
         phase: 'idle',
         ignored: false,
         progress: { received: 0, total: 0, speed: 0, reused: 0, apkSize: 0 },
@@ -110,10 +110,12 @@ export async function native<T>(
   const activePort = port
   return new Promise<T>((resolve, reject) => {
     const id = String(++sequence)
+    const probeCount = action === 'probe' && data && 'aliases' in data && Array.isArray(data.aliases)
+      ? Math.min(72, data.aliases.length) : 0
     const timer = window.setTimeout(() => {
       waiters.delete(id)
       reject(new Error(action === 'start' ? tr('Android VPN 授权等待超时') : tr('操作超时，请重试')))
-    }, action === 'start' || (action === 'file' || action === 'export') ? 180_000 : 45_000)
+    }, action === 'start' || (action === 'file' || action === 'export') ? 180_000 : 45_000 + probeCount * 5_000)
     waiters.set(id, reply => {
       if (reply.progress !== undefined) {
         onProgress?.(reply.progress, reply.alias, reply.delay)

@@ -12,6 +12,10 @@ use std::{
 const FILE_NAME: &str = "air-config.yaml";
 const MAX_SIZE: u64 = 1024 * 1024;
 
+fn legacy_node_dns() -> Vec<String> {
+    vec!["https://223.5.5.5/dns-query".into(), "https://1.1.1.1/dns-query".into()]
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Document {
@@ -121,17 +125,14 @@ impl RoutingFile {
     }
 
     pub fn upgrade_factory_network(&self) -> AirResult<()> {
-        // Only replace an untouched file produced by the old installer. Edited files
-        // and their backups belong to the user, including explicit DNS choices.
-        if self.path().with_file_name("air-config.previous.yaml").exists() {
-            return Ok(());
-        }
+        let old_proxy_dns = legacy_node_dns();
         let old_v1_base = NetworkSettings {
             ipv6: true,
             dns_ipv6: true,
             tun_stack: "gvisor".into(),
             enhanced_mode: "redir-host".into(),
             block_quic: false,
+            proxy_server_nameserver: old_proxy_dns.clone(),
             ..NetworkSettings::default()
         };
         let legacy = NetworkSettings {
@@ -150,17 +151,28 @@ impl RoutingFile {
         let v111_windows = NetworkSettings {
             enhanced_mode: "redir-host".into(),
             block_quic: false,
+            proxy_server_nameserver: old_proxy_dns.clone(),
+            ..NetworkSettings::default()
+        };
+        let v114_windows = NetworkSettings {
+            proxy_server_nameserver: old_proxy_dns,
             ..NetworkSettings::default()
         };
         let mut templates = Vec::new();
-        for candidate in [&legacy, &previous_windows, &old_v1_base, &v111_windows] {
-            templates.push(
-                serde_yaml::to_string(&serde_json::json!({
-                    "routing": RoutingConfig::default(),
-                    "network": candidate,
-                }))
-                .map_err(yaml_error)?,
-            );
+        for candidate in [
+            &legacy,
+            &previous_windows,
+            &old_v1_base,
+            &v111_windows,
+            &v114_windows,
+        ] {
+            let mut factory = serde_yaml::to_value(serde_json::json!({
+                "routing": RoutingConfig::default(), "network": candidate,
+            })).map_err(yaml_error)?;
+            templates.push(serde_yaml::to_string(&factory).map_err(yaml_error)?);
+            // Earlier automatic upgrades used save_section, which wrote network in struct order.
+            factory["network"] = serde_yaml::to_value(candidate).map_err(yaml_error)?;
+            templates.push(serde_yaml::to_string(&factory).map_err(yaml_error)?);
             let mut without_quic = serde_json::to_value(candidate)
                 .map_err(|_| "无法序列化默认网络配置")?;
             if let Some(obj) = without_quic.as_object_mut() {
@@ -187,16 +199,23 @@ impl RoutingFile {
                 .map_err(yaml_error)?,
             );
         }
-        let Ok(meta) = fs::metadata(self.path()) else {
-            return Ok(());
+        let factory_text = |path: &Path| -> Option<String> {
+            let size = fs::metadata(path).ok()?.len();
+            if !templates.iter().any(|t| t.len() as u64 == size) { return None; }
+            let contents = fs::read_to_string(path).ok()?;
+            templates.contains(&contents).then_some(contents)
         };
-        if templates.iter().any(|t| meta.len() == t.len() as u64) {
-            if let Ok(bytes) = fs::read(self.path()) {
-                if let Some(template) = templates.iter().find(|t| bytes == t.as_bytes()) {
-                    self.save_network(&NetworkSettings::default(), &digest(template))?;
-                }
-            }
+        let Some(previous) = factory_text(self.path()) else { return Ok(()) };
+        let backup = self.0.with_file_name("air-config.previous.yaml");
+        if backup.try_exists().map_err(|_| "无法访问全局配置文件")? {
+            if factory_text(&backup).is_none() { return Ok(()); }
+        } else {
+            Self::write(&backup, &previous, true).map_err(|_| "无法备份修改前的全局配置文件")?;
         }
+        let contents = serde_yaml::to_string(&serde_json::json!({
+            "routing": RoutingConfig::default(), "network": NetworkSettings::default(),
+        })).map_err(yaml_error)?;
+        Self::write(self.path(), &contents, false).map_err(|_| "无法保存全局配置文件")?;
         Ok(())
     }
 
@@ -314,6 +333,9 @@ fn network_section(mapping: &Mapping) -> AirResult<NetworkSettings> {
         return Ok(NetworkSettings::default());
     };
     let mut settings: NetworkSettings = section(mapping, "network")?;
+    if network.get("proxyServerNameserver").is_none() {
+        settings.proxy_server_nameserver = legacy_node_dns();
+    }
     // New factory files write both choices explicitly. Older hand-edited files may omit them.
     if network.get("blockQuic").is_none() {
         settings.block_quic = false;

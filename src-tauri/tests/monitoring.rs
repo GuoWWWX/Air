@@ -1,6 +1,6 @@
 use air::{
     chains::probe_revisions,
-    monitoring::{Probe, Scheduler, BACKGROUND_CONCURRENCY, BACKGROUND_INTERVAL, FOREGROUND_CONCURRENCY, TIMEOUT},
+    monitoring::{foreground_concurrency, server_key, Probe, Scheduler, BACKGROUND_CONCURRENCY, BACKGROUND_INTERVAL, BASE_FOREGROUND_CONCURRENCY, TIMEOUT},
     storage::Store,
     subscriptions::parse,
 };
@@ -109,20 +109,21 @@ impl Drop for InFlight<'_> {
 
 #[tokio::test(start_paused = true)]
 async fn three_hundred_timeouts_release_every_slot() {
-    let scheduler = Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT);
+    let scheduler = Scheduler::new(BASE_FOREGROUND_CONCURRENCY, TIMEOUT);
     let active = Arc::new(Active::default());
     let start = Instant::now();
     let mut results = Vec::new();
     let mut first = None;
 
     scheduler
-        .batch(
+        .foreground_batch(
             0..300,
-            FOREGROUND_CONCURRENCY,
+            false,
             |index| {
                 let active = active.clone();
                 scheduler.probe(
                     index.to_string(),
+                    false,
                     async move {
                         let _active = active.enter();
                         pending::<Probe>().await
@@ -139,30 +140,70 @@ async fn three_hundred_timeouts_release_every_slot() {
 
     let elapsed = start.elapsed();
     let peak = active.peak.load(SeqCst);
-    assert_eq!(peak, FOREGROUND_CONCURRENCY);
+    assert_eq!(peak, BASE_FOREGROUND_CONCURRENCY);
     assert_eq!(active.current.load(SeqCst), 0);
     assert_eq!(results, vec![Probe::Timeout; 300]);
     assert_eq!(first, Some(TIMEOUT));
-    assert_eq!(elapsed, TIMEOUT * 300_u32.div_ceil(FOREGROUND_CONCURRENCY as u32));
+    assert_eq!(elapsed, TIMEOUT * 300_u32.div_ceil(BASE_FOREGROUND_CONCURRENCY as u32));
     println!("all timeout: completed=300 timeout=300 peak={peak} first={:?} elapsed={elapsed:?} (simulated clock)", first.unwrap());
 }
 
 #[tokio::test(start_paused = true)]
+async fn foreground_scales_with_processors_and_never_exceeds_the_device_window() {
+    for (processors, expected) in [(0, 32), (2, 32), (8, 32), (12, 48), (16, 64), (usize::MAX, 64)] {
+        let limit = foreground_concurrency(processors);
+        assert_eq!(limit, expected);
+        let scheduler = Scheduler::new(limit, TIMEOUT);
+        let active = Arc::new(Active::default());
+        scheduler.foreground_batch(0..106, true, |_| {
+            let active = active.clone();
+            async move {
+                let _active = active.enter();
+                sleep(Duration::from_millis(10)).await;
+            }
+        }, |_| {}).await;
+        assert_eq!(active.peak.load(SeqCst), expected);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn foreground_refills_in_page_order_while_an_earlier_probe_is_still_running() {
+    let scheduler = Scheduler::new(BASE_FOREGROUND_CONCURRENCY, TIMEOUT);
+    let start = Instant::now();
+    let requested: Vec<_> = (0..106).rev().collect();
+    let mut admitted = Vec::new();
+    let mut completed = Vec::new();
+    scheduler.foreground_batch(requested.iter().copied(), false, |id| {
+        admitted.push((id, start.elapsed()));
+        async move {
+            sleep(Duration::from_millis(if id == 105 { 200 } else { 10 })).await;
+            id
+        }
+    }, |id| completed.push(id)).await;
+    assert_eq!(admitted.iter().map(|(id, _)| *id).collect::<Vec<_>>(), requested);
+    assert_eq!(admitted[BASE_FOREGROUND_CONCURRENCY - 1].1, Duration::ZERO);
+    assert_eq!(admitted[BASE_FOREGROUND_CONCURRENCY].1, Duration::from_millis(10));
+    assert_eq!(completed.last(), Some(&105));
+}
+
+#[tokio::test(start_paused = true)]
 async fn mixed_results_progress_and_preserve_the_global_limit() {
-    let scheduler = Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT);
+    let scheduler = Scheduler::new(BASE_FOREGROUND_CONCURRENCY, TIMEOUT);
     let active = Arc::new(Active::default());
     let start = Instant::now();
     let mut first = None;
     let mut counts = [0; 3];
 
     scheduler
-        .batch(
+        .background_batch(
             0..300,
             BACKGROUND_CONCURRENCY,
+            |index| index.to_string(),
             |index| {
                 let active = active.clone();
                 scheduler.probe(
                     index.to_string(),
+                    false,
                     async move {
                         let _active = active.enter();
                         match index % 5 {
@@ -208,7 +249,7 @@ async fn cancelling_automatic_measurement_releases_the_slot_for_manual_measureme
         let scheduler = scheduler.clone();
         async move {
             scheduler
-                .measure(async move {
+                .measure_background("same.test", async move {
                     started_tx.send(()).unwrap();
                     pending::<Probe>().await
                 })
@@ -221,7 +262,7 @@ async fn cancelling_automatic_measurement_releases_the_slot_for_manual_measureme
     assert!(automatic.await.unwrap_err().is_cancelled());
 
     let manual = scheduler
-        .probe("node".into(), async { Probe::Available(200) }, |_| {})
+        .probe("node".into(), false, async { Probe::Available(200) }, |_| {})
         .await;
     assert_eq!(manual, Probe::Available(200));
     assert_eq!(start.elapsed(), Duration::ZERO);
@@ -229,7 +270,7 @@ async fn cancelling_automatic_measurement_releases_the_slot_for_manual_measureme
 
 #[tokio::test(start_paused = true)]
 async fn concurrent_single_and_batch_probes_share_the_same_sample() {
-    let scheduler = Scheduler::new(FOREGROUND_CONCURRENCY, TIMEOUT);
+    let scheduler = Scheduler::new(BASE_FOREGROUND_CONCURRENCY, TIMEOUT);
     let requests = Arc::new(AtomicUsize::new(0));
     let records = Arc::new(AtomicUsize::new(0));
     let run = || {
@@ -237,6 +278,7 @@ async fn concurrent_single_and_batch_probes_share_the_same_sample() {
         let records = records.clone();
         scheduler.probe(
             "same revision and node".into(),
+            false,
             async move {
                 requests.fetch_add(1, SeqCst);
                 sleep(Duration::from_millis(80)).await;
@@ -251,7 +293,7 @@ async fn concurrent_single_and_batch_probes_share_the_same_sample() {
     let (single, background) = tokio::join!(run(), async {
         let mut output = Vec::new();
         scheduler
-            .batch([()], BACKGROUND_CONCURRENCY, |_| run(), |result| output.push(result))
+            .foreground_batch([()], false, |_| run(), |result| output.push(result))
             .await;
         output
     });
@@ -259,4 +301,44 @@ async fn concurrent_single_and_batch_probes_share_the_same_sample() {
     assert_eq!(background, [Probe::Available(80)]);
     assert_eq!(requests.load(SeqCst), 1);
     assert_eq!(records.load(SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn background_shared_entrances_queue_without_stalling_other_hosts_or_spending_their_timeout() {
+    let scheduler = Scheduler::new(2, Duration::from_millis(150));
+    let shared = Arc::new(Active::default());
+    let all = Arc::new(Active::default());
+    let entered = Instant::now();
+    let jobs = ["Pool.Test", "pool.test.", "pool.test", "pool.test", "other.test"];
+    let mut completed = Vec::new();
+    let (_, manual) = tokio::join!(
+        scheduler.background_batch(jobs, 2, |name| server_key(name), |name| {
+            let key = server_key(name);
+            let shared = shared.clone();
+            let all = all.clone();
+            let scheduler = scheduler.clone();
+            async move {
+                let sample = scheduler.measure_background(&key, async {
+                    let _all = all.enter();
+                    let _shared = (key == "pool.test").then(|| shared.enter());
+                    sleep(Duration::from_millis(100)).await;
+                    Probe::Available(100)
+                }).await;
+                (name, sample)
+            }
+        }, |(name, sample)| completed.push((name, sample, entered.elapsed()))),
+        scheduler.measure_background("pool.test", async {
+            let _all = all.enter();
+            let _shared = shared.enter();
+            sleep(Duration::from_millis(100)).await;
+            Probe::Available(100)
+        })
+    );
+    assert_eq!(manual, Probe::Available(100));
+    assert_eq!(completed.len(), jobs.len());
+    assert!(completed.iter().all(|(_, sample, _)| sample == &Probe::Available(100)));
+    assert_eq!(completed.iter().find(|(name, _, _)| *name == "other.test").unwrap().2, Duration::from_millis(100));
+    assert_eq!(shared.peak.load(SeqCst), 1);
+    assert_eq!(all.peak.load(SeqCst), 2);
+    assert_eq!(server_key("[2001:db8:0:0::1]"), server_key("2001:db8::1"));
 }

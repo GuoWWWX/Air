@@ -313,16 +313,22 @@ internal object Core {
 
     fun probe(
         context: Context, plan: JSONObject, aliases: JSONArray, url: String, expected: Int,
-        generation: Long? = null, onResult: (String, Int) -> Unit = { _, _ -> },
+        generation: Long? = null, background: Boolean = false, highSpeed: Boolean = false,
+        onResult: (String, Int) -> Unit = { _, _ -> },
     ): JSONObject {
         require(aliases.length() in 1..72)
         require(url.startsWith("https://") || url.startsWith("http://")) { "测速地址需使用 HTTP 或 HTTPS" }
         require(expected in 100..599) { "测速状态码无效" }
         val byProxy = plan.optJSONObject("hostScopes")?.optJSONObject("byProxy")
-        val batches = (0 until aliases.length()).map { aliases.getString(it) }.groupBy { byProxy?.optInt(it, 0) ?: 0 }
         val delays = JSONObject()
-        for ((scope, names) in batches) {
+        var offset = 0
+        while (offset < aliases.length()) {
             if (probeCancelled(generation)) break
+            val scope = byProxy?.optInt(aliases.getString(offset), 0) ?: 0
+            val names = mutableListOf<String>()
+            do {
+                names.add(aliases.getString(offset++))
+            } while (offset < aliases.length() && (byProxy?.optInt(aliases.getString(offset), 0) ?: 0) == scope)
             val testPlan = JSONObject(plan.toString())
             testPlan.optJSONObject("hostScopes")?.put("active", scope)
             val sourceTargets = plan.optJSONObject("probeTargets")
@@ -332,7 +338,7 @@ internal object Core {
                 val sourceStatus = if (source != null && source.has("expected")) source.getString("expected") else null
                 ProbeTarget.select(url, expected, sourceUrl, sourceStatus)
             }
-            for ((name, delay) in probeBatch(context, testPlan, targets, url, expected, generation, onResult)) {
+            for ((name, delay) in probeBatch(context, testPlan, targets, url, expected, generation, background, highSpeed, onResult)) {
                 delays.put(name, delay)
             }
         }
@@ -346,6 +352,8 @@ internal object Core {
         url: String,
         expected: Int,
         generation: Long?,
+        background: Boolean,
+        highSpeed: Boolean,
         onResult: (String, Int) -> Unit,
     ): Map<String, Int> {
         if (probeCancelled(generation)) return emptyMap()
@@ -389,11 +397,17 @@ internal object Core {
                 )
             }
         }
+        val servers = mutableMapOf<String, String>()
         val proxies = config.optJSONArray("proxies")
         if (proxies != null) {
             for (index in 0 until proxies.length()) {
-                val proxyName = proxies.getJSONObject(index).optString("name")
-                if (proxyName.isNotEmpty()) ensureGroupsFor(proxyName)
+                val proxy = proxies.getJSONObject(index)
+                val proxyName = proxy.optString("name")
+                if (proxyName.isNotEmpty()) {
+                    ensureGroupsFor(proxyName)
+                    val server = proxy.optString("server")
+                    if (server.isNotBlank()) servers[proxyName] = probeServerKey(server)
+                }
             }
         }
         for (alias in targets.keys) {
@@ -408,6 +422,9 @@ internal object Core {
         return try {
             measureDelays(
                 targets = targets,
+                servers = servers,
+                background = background,
+                highSpeed = highSpeed,
                 cancelled = { probeCancelled(generation) },
                 completed = queue,
                 onResult = onResult,

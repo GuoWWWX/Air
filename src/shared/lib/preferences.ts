@@ -60,3 +60,8 @@ export const preferences = {
   setItem: (key: string, value: string) => change(key, value),
   removeItem: (key: string) => change(key, null),
 }
+
+export const highSpeedProbe = {
+  get: () => preferences.getItem('air.highSpeedProbe') === '1',
+  set: (enabled: boolean) => preferences.setItem('air.highSpeedProbe', enabled ? '1' : '0'),
+}

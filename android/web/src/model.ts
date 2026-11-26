@@ -81,7 +81,8 @@ export interface Library {
   monitoring: boolean
 }
 
-const mobileNetworkVersion = 4
+const mobileNetworkVersion = 5
+const oldProxyServerNameserver = ['https://223.5.5.5/dns-query', 'https://1.1.1.1/dns-query']
 
 export const defaultLibrary: Library = {
   sources: [], nodes: [], groups: [], chains: [], probes: {}, edits: {}, hiddenNodes: [], sourceFilter: [],
@@ -94,8 +95,10 @@ export function restoreLibrary(saved: Partial<Library> & {
   const { dnsServers, dnsMode, ipv6, probeUrl, inheritSource, network, routing, ...current } = saved
   const version = saved.networkVersion ?? 0
   const defaults: MobileNetwork = version < 4
-    ? { ...defaultMobileNetwork, enhancedMode: 'redir-host', blockQuic: false }
-    : defaultMobileNetwork
+    ? { ...defaultMobileNetwork, enhancedMode: 'redir-host', blockQuic: false, proxyServerNameserver: oldProxyServerNameserver }
+    : version === 4
+      ? { ...defaultMobileNetwork, proxyServerNameserver: oldProxyServerNameserver }
+      : defaultMobileNetwork
   const mergedNetwork: MobileNetwork = {
     ...defaults,
     ...(dnsServers?.length && { nameserver: dnsServers }),
@@ -112,11 +115,12 @@ export function restoreLibrary(saved: Partial<Library> & {
     ...(legacyIpv6 && { ipv6: false, dnsIpv6: false }),
     ...(migrateStack && { tunStack: defaultMobileNetwork.tunStack }),
   }
-  if (version < 4 && (Object.keys(defaults) as (keyof MobileNetwork)[]).every(
+  if (version < 5 && (Object.keys(defaults) as (keyof MobileNetwork)[]).every(
     key => JSON.stringify(resolvedNetwork[key]) === JSON.stringify(defaults[key]),
   )) {
     resolvedNetwork.enhancedMode = defaultMobileNetwork.enhancedMode
     resolvedNetwork.blockQuic = defaultMobileNetwork.blockQuic
+    resolvedNetwork.proxyServerNameserver = defaultMobileNetwork.proxyServerNameserver
   }
   const validSourceIds = new Set((current.sources ?? []).map(source => source.id))
   const resolvedSourceFilter =

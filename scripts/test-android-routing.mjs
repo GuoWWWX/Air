@@ -16,6 +16,14 @@ after(() => vite.close())
 const { compile, createRoutingCompiler, defaultLibrary, effectiveYaml, restoreLibrary, withoutSubscription } = await vite.ssrLoadModule('/src/model.ts')
 const { parseSettings } = await vite.ssrLoadModule('/src/configuration.ts')
 const { mergeAppPolicyRules, mergeStandaloneHostRule } = await vite.ssrLoadModule('@/shared/proxy/connection-policy.ts')
+const { orderedProbeIds } = await vite.ssrLoadModule('@/shared/proxy/probeOrder.ts')
+
+test('manual probes start at the current page and preserve display order within a selection', () => {
+  const rows = ['c', 'b', 'd', 'a'].map(id => ({ id }))
+  assert.deepEqual(orderedProbeIds(rows, [], 2), ['d', 'a', 'c', 'b'])
+  assert.deepEqual(orderedProbeIds(rows, ['b', 'a', 'c'], 2), ['a', 'c', 'b'])
+  assert.deepEqual(orderedProbeIds(rows.slice(0, 2), ['a', 'b', 'c']), ['c', 'b', 'a'])
+})
 
 function subscription(id, rules) {
   const yaml = stringify({
@@ -37,19 +45,36 @@ const library = {
 }
 const legacy = { ...library.routing, subscriptionId: 'first', inheritRules: false, fallback: { kind: 'selected' } }
 
-test('only untouched v3 network settings adopt the new defaults', () => {
-  const factory = { ...defaultLibrary.network, enhancedMode: 'redir-host', blockQuic: false }
-  const upgrade = network => restoreLibrary({ ...library, networkVersion: 3, network })
-  assert.deepEqual(upgrade(factory).network, defaultLibrary.network)
+test('only untouched v3 and v4 network settings adopt the new defaults', () => {
+  const oldProxyDns = ['https://223.5.5.5/dns-query', 'https://1.1.1.1/dns-query']
+  const factoryV3 = {
+    ...defaultLibrary.network,
+    enhancedMode: 'redir-host',
+    blockQuic: false,
+    proxyServerNameserver: oldProxyDns,
+  }
+  const upgradeV3 = network => restoreLibrary({ ...library, networkVersion: 3, network })
+  assert.deepEqual(upgradeV3(factoryV3).network, defaultLibrary.network)
   for (const change of [{ tunStack: 'mixed' }, { mixedPort: 27653 }, { nameserver: ['system'] }]) {
-    const edited = { ...factory, ...change }
-    const upgraded = upgrade(edited)
+    const edited = { ...factoryV3, ...change }
+    const upgraded = upgradeV3(edited)
     assert.deepEqual(upgraded.network, edited)
     assert.deepEqual(restoreLibrary(upgraded).network, edited)
   }
-  const partial = upgrade({ mixedPort: 27653 })
+  const partial = upgradeV3({ mixedPort: 27653 })
   assert.equal(partial.network.enhancedMode, 'redir-host')
   assert.equal(partial.network.blockQuic, false)
+  assert.deepEqual(partial.network.proxyServerNameserver, oldProxyDns)
+
+  const factoryV4 = { ...defaultLibrary.network, proxyServerNameserver: oldProxyDns }
+  const upgradeV4 = network => restoreLibrary({ ...library, networkVersion: 4, network })
+  assert.deepEqual(upgradeV4(factoryV4).network, defaultLibrary.network)
+  for (const change of [{ nameserver: ['system'] }, { proxyServerNameserver: ['https://223.5.5.5/dns-query'] }]) {
+    const edited = { ...factoryV4, ...change }
+    const upgraded = upgradeV4(edited)
+    assert.deepEqual(upgraded.network, edited)
+    assert.deepEqual(restoreLibrary(upgraded).network, edited)
+  }
 })
 
 test('UDP 443 fallback respects subscription rules and direct exits', () => {

@@ -117,13 +117,20 @@ pub struct DnsResult {
     pub elapsed_ms: u64,
 }
 
+const DOMESTIC_DNS: [&str; 4] = [
+    "https://223.5.5.5/dns-query",
+    "https://120.53.53.53/dns-query",
+    "223.5.5.5",
+    "119.29.29.29",
+];
+
 impl Default for NetworkSettings {
     fn default() -> Self {
         Self {
             nameserver: vec!["https://1.1.1.1/dns-query".into(), "https://8.8.8.8/dns-query".into()],
             default_nameserver: vec![],
             direct_nameserver: vec![],
-            proxy_server_nameserver: vec!["https://223.5.5.5/dns-query".into(), "https://1.1.1.1/dns-query".into()],
+            proxy_server_nameserver: DOMESTIC_DNS.into_iter().map(str::to_owned).collect(),
             fallback: vec![],
             fallback_domains: vec![],
             domain_dns: vec![],
@@ -285,16 +292,10 @@ impl NetworkSettings {
     pub(crate) fn apply_dns(&self, config: &mut Value) -> AirResult<()> {
         config["ipv6"] = self.ipv6.into();
         config["tcp-concurrent"] = self.tcp_concurrent.into();
-        let domestic_dns = [
-            "https://223.5.5.5/dns-query",
-            "https://120.53.53.53/dns-query",
-            "223.5.5.5",
-            "119.29.29.29",
-        ];
         let effective_direct = if !self.direct_nameserver.is_empty() {
             Some(self.direct_nameserver.clone())
         } else if self.respect_rules {
-            Some(domestic_dns.into_iter().map(str::to_owned).collect())
+            Some(DOMESTIC_DNS.into_iter().map(str::to_owned).collect())
         } else {
             None
         };
@@ -697,6 +698,14 @@ mod tests {
         let settings = NetworkSettings::default();
         assert!(!settings.ipv6 && !settings.dns_ipv6);
         assert_eq!(settings.tun_stack, "mixed");
+        assert_eq!(
+            settings.proxy_server_nameserver,
+            DOMESTIC_DNS.iter().copied().map(str::to_owned).collect::<Vec<_>>()
+        );
+        assert!(settings
+            .proxy_server_nameserver
+            .iter()
+            .all(|server| !server.contains("1.1.1.1")));
         let mut yaml = Value::Mapping(Default::default());
         settings.apply_dns(&mut yaml).unwrap();
         let direct = yaml["dns"]["direct-nameserver"].as_sequence().unwrap();
