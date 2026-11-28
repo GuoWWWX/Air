@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::{net::IpAddr, time::Duration};
 
 #[derive(Serialize)]
+pub struct Connectivity {
+    youtube: Option<u64>,
+    google: Option<u64>,
+    github: Option<u64>,
+    chatgpt: Option<u64>,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Exit {
     ip: IpAddr,
@@ -107,6 +115,36 @@ pub async fn lookup(port: u16) -> AirResult<Exit> {
     })
 }
 
+pub async fn connectivity(port: u16) -> AirResult<Connectivity> {
+    let proxy =
+        reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).map_err(|_| "无法配置连通检测")?;
+    let client = Client::builder()
+        .no_proxy()
+        .proxy(proxy)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|_| "无法初始化连通检测")?;
+    let (youtube, google, github, chatgpt) = tokio::join!(
+        response_latency(&client, "https://www.youtube.com/robots.txt", 200),
+        response_latency(&client, "https://www.google.com/generate_204", 204),
+        response_latency(&client, "https://github.com/robots.txt", 200),
+        response_latency(&client, "https://chatgpt.com/robots.txt", 200),
+    );
+    Ok(Connectivity {
+        youtube,
+        google,
+        github,
+        chatgpt,
+    })
+}
+
+async fn response_latency(client: &Client, url: &str, expected: u16) -> Option<u64> {
+    let start = std::time::Instant::now();
+    let response = client.get(url).send().await.ok()?;
+    (response.status().as_u16() == expected).then(|| start.elapsed().as_millis() as u64)
+}
+
 pub(crate) async fn observed_ip(client: &Client) -> AirResult<IpAddr> {
     use futures_util::{stream::FuturesUnordered, StreamExt};
     let mut checks = FuturesUnordered::new();
@@ -199,5 +237,35 @@ mod tests {
         assert_eq!(exit.ip, ip);
         assert_eq!(exit.country_code, None);
         assert_eq!(exit.kind, None);
+    }
+
+    #[tokio::test]
+    async fn probes_connectivity_status_over_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            for response in [
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let url = format!("http://{addr}/probe");
+
+        assert!(response_latency(&client, &url, 204).await.is_some());
+        assert!(response_latency(&client, &url, 204).await.is_none());
+
+        server.await.unwrap();
     }
 }

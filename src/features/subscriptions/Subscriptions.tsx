@@ -140,7 +140,7 @@ export function Subscriptions({
     } catch (error) { onError(error) }
   }
 
-  const [contentTab, setContentTab] = useState<'nodes' | 'groups'>('nodes')
+  const [contentTab, setContentTab] = useState<'groups' | 'nodes'>('groups')
 
   const sourceList = useMemo(
     () =>
@@ -237,6 +237,8 @@ export function Subscriptions({
   const canRefreshAll = remote.some(source => !refreshing.includes(source.id))
   const toolButtonClass =
     'relative grid size-7 place-items-center rounded-[6px] outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-[15px] [&_svg]:stroke-[1.9]'
+
+  const activeContentTab = groups.length === 0 && nodes.length > 0 ? 'nodes' : contentTab
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-3 px-5 py-4">
@@ -697,11 +699,11 @@ export function Subscriptions({
               <Segmented
                 ariaLabel={tr('订阅内容')}
                 size="sm"
-                value={nodes.length === 0 && groups.length > 0 ? 'groups' : contentTab}
+                value={activeContentTab}
                 onChange={setContentTab}
                 options={[
-                  { value: 'nodes', label: `${tr('节点')} (${nodes.length})` },
                   { value: 'groups', label: `${tr('分组')} (${groups.length})` },
+                  { value: 'nodes', label: `${tr('节点')} (${nodes.length})` },
                 ]}
               />
             </div>
@@ -719,7 +721,7 @@ export function Subscriptions({
                 <strong className="text-sm font-semibold text-foreground">{tr("选择订阅来源")}</strong>
                 <span className="text-xs text-muted-foreground">{tr("勾选左侧订阅后，将同步显示在「节点库」与此处汇总")}</span>
               </div>
-            ) : (nodes.length === 0 && groups.length > 0 ? 'groups' : contentTab) === 'groups' ? (
+            ) : activeContentTab === 'groups' ? (
               <div className="flex flex-col gap-1.5">
                 {groups.map(group => (
                   <div

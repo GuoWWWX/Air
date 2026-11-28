@@ -134,6 +134,13 @@ export interface ProxyExit {
   quality?: 'noEvidence' | 'lowRisk' | 'mediumRisk' | 'highRisk'
 }
 
+export interface ProxyConnectivity {
+  youtube: number | null
+  google: number | null
+  github: number | null
+  chatgpt: number | null
+}
+
 export type ChainProbeResult = ExitVerification | { error: string }
 
 export interface ProxyStatus extends ProxyPowerState {
@@ -308,6 +315,7 @@ const tauriAir = {
   proxyStatus: () => invoke<ProxyStatus>('proxy_status'),
   installTunService: () => invoke<ProxyStatus>('install_tun_service'),
   proxyExit: (sessionId: string) => invoke<ProxyExit>('proxy_exit', { sessionId }),
+  proxyConnectivity: (sessionId: string) => invoke<ProxyConnectivity>('proxy_connectivity', { sessionId }),
   proxyTelemetry: (cursor?: TelemetryCursor) => invoke<ProxyTelemetry | null>('proxy_telemetry', { cursor }),
   resolveApplications: (queries: string[]) =>
     invoke<ResolvedAppIdentity[]>('resolve_applications', { queries }),

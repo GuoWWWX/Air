@@ -8,13 +8,13 @@ import {
   ChevronRight,
   CloudDownload,
   Copy,
-  Cpu,
   Globe,
   Layers,
   Network,
   Plug,
+  RefreshCw,
   Route,
-  ShieldCheck,
+  Waypoints,
 } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useMemo, useState } from 'react'
@@ -36,9 +36,10 @@ import { idleHeights, TrafficBars, trafficHeights } from '@/shared/ui/TrafficBar
 import type { ExitVerification, ProxyConnection, ProxyModeAction, ProxyHop, ProxyStatus } from '@/platform/desktop/air'
 import type { Nodes } from '../nodes/useNodes'
 import { ConnectionApp } from '@/shared/ui/ConnectionApp'
-import type { ExitLookup, TelemetryHistory } from '../proxy/useProxy'
+import type { ConnectivityLookup, ExitLookup, TelemetryHistory } from '../proxy/useProxy'
 import { captureModeLabel, proxyModes } from '@/shared/proxy/modes'
 import { TunServiceButton } from '../proxy/TunServiceButton'
+import { ServiceConnectivityCard } from './ServiceConnectivityCard'
 
 const exitKinds = {
   datacenter: { get label() { return tr('机房') }, variant: 'accent' },
@@ -124,11 +125,45 @@ function ExitSummary({ exit, verification, checking, failed, copied, onCopy, onR
   )
 }
 
+function subscriptionQuotaState(
+  source?: {
+    details?: {
+      usage?: { upload: number; download: number; total: number; expire: number | null } | null
+    } | null
+  },
+) {
+  const usage = source?.details?.usage
+  if (!usage) return undefined
+  const used = usage.upload + usage.download
+  const hasTotal = usage.total > 0
+  const remaining = hasTotal ? Math.max(0, usage.total - used) : 0
+  const expiresAt = usage.expire && usage.expire > 0 ? new Date(usage.expire * 1000) : undefined
+  const validExpiry = expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt : undefined
+  const expired = Boolean(validExpiry && validExpiry.getTime() <= Date.now())
+  const exhausted = hasTotal && used >= usage.total
+  const low =
+    (hasTotal && !exhausted && remaining / usage.total <= 0.15) ||
+    Boolean(validExpiry && !expired && validExpiry.getTime() - Date.now() <= 3 * 86_400_000)
+  const expiryLabel = validExpiry ? tr('{0} 到期', formatDateTime(validExpiry)) : undefined
+  if (!hasTotal && !validExpiry && used <= 0) return undefined
+  return {
+    used,
+    total: usage.total,
+    remaining,
+    hasTotal,
+    expired,
+    exhausted,
+    low,
+    expiryLabel,
+  }
+}
+
 export function Dashboard({
   visitKey,
   store,
   proxy,
   exitLookup,
+  connectivityLookup,
   telemetry,
   preferredNode,
   outboundGroupName,
@@ -139,6 +174,7 @@ export function Dashboard({
   onSubscriptions,
   onConnections,
   onConfigureConnection,
+  onRouting,
   onNodes,
   onOpenGroup,
   pending,
@@ -151,6 +187,7 @@ export function Dashboard({
   store: Nodes
   proxy: ProxyStatus
   exitLookup: ExitLookup
+  connectivityLookup: ConnectivityLookup
   telemetry?: TelemetryHistory
   preferredNode?: ProxyHop
   outboundGroupName?: string
@@ -161,6 +198,7 @@ export function Dashboard({
   onSubscriptions: () => void
   onConnections: () => void
   onConfigureConnection: (connection: ProxyConnection) => void
+  onRouting: () => void
   onNodes: () => void
   onOpenGroup?: (sourceId: string, name: string) => void
   pending: 'start' | 'stop' | undefined
@@ -180,15 +218,11 @@ export function Dashboard({
     : (!singleNode ? outboundGroupName : undefined)
   const sourceId = singleNode && nodeById.get(singleNode.id)?.sourceId
   const selectedSource = sources.find(source => source.id === sourceId)
-  const sourceUsage = selectedSource?.details?.usage
-  const expiry = sourceUsage?.expire
-  const expiresAt = expiry && expiry > 0 ? new Date(expiry * 1000) : undefined
-  const expiryLabel = expiresAt && Number.isFinite(expiresAt.getTime())
-    ? tr("{0} 到期", formatDateTime(expiresAt))
-    : undefined
-  const subscriptionStatus = expiresAt && expiresAt.getTime() <= Date.now()
+  const selectedQuota = subscriptionQuotaState(selectedSource)
+  const expiryLabel = selectedQuota?.expiryLabel
+  const subscriptionStatus = selectedQuota?.expired
     ? tr('已过期')
-    : sourceUsage && sourceUsage.total > 0 && sourceUsage.upload + sourceUsage.download >= sourceUsage.total
+    : selectedQuota?.exhausted
       ? tr('流量用尽')
       : undefined
   const sourceName = selectedSource?.name ?? singleNode?.source
@@ -205,7 +239,22 @@ export function Dashboard({
   const subscriptionSources = sources.filter(
     source => source.id !== 'custom' && source.details?.kind !== 'custom',
   )
-  const first = subscriptionSources[0]
+  const realNodes = nodes.filter(node => !node.subscriptionNotice)
+  const availableNodes = realNodes.filter(node => node.status === 'available')
+  const measuredMs = availableNodes.map(node => node.latestMs).filter((ms): ms is number => ms !== null)
+  const averagePoolMs = measuredMs.length
+    ? Math.round(measuredMs.reduce((sum, ms) => sum + ms, 0) / measuredMs.length)
+    : null
+  const activeNodeRecord = singleNode ? nodeById.get(singleNode.id) : undefined
+  const quotaSource = selectedQuota
+    ? selectedSource
+    : subscriptionSources.find(source => Boolean(subscriptionQuotaState(source)))
+  const quotaState = quotaSource ? subscriptionQuotaState(quotaSource) : undefined
+  const errorSource = subscriptionSources.find(source => Boolean(source.details?.refreshError))
+  const latestUpdatedAt = subscriptionSources.reduce(
+    (latest, source) => Math.max(latest, source.details?.updatedAt ?? 0),
+    0,
+  )
   const [copiedKey, setCopiedKey] = useState<'ip' | 'proxy' | null>(null)
 
   function copyText(text: string, key: 'ip' | 'proxy') {
@@ -242,6 +291,68 @@ export function Dashboard({
   ] as const
 
   const liveConnections = telemetry?.connections ?? []
+  const { proxyConnectionCount, directConnectionCount, rejectConnectionCount } = liveConnections.reduce(
+    (acc, conn) => {
+      const target = conn.path.at(-1)?.toUpperCase()
+      if (target === 'DIRECT') acc.directConnectionCount++
+      else if (target === 'REJECT' || conn.rule.toUpperCase().includes('REJECT')) acc.rejectConnectionCount++
+      else acc.proxyConnectionCount++
+      return acc
+    },
+    { proxyConnectionCount: 0, directConnectionCount: 0, rejectConnectionCount: 0 },
+  )
+  const nodeHealthState = (() => {
+    const progressSub = store.progress?.running
+      ? tr('正在测速 {0}/{1}', store.progress.completed, store.progress.total)
+      : null
+    if (activeNodeRecord) {
+      if (activeNodeRecord.status === 'available' && activeNodeRecord.latestMs !== null) {
+        const dot = activeNodeRecord.latestMs <= 500
+          ? 'bg-success'
+          : activeNodeRecord.latestMs < 1000
+            ? 'bg-warning'
+            : 'bg-destructive'
+        const parts = [
+          activeNodeRecord.availability !== null
+            ? tr('可用率 {0}%', Math.round(activeNodeRecord.availability * 100))
+            : null,
+          realNodes.length ? tr('可用 {0}/{1}', availableNodes.length, realNodes.length) : null,
+        ].filter(Boolean)
+        return {
+          dot,
+          value: `${activeNodeRecord.latestMs} ms`,
+          sub: progressSub ?? (parts.join(' · ') || tr('前往节点库测速')),
+          tone: 'text-foreground mono',
+        }
+      }
+      if (activeNodeRecord.status === 'timeout') {
+        return {
+          dot: 'bg-warning',
+          value: tr('测速超时'),
+          sub: progressSub ?? (realNodes.length ? tr('可用 {0}/{1}', availableNodes.length, realNodes.length) : tr('前往节点库测速')),
+          tone: 'text-warning',
+        }
+      }
+      if (activeNodeRecord.status === 'unreachable') {
+        return {
+          dot: 'bg-destructive',
+          value: tr('不可达'),
+          sub: progressSub ?? (realNodes.length ? tr('可用 {0}/{1}', availableNodes.length, realNodes.length) : tr('前往节点库测速')),
+          tone: 'text-destructive',
+        }
+      }
+    }
+    return {
+      dot: store.progress?.running ? 'bg-primary motion-safe:animate-pulse' : availableNodes.length ? 'bg-success' : 'bg-icon-muted',
+      value: !realNodes.length
+        ? tr('暂无节点')
+        : (availableNodes.length || store.progress?.running)
+          ? tr('{0} / {1} 可用', availableNodes.length, realNodes.length)
+          : tr('待测速'),
+      sub: progressSub ?? (averagePoolMs !== null ? tr('平均延迟 {0} ms', averagePoolMs) : tr('前往节点库测速')),
+      tone: 'text-foreground',
+    }
+  })()
   const networkModes = [
     {
       id: 'systemProxy' as const,
@@ -451,9 +562,22 @@ export function Dashboard({
             <div className="flex min-w-0 flex-1 flex-col">
               <CardTitle className="truncate text-xs" title={label}>{label}</CardTitle>
               <span className="truncate text-[12px] text-muted-foreground">
-                {captureModeLabel(proxy.running, checked)}
+                {id === 'systemProxy' && proxy.port
+                  ? `${captureModeLabel(proxy.running, checked)} · 127.0.0.1:${proxy.port}`
+                  : captureModeLabel(proxy.running, checked)}
               </span>
             </div>
+            {id === 'systemProxy' && proxy.port && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={tr("复制本地代理地址")}
+                title={tr("复制本地代理地址 · {0}", `127.0.0.1:${proxy.port}`)}
+                onClick={() => copyText(`127.0.0.1:${proxy.port}`, 'proxy')}
+              >
+                {copiedKey === 'proxy' ? <Check className="text-success" /> : <Copy />}
+              </Button>
+            )}
             {id === 'tun' && proxy.tunServiceReady === false && (
               <TunServiceButton onClick={onTunSetup} disabled={Boolean(pending)} />
             )}
@@ -469,37 +593,36 @@ export function Dashboard({
       </div>
 
       <div className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-4">
+        <ServiceConnectivityCard {...connectivityLookup} />
+
         <Card className="gap-2 p-3.5">
           <CardHeader className="min-h-7">
             <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-              <Plug className="size-3.5 text-muted-foreground" />{tr("本地代理")}</span>
-            {proxy.port && (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={tr("复制本地代理地址")}
-                onClick={() => copyText(`127.0.0.1:${proxy.port}`, 'proxy')}
-              >
-                {copiedKey === 'proxy' ? <Check className="text-success" /> : <Copy />}
-              </Button>
-            )}
+              <Activity className="size-3.5 text-muted-foreground" />{tr("节点健康")}</span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={tr("前往节点库")}
+              onClick={onNodes}
+            >
+              <ChevronRight />
+            </Button>
           </CardHeader>
-          <strong
-            className={cn(
-              'truncate text-[15px] font-semibold text-foreground',
-              proxy.port && 'mono',
-            )}
-          >
-            {proxy.port ? `127.0.0.1:${proxy.port}` : tr('未启动')}
-          </strong>
-          <small className="text-[12px] text-muted-foreground">{tr("系统代理 · ")}{captureModeLabel(proxy.running, proxy.systemProxy)}
+          <div className="flex items-center gap-2">
+            <span className={cn('size-2 shrink-0 rounded-full', nodeHealthState.dot)} />
+            <strong className={cn('truncate text-[15px] font-semibold', nodeHealthState.tone)}>
+              {nodeHealthState.value}
+            </strong>
+          </div>
+          <small className="truncate text-[12px] text-muted-foreground">
+            {nodeHealthState.sub}
           </small>
         </Card>
 
         <Card className="gap-2 p-3.5">
           <CardHeader className="min-h-7">
             <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-              <CloudDownload className="size-3.5 text-muted-foreground" />{tr("当前订阅")}</span>
+              <CloudDownload className="size-3.5 text-muted-foreground" />{tr("套餐余量")}</span>
             <Button
               variant="ghost"
               size="icon-sm"
@@ -509,62 +632,78 @@ export function Dashboard({
               <ChevronRight />
             </Button>
           </CardHeader>
-          <strong className="truncate text-[15px] font-semibold text-foreground" title={first?.name}>
-            {subscriptionSources.length === 1
-              ? first?.name
-              : subscriptionSources.length
-                ? tr("{0} 个订阅", subscriptionSources.length)
-                : tr('暂无订阅')}
+          <strong
+            className={cn(
+              'truncate text-[15px] font-semibold',
+              quotaState?.expired || quotaState?.exhausted
+                ? 'text-destructive'
+                : quotaState?.low || (!quotaState && errorSource)
+                  ? 'text-warning'
+                  : 'text-foreground',
+            )}
+            title={quotaSource?.name ?? errorSource?.name}
+          >
+            {quotaState
+              ? quotaState.exhausted
+                ? tr('流量用尽')
+                : quotaState.expired
+                  ? tr('套餐已到期')
+                  : quotaState.hasTotal
+                    ? tr('剩余 {0}', formatBytes(quotaState.remaining))
+                    : quotaState.expiryLabel
+                      ? quotaState.expiryLabel
+                      : tr('已用 {0}', formatBytes(quotaState.used))
+              : errorSource
+                ? tr('同步异常')
+                : subscriptionSources.length
+                  ? tr('{0} 个订阅正常', subscriptionSources.length)
+                  : tr('暂无订阅')}
           </strong>
-          <small className="text-[12px] text-muted-foreground">
-            {tr('{0} 个节点 · {1} 个分组', nodes.length, groups.length)}</small>
-        </Card>
-
-        <Card className="gap-2 p-3.5">
-          <CardHeader className="min-h-7">
-            <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-              <ShieldCheck className="size-3.5 text-muted-foreground" />{tr("服务状态")}</span>
-          </CardHeader>
-          <div className="flex items-center gap-2">
-            <span
-              className={cn(
-                'size-2 shrink-0 rounded-full',
-                proxy.running
-                  ? 'bg-success'
-                  : store.progress?.running
-                    ? 'bg-primary'
-                    : 'bg-icon-muted',
-              )}
-            />
-            <strong className="truncate text-[15px] font-semibold text-foreground">
-              {proxy.running
-                ? tr('Mihomo 运行中')
-                : store.progress?.running
-                  ? tr('正在探测节点')
-                  : store.background
-                    ? tr('后台监测已开启')
-                    : tr('待机')}
-            </strong>
-          </div>
-          <small className="text-[12px] text-muted-foreground">
-            {proxy.running
-              ? tr("虚拟网卡 · {0}", captureModeLabel(proxy.running, proxy.tun))
-              : store.kernelPath
-                ? tr('已配置诊断内核')
-                : tr('未配置诊断内核')}
+          <small className="truncate text-[12px] text-muted-foreground">
+            {quotaSource && quotaState
+              ? [
+                  quotaSource.name,
+                  quotaState.hasTotal ? tr('共 {0}', formatBytes(quotaState.total)) : null,
+                  quotaState.hasTotal ? quotaState.expiryLabel : null,
+                ].filter(Boolean).join(' · ')
+              : errorSource
+                ? errorSource.name
+                : latestUpdatedAt > 0
+                  ? tr('最近同步 {0}', formatDateTime(new Date(latestUpdatedAt)))
+                  : tr('导入订阅查看节点')}
           </small>
         </Card>
 
         <Card className="gap-2 p-3.5">
           <CardHeader className="min-h-7">
             <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-              <Cpu className="size-3.5 text-muted-foreground" />{tr("内存占用")}</span>
+              <Waypoints className="size-3.5 text-muted-foreground" />{tr("实时分流")}</span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={tr("配置分流规则")}
+              onClick={onRouting}
+            >
+              <ChevronRight />
+            </Button>
           </CardHeader>
-          <strong className="mono text-[15px] font-semibold text-foreground">
-            {telemetry?.memoryBytes != null ? formatBytes(telemetry.memoryBytes) : '—'}
+          <strong className="truncate text-[15px] font-semibold text-foreground">
+            {proxy.running && liveConnections.length > 0
+              ? tr('{0} 代理 · {1} 直连', proxyConnectionCount, directConnectionCount)
+              : proxy.running
+                ? proxy.mode === 'global'
+                  ? tr('全局代理')
+                  : proxy.mode === 'direct'
+                    ? tr('全直连')
+                    : tr('等待流量')
+                : tr('分流待命')}
           </strong>
-          <small className="text-[12px] text-muted-foreground">
-            {telemetry?.memoryBytes != null ? tr('Mihomo 内核') : tr('暂无采集数据')}
+          <small className="truncate text-[12px] text-muted-foreground">
+            {proxy.running && rejectConnectionCount > 0
+              ? tr('已拦截 {0} 条请求 · 点击设置规则', rejectConnectionCount)
+              : proxy.running
+                ? tr('{0} · 点击配置分流规则', proxyModes.find(item => item.value === proxy.mode)?.label ?? tr('规则'))
+                : tr('点击查看或编辑分流规则')}
           </small>
         </Card>
       </div>

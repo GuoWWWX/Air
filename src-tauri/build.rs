@@ -1,6 +1,19 @@
 fn main() {
-    println!("cargo:rerun-if-env-changed=AIR_UPDATE_FEED");
-    println!("cargo:rerun-if-env-changed=AIR_UPDATE_PUBLIC_KEY");
+    for (name, official) in [
+        (
+            "AIR_UPDATE_FEED",
+            "https://github.com/GuoWWWX/Air-Proxy/releases/latest/download/air-windows-x64.json",
+        ),
+        (
+            "AIR_UPDATE_PUBLIC_KEY",
+            "2TTd/2YY2PYtex4OLMfq8BdfFB0QxRtprXkU2RUWE4Y=",
+        ),
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+        if std::env::var_os(name).is_none_or(|value| value.is_empty()) {
+            println!("cargo:rustc-env={name}={official}");
+        }
+    }
     stage_windows_assets();
     embed_languages();
     #[cfg(feature = "desktop")]

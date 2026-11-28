@@ -461,7 +461,7 @@ export function App() {
       }
     })
   }, [])
-  const [routingReturn, setRoutingReturn] = useState<'settings' | 'nodes'>('settings')
+  const [routingReturn, setRoutingReturn] = useState<'settings' | 'nodes' | 'home'>('settings')
   const [inspector, setInspector] = useState<InspectorState>({ kind: 'none' })
   const [subscriptionNode, setSubscriptionNode] = useState('')
   const [yaml, setYaml] = useState('')
@@ -675,7 +675,7 @@ export function App() {
     openSettings('kernel')
   }, [openSettings])
 
-  function openRouting(from: 'settings' | 'nodes') {
+  function openRouting(from: 'settings' | 'nodes' | 'home') {
     setRoutingReturn(from)
     openSettings('routing')
   }
@@ -1116,6 +1116,7 @@ export function App() {
                   store={store}
                   proxy={proxy.status}
                   exitLookup={proxy.exitLookup}
+                  connectivityLookup={proxy.connectivityLookup}
                   telemetry={proxy.telemetry}
                   preferredNode={preferredNode}
                   outboundGroupName={outboundGroup?.name}
@@ -1125,6 +1126,7 @@ export function App() {
                   onChain={openChain}
                   onSubscriptions={() => navigate('subscriptions')}
                   onConnections={() => navigate('connections')}
+                  onRouting={() => openRouting('home')}
                   onNodes={() => navigate('nodes')}
                   onOpenGroup={(sourceId, name) => {
                     if (sourceId && !selectedSubscriptionIds.includes(sourceId)

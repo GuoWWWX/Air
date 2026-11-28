@@ -8,10 +8,9 @@
 
 更新 `mihomo.exe`、`WebView2Loader.dll` 或 Wintun 后，同步更新 `src-tauri/src/proxy/tun_service/install.rs` 内对应的 SHA-256。发布前在隔离的 Windows 环境安装服务，运行 `installed_service_keeps_one_adapter_across_sessions`，并用 `Get-DnsClientServerAddress` 核对停用后的网卡 DNS。再检查关闭 Air 后网卡仍在，以及卸载后网卡消失。
 
+Windows 正式版和本地测试版默认使用官方稳定更新渠道和验签公钥。构建独立测试渠道时，可用 `AIR_UPDATE_FEED` 和 `AIR_UPDATE_PUBLIC_KEY` 指定清单地址和对应的 Base64 编码 Ed25519 公钥。
+
 ```powershell
-$airSigningKey = Join-Path $env:LOCALAPPDATA 'AirRelease/air-update-signing.pem'
-$env:AIR_UPDATE_PUBLIC_KEY = (Get-Content ([IO.Path]::ChangeExtension($airSigningKey, '.pub')) -Raw).Trim()
-$env:AIR_UPDATE_FEED = 'https://github.com/GuoWWWX/Air-Proxy/releases/latest/download/air-windows-x64.json'
 $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-gnu'
 ./scripts/prepare-windows-kernel.ps1
 ./scripts/prepare-windows-service.ps1
@@ -19,11 +18,12 @@ $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-gnu'
 pnpm tauri build --target x86_64-pc-windows-gnu --config src-tauri/tauri.windows-release.conf.json
 ```
 
-首次创建签名密钥时使用 `python scripts/prepare-update.py keygen --key $airSigningKey`。将私钥保存在工作区以外的受保护目录中，并保留备份。升级包由同一把私钥签名。
+发布官方更新清单时使用已有的发布私钥。独立渠道可用 `python scripts/prepare-update.py keygen --key $airSigningKey` 创建自己的密钥对。将私钥保存在工作区以外的受保护目录中，并保留备份。
 
 覆盖安装后核对应用和安装登记都显示目标版本，再从安装目录生成增量发布文件。Python 需要安装 `cryptography`。
 
 ```powershell
+$airSigningKey = Join-Path $env:LOCALAPPDATA 'AirRelease/air-update-signing.pem'
 python scripts/prepare-update.py package --key $airSigningKey --version 1.0.0 `
   --notes 'docs/版本发布/1.0.0.md' --source (Join-Path $env:LOCALAPPDATA 'Air Proxy') `
   --output artifacts/windows/1.0.0 `

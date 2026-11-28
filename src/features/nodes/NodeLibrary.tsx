@@ -203,7 +203,9 @@ export function NodeLibrary({
   )
   const [density, setDensity] = useState<CardDensity>(() => {
     const saved = preferences.getItem('air.nodeCardDensity')
-    return saved === 'compact' || saved === 'detailed' ? saved : 'normal'
+    if (saved === 'detailed') return 'detailed'
+    if (preferences.getItem('air.nodeCardDensityManual') === '1' && saved === 'normal') return 'normal'
+    return 'compact'
   })
   const [groupDialog, setGroupDialog] = useState<GroupDialogState>({ kind: 'none' })
   const [copiedIds, setCopiedIds] = useState<string[]>([])
@@ -321,10 +323,6 @@ export function NodeLibrary({
   useEffect(() => {
     preferences.setItem('air.nodeTreeCollapsed', treeOpen ? '0' : '1')
   }, [treeOpen])
-
-  useEffect(() => {
-    preferences.setItem('air.nodeCardDensity', density)
-  }, [density])
 
 
   useEffect(() => {
@@ -1304,7 +1302,11 @@ export function NodeLibrary({
                       ariaLabel={tr("卡片布局密度")}
                       value={density}
                       options={densityOptions}
-                      onChange={setDensity}
+                      onChange={next => {
+                        preferences.setItem('air.nodeCardDensity', next)
+                        preferences.setItem('air.nodeCardDensityManual', '1')
+                        setDensity(next)
+                      }}
                     />
                   </>
                 )}

@@ -1,6 +1,13 @@
 # 更新日志 / Changelog
 
-本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.5.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.6.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+
+## [1.1.6] - 2026-11-28
+
+- Windows 首页分别显示 YouTube、Google、GitHub 和 ChatGPT 的 HTTPS 响应耗时，并提供一键重测。
+- Windows 首页新增节点健康、套餐余量和实时分流概览，可从卡片直达对应页面。
+- 修复 Windows 虚拟网卡服务启动问题，支持普通用户重启已安装的服务。Windows 构建默认接入官方签名更新渠道。
+- Android 同步内置语言包并更新应用版本。
 
 ## [1.1.5] - 2026-11-26
 

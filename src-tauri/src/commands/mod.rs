@@ -1927,6 +1927,15 @@ pub async fn proxy_exit(state: State<'_, Arc<App>>, session_id: String) -> AirRe
 }
 
 #[tauri::command]
+pub async fn proxy_connectivity(
+    state: State<'_, Arc<App>>,
+    session_id: String,
+) -> AirResult<proxy::exit::Connectivity> {
+    let port = state.proxy.lock().await.exit_port(&session_id)?;
+    proxy::exit::connectivity(port).await
+}
+
+#[tauri::command]
 pub async fn proxy_telemetry(
     state: State<'_, Arc<App>>,
     cursor: Option<proxy::TelemetryCursor>,

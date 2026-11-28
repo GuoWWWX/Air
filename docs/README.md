@@ -24,6 +24,7 @@
 | --- | --- |
 | [Windows 发布指南](./版本发布/windows.md) | Windows 桌面端依赖准备、NSIS 安装包编译及签名增量更新打包流程 |
 | [Android 发布指南](./版本发布/android.md) | Android 分架构 / 通用 APK 编译、16KB 对齐检查与签名验证流程 |
+| [Air Proxy 1.1.6 发布说明](./版本发布/1.1.6.md) | Windows 首页服务连通性、状态概览、虚拟网卡服务修复 |
 | [Air Proxy 1.1.5 发布说明](./版本发布/1.1.5.md) | 按页面顺序测速、可选高速测速、Windows 测速进度、节点入口 DNS 修复 |
 | [Air Proxy 1.1.4 发布说明](./版本发布/1.1.4.md) | 修复 Windows 关闭 IPv6 时因嗅探前置拦截导致的双栈断网问题（`mihomo v1.19.32-air.4`） |
 | [Air Proxy 1.1.3 发布说明](./版本发布/1.1.3.md) | 双端防漏流与网速优化、Android 应用内增量更新、Windows 差分补丁与界面细节优化 |

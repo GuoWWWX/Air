@@ -1,6 +1,6 @@
 import { tr, useLanguage } from '@/shared/i18n/messages'
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
-import { air, type ProxyAction, type ProxyExit, type ProxyStatus, type ProxyTelemetry } from '@/platform/desktop/air'
+import { air, type ProxyAction, type ProxyConnectivity, type ProxyExit, type ProxyStatus, type ProxyTelemetry } from '@/platform/desktop/air'
 import { waitForProxyPowerAnimation } from '@/shared/ui/ProxyPowerButton'
 
 const initial: ProxyStatus = {
@@ -64,14 +64,26 @@ export interface ExitLookup {
   onRefresh?: () => void
 }
 
-function useProxyExit(status: ProxyStatus): ExitLookup {
+export interface ConnectivityLookup {
+  connectivity?: ProxyConnectivity
+  checking: boolean
+  failed: boolean
+  onRefresh?: () => void
+}
+
+function useSessionProbe<T>(
+  status: ProxyStatus,
+  enabled: boolean,
+  run: (sessionId: string) => Promise<T>,
+  extras: unknown[] = [],
+) {
   const [attempt, setAttempt] = useState(0)
-  const [result, setResult] = useState<{ key: string; value?: ProxyExit }>()
-  const key = status.running && status.sessionId
-    ? JSON.stringify([status.target, status.outbound?.hops.map(hop => hop.id) ?? [], attempt])
+  const [result, setResult] = useState<{ key: string; value?: T }>()
+  const key = status.running && status.sessionId && enabled
+    ? JSON.stringify([status.target, status.outbound?.hops.map(hop => hop.id) ?? [], ...extras, attempt])
     : null
   // TUN can replace the kernel session while keeping the same active outbound.
-  const lookup = useEffectEvent(() => status.sessionId ? air.proxyExit(status.sessionId) : undefined)
+  const lookup = useEffectEvent(() => (status.sessionId ? run(status.sessionId) : undefined))
 
   useEffect(() => {
     if (key === null) {
@@ -79,7 +91,7 @@ function useProxyExit(status: ProxyStatus): ExitLookup {
       return
     }
     let active = true
-    const finish = (value?: ProxyExit) => {
+    const finish = (value?: T) => {
       if (active) setResult({ key, value })
     }
     void lookup()?.then(finish, () => finish())
@@ -88,11 +100,26 @@ function useProxyExit(status: ProxyStatus): ExitLookup {
 
   const current = result?.key === key ? result : undefined
   return {
-    exit: current?.value,
+    value: current?.value,
     checking: key !== null && !current,
     failed: Boolean(current && !current.value),
     onRefresh: key !== null ? () => setAttempt(previous => previous + 1) : undefined,
   }
+}
+
+function useProxyExit(status: ProxyStatus): ExitLookup {
+  const { value, checking, failed, onRefresh } = useSessionProbe(status, true, id => air.proxyExit(id))
+  return { exit: value, checking, failed, onRefresh }
+}
+
+function useProxyConnectivity(status: ProxyStatus): ConnectivityLookup {
+  const { value, checking, failed, onRefresh } = useSessionProbe(
+    status,
+    status.mode !== 'direct',
+    id => air.proxyConnectivity(id),
+    [status.mode, status.sessionId],
+  )
+  return { connectivity: value, checking, failed, onRefresh }
 }
 
 export function useProxy(onError: (error: unknown) => void, options?: { liveTelemetry?: boolean }) {
@@ -102,6 +129,7 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
   liveTelemetryRef.current = liveTelemetry
   const [status, setStatus] = useState(initial)
   const exitLookup = useProxyExit(status)
+  const connectivityLookup = useProxyConnectivity(status)
   const [snapshot, setSnapshot] = useState<TelemetryHistory>()
   const lastFrame = useRef<TelemetryHistory | undefined>(undefined)
   const clearGeneration = useRef(0)
@@ -306,5 +334,5 @@ export function useProxy(onError: (error: unknown) => void, options?: { liveTele
     }
     pollTelemetryRef.current?.()
   }, [])
-  return { status, telemetry, exitLookup, pending, selectingNodeId, control, updateStatus, refreshNow, clearLogs }
+  return { status, telemetry, exitLookup, connectivityLookup, pending, selectingNodeId, control, updateStatus, refreshNow, clearLogs }
 }

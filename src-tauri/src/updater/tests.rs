@@ -9,6 +9,26 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{package, windows};
 
+#[test]
+fn builds_include_an_update_feed_and_verification_key() {
+    let url = Url::parse(super::FEED.expect("missing update feed")).unwrap();
+    assert!(package::allowed_url(&url));
+    super::public_key().expect("invalid update verification key");
+}
+
+#[tokio::test]
+#[ignore = "fetches the configured release feed"]
+async fn published_feed_passes_signature_verification() {
+    let url = Url::parse(super::FEED.unwrap()).unwrap();
+    let client = super::Updater::build_client(None).unwrap();
+    let raw = super::Updater::read_feed_with(&client, url)
+        .await
+        .unwrap()
+        .expect("update manifest not found");
+    let release = package::verify(&raw, &super::public_key().unwrap()).unwrap();
+    println!("Verified signed update manifest for {}", release.version);
+}
+
 fn release(url: &str, mimicked_large_file: &[u8]) -> (Value, Vec<u8>) {
     let input = [
         ("WebView2Loader.dll", b"loader".as_slice()),

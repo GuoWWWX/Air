@@ -721,6 +721,7 @@ fn main() {
             commands::startup::set_startup_setting,
             commands::startup::start_proxy_on_launch,
             commands::proxy_exit,
+            commands::proxy_connectivity,
             #[cfg(windows)]
             commands::install_tun_service,
             commands::proxy_telemetry,

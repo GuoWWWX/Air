@@ -14,6 +14,7 @@ import type {
   Progress,
   ProxyAction,
   ProxyConnection,
+  ProxyConnectivity,
   ProxyExit,
   ProxyStatus,
   ProxyTarget,
@@ -987,6 +988,12 @@ export const browserAir = {
     await sleep(1400)
     if (proxyState.sessionId !== sessionId) throw new Error('代理会话已变更')
     return { ip: '203.0.113.24', countryCode: 'JP', city: 'Tokyo', kind: 'residential', quality: 'lowRisk' }
+  },
+
+  proxyConnectivity: async (sessionId: string): Promise<ProxyConnectivity> => {
+    await sleep(600)
+    if (proxyState.sessionId !== sessionId) throw new Error('代理会话已变更')
+    return { youtube: 162, google: 148, github: 207, chatgpt: null }
   },
 
   proxyTelemetry: async (): Promise<ProxyTelemetry | null> => sampleBrowserTelemetry(),
