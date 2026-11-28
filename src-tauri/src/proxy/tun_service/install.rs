@@ -14,7 +14,11 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_service::{
-    service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceState, ServiceType},
+    service::{
+        Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceDependency,
+        ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
+        ServiceStartType, ServiceState, ServiceType,
+    },
     service_manager::{ServiceManager, ServiceManagerAccess},
 };
 use windows_sys::Win32::{
@@ -25,11 +29,16 @@ use windows_sys::Win32::{
         OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     },
     Storage::FileSystem::CreateDirectoryW,
-    System::{Com::CoTaskMemFree, Threading::{GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, INFINITE}},
+    System::{
+        Com::CoTaskMemFree,
+        Services::SetServiceObjectSecurity,
+        Threading::{GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, INFINITE},
+    },
     UI::{Shell::{SHGetKnownFolderPath, ShellExecuteExW, FOLDERID_ProgramFiles, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW}, WindowsAndMessaging::SW_HIDE},
 };
 
-pub(super) const RUN: &str = "--air-tun-service-v12";
+pub(super) const RUN: &str = "--air-tun-service-v13";
+pub(super) const V12_RUN: &str = "--air-tun-service-v12";
 pub(super) const V11_RUN: &str = "--air-tun-service-v11";
 pub(super) const V10_RUN: &str = "--air-tun-service-v10";
 pub(super) const V9_RUN: &str = "--air-tun-service-v9";
@@ -221,7 +230,11 @@ pub(super) fn install(owner: &str) -> AirResult<()> {
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )
     .map_err(service_error)?;
-    let access = ServiceAccess::START | ServiceAccess::STOP | ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG;
+    let access = ServiceAccess::START
+        | ServiceAccess::STOP
+        | ServiceAccess::QUERY_STATUS
+        | ServiceAccess::CHANGE_CONFIG
+        | ServiceAccess::WRITE_DAC;
     let existing = match manager.open_service(SERVICE_NAME, access) {
         Ok(service) => {
             stop(&service)?;
@@ -261,7 +274,11 @@ pub(super) fn install(owner: &str) -> AirResult<()> {
         error_control: ServiceErrorControl::Normal,
         executable_path: directory.join(SERVICE_EXE),
         launch_arguments: vec![RUN.into(), owner.into(), CORE_SHA256.into()],
-        dependencies: vec![],
+        dependencies: vec![
+            ServiceDependency::Service("nsi".into()),
+            ServiceDependency::Service("Tcpip".into()),
+            ServiceDependency::Service("Dnscache".into()),
+        ],
         account_name: None,
         account_password: None,
     };
@@ -271,8 +288,59 @@ pub(super) fn install(owner: &str) -> AirResult<()> {
     } else {
         manager.create_service(&info, access).map_err(service_error)?
     };
+    apply_service_security(&service, owner)?;
+    configure_failure_recovery(&service)?;
     service.start::<&str>(&[]).map_err(service_error)?;
     wait_for(&service, ServiceState::Running)
+}
+
+pub(super) fn service_sddl(owner: &str) -> String {
+    format!(
+        "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCRPRC;;;{owner})(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
+    )
+}
+
+fn apply_service_security(service: &Service, owner: &str) -> AirResult<()> {
+    let security = SecurityDescriptor::new(&service_sddl(owner))?;
+    if unsafe {
+        SetServiceObjectSecurity(
+            service.raw_handle().cast(),
+            DACL_SECURITY_INFORMATION,
+            security.0,
+        )
+    } == 0
+    {
+        return Err(service_error(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+fn configure_failure_recovery(service: &Service) -> AirResult<()> {
+    let actions = vec![
+        ServiceAction {
+            action_type: ServiceActionType::Restart,
+            delay: Duration::from_secs(2),
+        },
+        ServiceAction {
+            action_type: ServiceActionType::Restart,
+            delay: Duration::from_secs(5),
+        },
+        ServiceAction {
+            action_type: ServiceActionType::Restart,
+            delay: Duration::from_secs(10),
+        },
+    ];
+    service
+        .update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(60)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(actions),
+        })
+        .map_err(service_error)?;
+    service
+        .set_failure_actions_on_non_crash_failures(true)
+        .map_err(service_error)
 }
 
 pub(super) fn remove() -> AirResult<()> {
@@ -295,6 +363,7 @@ pub(super) fn remove() -> AirResult<()> {
         WINTUN_LICENSE,
         crate::mihomo::geodata::GEOSITE_NAME,
         crate::mihomo::geodata::GEOIP_NAME,
+        super::LAST_ERROR_LOG,
     ] {
         let _ = fs::remove_file(directory.join(name));
     }

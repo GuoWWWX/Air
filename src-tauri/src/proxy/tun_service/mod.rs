@@ -40,6 +40,7 @@ pub use install::request_install;
 
 const SERVICE_NAME: &str = "AirTunService";
 const PIPE: &str = r"\\.\pipe\AirTunService-v2";
+const LAST_ERROR_LOG: &str = "last-error.txt";
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -73,18 +74,50 @@ pub(super) fn current_service_pid() -> Option<u32> {
     status.process_id.filter(|_| status.current_state == ServiceState::Running)
 }
 
+fn can_start_installed_service() -> bool {
+    let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else {
+        return false;
+    };
+    manager
+        .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::START)
+        .is_ok()
+}
+
+fn start_installed_service() -> AirResult<()> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|_| "请先安装虚拟网卡服务".to_owned())?;
+    let service = manager
+        .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::START)
+        .map_err(|_| "请先安装虚拟网卡服务".to_owned())?;
+    match service.start::<&str>(&[]) {
+        Ok(()) => Ok(()),
+        Err(windows_service::Error::Winapi(err))
+            if err.raw_os_error() == Some(1056) =>
+        {
+            // ERROR_SERVICE_ALREADY_RUNNING: race with another caller starting it.
+            Ok(())
+        }
+        Err(_) => Err("无法启动虚拟网卡服务，请重试".into()),
+    }
+}
+
 fn service_status(require_current: bool) -> Option<(ServiceStatus, ServiceVersion)> {
     let (service, version) = owned_service()?;
     if matches!(version, ServiceVersion::Legacy) || (require_current && !matches!(version, ServiceVersion::Current)) {
         return None;
     }
     let status = service.query_status().ok()?;
-    matches!(status.current_state, ServiceState::Running | ServiceState::StartPending)
-        .then_some((status, version))
+    match status.current_state {
+        ServiceState::Running | ServiceState::StartPending => Some((status, version)),
+        ServiceState::Stopped | ServiceState::StopPending if can_start_installed_service() => {
+            Some((status, version))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
-enum ServiceVersion { Current, V12, V11, V10, V9, PreviousCore, V8, Compatible, Legacy }
+enum ServiceVersion { Current, V12Current, V12, V11, V10, V9, PreviousCore, V8, Compatible, Legacy }
 
 impl ServiceVersion {
     fn has_persistent_adapter(self) -> bool {
@@ -92,11 +125,11 @@ impl ServiceVersion {
     }
 
     fn supports_standby(self) -> bool {
-        matches!(self, Self::Current | Self::V12 | Self::V11 | Self::V10 | Self::V9 | Self::PreviousCore)
+        matches!(self, Self::Current | Self::V12Current | Self::V12 | Self::V11 | Self::V10 | Self::V9 | Self::PreviousCore)
     }
 
     fn check_ipv6_policy(self, ipv6_enabled: bool) -> AirResult<()> {
-        if ipv6_enabled || matches!(self, Self::Current) {
+        if ipv6_enabled || matches!(self, Self::Current | Self::V12Current) {
             Ok(())
         } else {
             Err("请先安装或更新虚拟网卡服务".into())
@@ -121,14 +154,16 @@ fn owned_service() -> Option<(Service, ServiceVersion)> {
     let version = arguments.next()?;
     let version = match version {
         install::RUN if engine == install::CORE_SHA256 => ServiceVersion::Current,
-        install::RUN if matches!(engine, install::AIR3_CORE_SHA256 | install::AIR2_CORE_SHA256) => ServiceVersion::V12,
-        install::RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::PreviousCore,
+        install::V12_RUN if engine == install::CORE_SHA256 => ServiceVersion::V12Current,
+        install::V12_RUN if matches!(engine, install::AIR3_CORE_SHA256 | install::AIR2_CORE_SHA256) => ServiceVersion::V12,
+        install::V12_RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::PreviousCore,
         install::V11_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V11,
         install::V10_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V10,
         install::V9_RUN if matches!(engine, install::AIR2_CORE_SHA256 | install::PREVIOUS_CORE_SHA256) => ServiceVersion::V9,
         install::V8_RUN if engine == install::PREVIOUS_CORE_SHA256 => ServiceVersion::V8,
         install::OLDER_COMPATIBLE_RUN if engine == install::LEGACY_CORE_SHA256 => ServiceVersion::Compatible,
         install::RUN
+        | install::V12_RUN
         | install::V11_RUN
         | install::V10_RUN
         | install::V9_RUN
@@ -226,7 +261,7 @@ impl Session {
         use super::loopback::PREFERRED_PORT;
         self.version.check_ipv6_policy(settings.ipv6)?;
         let activate = |port| async move {
-            if matches!(self.version, ServiceVersion::Current | ServiceVersion::V12 | ServiceVersion::V11 | ServiceVersion::V10) {
+            if matches!(self.version, ServiceVersion::Current | ServiceVersion::V12Current | ServiceVersion::V12 | ServiceVersion::V11 | ServiceVersion::V10) {
                 self.call(&Request::Activate { settings: Box::new(settings.clone()), port }).await
             } else {
                 let compat = compat_network_settings(settings)?;
@@ -247,17 +282,34 @@ impl Session {
     }
 
     async fn connect(require_standby: bool) -> AirResult<Self> {
+        let mut started = false;
+        let mut stopped_after_start = 0u8;
         let (pid, version) = timeout(STARTUP_TIMEOUT, async {
             loop {
                 match service_status(false).filter(|(_, version)| !require_standby || version.supports_standby()) {
-                    Some((status, _)) if status.current_state == ServiceState::StartPending => {
+                    Some((status, _)) if status.current_state == ServiceState::StartPending || status.current_state == ServiceState::StopPending => {
+                        sleep(Duration::from_millis(100)).await;
+                    }
+                    Some((status, _)) if status.current_state == ServiceState::Stopped => {
+                        if started {
+                            stopped_after_start += 1;
+                            if stopped_after_start >= 3 {
+                                break Err("虚拟网卡服务启动失败，请重试".to_owned());
+                            }
+                            sleep(Duration::from_millis(120)).await;
+                            continue;
+                        }
+                        if let Err(error) = start_installed_service() {
+                            break Err(error);
+                        }
+                        started = true;
                         sleep(Duration::from_millis(100)).await;
                     }
                     Some((status, version)) => {
                         break status.process_id.map(|pid| (pid, version))
-                            .ok_or("无法连接虚拟网卡服务，请重试");
+                            .ok_or_else(|| "无法连接虚拟网卡服务，请重试".to_owned());
                     }
-                    None => break Err("请先安装虚拟网卡服务"),
+                    None => break Err("请先安装虚拟网卡服务".to_owned()),
                 }
             }
         }).await.map_err(|_| "虚拟网卡服务响应超时")??;
@@ -304,7 +356,7 @@ impl Session {
         if enabled {
             self.version.check_ipv6_policy(settings.ipv6)?;
         }
-        if matches!(self.version, ServiceVersion::Current | ServiceVersion::V12 | ServiceVersion::V11 | ServiceVersion::V10) {
+        if matches!(self.version, ServiceVersion::Current | ServiceVersion::V12Current | ServiceVersion::V12 | ServiceVersion::V11 | ServiceVersion::V10) {
             self.call(&Request::Tun { settings: Box::new(settings.clone()), enabled }).await
         } else {
             let compat = compat_network_settings(settings)?;
@@ -378,10 +430,10 @@ fn open_pipe(path: &str, pid: u32) -> io::Result<NamedPipeClient> {
     Ok(client)
 }
 
-struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
+pub(super) struct SecurityDescriptor(pub(super) PSECURITY_DESCRIPTOR);
 
 impl SecurityDescriptor {
-    fn new(sddl: &str) -> AirResult<Self> {
+    pub(super) fn new(sddl: &str) -> AirResult<Self> {
         let text = wide(sddl);
         let mut descriptor = null_mut();
         if unsafe {
@@ -419,16 +471,17 @@ fn run_service(_arguments: Vec<OsString>) {
             _ => ServiceControlHandlerResult::NotImplemented,
         }
     }) else { return };
-    let status = |state, controls, exit_code| ServiceStatus {
+    let status = |state, controls, exit_code, checkpoint| ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
         controls_accepted: controls,
         exit_code: ServiceExitCode::Win32(exit_code),
-        checkpoint: u32::from(state == ServiceState::StartPending),
+        checkpoint,
         wait_hint: if state == ServiceState::StartPending { STARTUP_TIMEOUT } else { Duration::ZERO },
         process_id: None,
     };
-    let _ = handle.set_service_status(status(ServiceState::StartPending, ServiceControlAccept::empty(), 0));
+    let _ = handle.set_service_status(status(ServiceState::StartPending, ServiceControlAccept::empty(), 0, 1));
+    let mut last_error_path = None;
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -436,21 +489,54 @@ fn run_service(_arguments: Vec<OsString>) {
         .and_then(|runtime| runtime.block_on(async {
             let core = std::env::current_exe().map_err(|error| error.to_string())?.with_file_name(install::CORE_EXE);
             let directory = core.parent().ok_or("虚拟网卡服务目录无效")?;
+            last_error_path = Some(directory.join(LAST_ERROR_LOG));
             let owner = std::env::args().nth(2).filter(|owner| install::valid_sid(owner))
                 .ok_or("虚拟网卡服务缺少有效的 Windows 用户")?;
             let server = create_pipe(PIPE, &owner, true)?;
-            // The previous service may still be releasing its adapter during an upgrade.
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-            while adapter::name_in_use()? && tokio::time::Instant::now() < deadline {
-                sleep(Duration::from_millis(100)).await;
-            }
-            let adapter = adapter::Adapter::create(directory)?;
-            adapter.clear_network()?;
-            handle.set_service_status(status(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN, 0))
+            let adapter = initialize_adapter(directory, &handle, |checkpoint| {
+                status(ServiceState::StartPending, ServiceControlAccept::empty(), 0, checkpoint)
+            }).await?;
+            let _ = std::fs::remove_file(directory.join(LAST_ERROR_LOG));
+            handle.set_service_status(status(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN, 0, 0))
                 .map_err(|error| error.to_string())?;
             serve(server, &owner, &core, directory, &adapter, stop).await
         }));
-    let _ = handle.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty(), if result.is_ok() { 0 } else { 1 }));
+    if let (Err(error), Some(path)) = (&result, &last_error_path) {
+        let _ = std::fs::write(path, error);
+    }
+    let _ = handle.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty(), if result.is_ok() { 0 } else { 1 }, 0));
+}
+
+async fn initialize_adapter(
+    directory: &Path,
+    handle: &service_control_handler::ServiceStatusHandle,
+    mut pending: impl FnMut(u32) -> ServiceStatus,
+) -> AirResult<adapter::Adapter> {
+    // At Windows boot, PnP / NSI / Tcpip can still be initializing right after service start.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    let mut checkpoint = 2u32;
+    loop {
+        let wait_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while matches!(adapter::name_in_use(), Ok(true)) && tokio::time::Instant::now() < wait_deadline {
+            sleep(Duration::from_millis(100)).await;
+        }
+        let attempt = match adapter::name_in_use() {
+            Ok(_) => adapter::Adapter::create(directory).and_then(|adapter| {
+                adapter.clear_network()?;
+                Ok(adapter)
+            }),
+            Err(error) => Err(error),
+        };
+        match attempt {
+            Ok(adapter) => return Ok(adapter),
+            Err(error) if tokio::time::Instant::now() >= deadline => return Err(error),
+            Err(_) => {
+                let _ = handle.set_service_status(pending(checkpoint));
+                checkpoint = checkpoint.saturating_add(1);
+                sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
 }
 
 fn create_pipe(name: &str, owner: &str, first: bool) -> AirResult<tokio::net::windows::named_pipe::NamedPipeServer> {
@@ -740,9 +826,18 @@ mod tests {
     fn old_service_needs_new_core_for_ipv6_off_but_can_still_run_ipv6_on() {
         let disabled = serde_yaml::to_value(json!({ "ipv6": false, "tun": { "enable": true } })).unwrap();
         assert!(ServiceVersion::V12.config(&disabled).is_err());
+        assert!(ServiceVersion::V12Current.config(&disabled).is_ok());
         assert!(ServiceVersion::Current.config(&disabled).is_ok());
         let enabled = serde_yaml::to_value(json!({ "ipv6": true, "tun": { "enable": true } })).unwrap();
         assert!(ServiceVersion::V12.config(&enabled).is_ok());
+    }
+
+    #[test]
+    fn service_security_descriptor_grants_owner_start_and_query_without_config_rights() {
+        let owner = install::user_sid().unwrap();
+        let sddl = install::service_sddl(&owner);
+        assert!(sddl.contains(&format!("(A;;CCLCRPRC;;;{owner})")));
+        assert!(SecurityDescriptor::new(&sddl).is_ok());
     }
 
     #[test]
