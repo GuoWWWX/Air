@@ -38,6 +38,7 @@ interface Props {
   ownerNames: Record<string, string>
   apps: AppIdentity[]
   bindApplication: boolean
+  backLabel: string
   onBack: () => void
 }
 
@@ -136,7 +137,7 @@ function TargetField({
 
 let cachedRoutingDoc: RoutingDocument | undefined
 
-export function RoutingSettings({ sources, groups, nodes, target, apps, ownerNames, bindApplication, onBack }: Props) {
+export function RoutingSettings({ sources, groups, nodes, target, apps, ownerNames, bindApplication, backLabel, onBack }: Props) {
   const [draft, setDraft] = useState<RoutingConfig | undefined>(() =>
     cachedRoutingDoc
       ? (bindApplication
@@ -313,7 +314,7 @@ export function RoutingSettings({ sources, groups, nodes, target, apps, ownerNam
             onClick={onBack}
           >
             <ArrowLeft data-icon="inline-start" />
-            {bindApplication ? tr('返回链路') : tr('返回设置')}
+            {backLabel}
           </Button>
           <div className="flex items-center gap-2.5">
             <PageHeaderIcon kind="routing" size="subpage" />

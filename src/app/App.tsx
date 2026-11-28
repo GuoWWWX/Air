@@ -1294,6 +1294,7 @@ export function App() {
                       icon: conn.appIconKey ? proxy.telemetry?.appIcons?.[conn.appIconKey] : undefined,
                     }))}
                     bindApplication={routingReturn === 'nodes'}
+                    backLabel={routingReturn === 'home' ? tr('仪表盘') : routingReturn === 'nodes' ? tr('返回链路') : tr('返回设置')}
                     onBack={() => navigate(routingReturn)}
                   />
                 ) : (
