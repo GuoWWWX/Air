@@ -16,7 +16,6 @@ use windows_sys::Win32::{
             OpenProcess, WaitForSingleObject, CREATE_NO_WINDOW, SYNCHRONIZATION_SYNCHRONIZE,
         },
     },
-    UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
 };
 
 use super::package::{self, Manifest, EXE};
@@ -84,20 +83,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
     if parsed.scheme() != "https" || !package::allowed_url(&parsed) {
         return Err("仅支持打开 HTTPS 链接".into());
     }
-    let result = unsafe {
-        ShellExecuteW(
-            null_mut(),
-            wide("open").as_ptr(),
-            wide(parsed.as_str()).as_ptr(),
-            null_mut(),
-            null_mut(),
-            SW_SHOWNORMAL,
-        )
-    };
-    if result as isize <= 32 {
-        return Err("无法打开浏览器".into());
-    }
-    Ok(())
+    crate::commands::open_in_browser(parsed.as_str())
 }
 
 pub fn handoff(root: &Path, install: &Path, id: &str) -> Result<(), String> {

@@ -138,8 +138,8 @@ android {
         applicationId = "app.air.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "1.1.6"
+        versionCode = 11
+        versionName = "1.1.7"
         if (!splitApks) {
             ndk { abiFilters += supportedAbis }
         }

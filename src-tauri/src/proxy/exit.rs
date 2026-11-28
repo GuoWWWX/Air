@@ -1,14 +1,53 @@
 use crate::AirResult;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{net::IpAddr, time::Duration};
+use std::{collections::BTreeMap, net::IpAddr, time::Duration};
 
-#[derive(Serialize)]
-pub struct Connectivity {
-    youtube: Option<u64>,
-    google: Option<u64>,
-    github: Option<u64>,
-    chatgpt: Option<u64>,
+pub type Connectivity = BTreeMap<ConnectivityService, Option<u64>>;
+
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectivityService {
+    Google,
+    Github,
+    Youtube,
+    Chatgpt,
+    Wikipedia,
+    Cloudflare,
+    Bing,
+}
+
+impl ConnectivityService {
+    const ALL: [Self; 7] = [
+        Self::Google,
+        Self::Github,
+        Self::Youtube,
+        Self::Chatgpt,
+        Self::Wikipedia,
+        Self::Cloudflare,
+        Self::Bing,
+    ];
+
+    pub fn homepage(self) -> &'static str {
+        match self {
+            Self::Google => "https://www.google.com/",
+            Self::Github => "https://github.com/",
+            Self::Youtube => "https://www.youtube.com/",
+            Self::Chatgpt => "https://chatgpt.com/",
+            Self::Wikipedia => "https://en.wikipedia.org/",
+            Self::Cloudflare => "https://www.cloudflare.com/",
+            Self::Bing => "https://www.bing.com/",
+        }
+    }
+
+    async fn probe(self, client: &Client) -> (Self, Option<u64>) {
+        let (path, expected) = match self {
+            Self::Google => ("generate_204", 204),
+            _ => ("robots.txt", 200),
+        };
+        let url = format!("{}{path}", self.homepage());
+        (self, response_latency(client, &url, expected).await)
+    }
 }
 
 #[derive(Serialize)]
@@ -121,22 +160,13 @@ pub async fn connectivity(port: u16) -> AirResult<Connectivity> {
     let client = Client::builder()
         .no_proxy()
         .proxy(proxy)
+        .user_agent(concat!("Air-Proxy/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(6))
         .build()
         .map_err(|_| "无法初始化连通检测")?;
-    let (youtube, google, github, chatgpt) = tokio::join!(
-        response_latency(&client, "https://www.youtube.com/robots.txt", 200),
-        response_latency(&client, "https://www.google.com/generate_204", 204),
-        response_latency(&client, "https://github.com/robots.txt", 200),
-        response_latency(&client, "https://chatgpt.com/robots.txt", 200),
-    );
-    Ok(Connectivity {
-        youtube,
-        google,
-        github,
-        chatgpt,
-    })
+    let probes = ConnectivityService::ALL.map(|service| service.probe(&client));
+    Ok(futures_util::future::join_all(probes).await.into_iter().collect())
 }
 
 async fn response_latency(client: &Client, url: &str, expected: u16) -> Option<u64> {

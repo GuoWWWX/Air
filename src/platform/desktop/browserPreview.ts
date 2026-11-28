@@ -993,7 +993,20 @@ export const browserAir = {
   proxyConnectivity: async (sessionId: string): Promise<ProxyConnectivity> => {
     await sleep(600)
     if (proxyState.sessionId !== sessionId) throw new Error('代理会话已变更')
-    return { youtube: 162, google: 148, github: 207, chatgpt: null }
+    return { youtube: 162, google: 148, github: 207, chatgpt: null, wikipedia: 191, cloudflare: 136, bing: 182 }
+  },
+
+  openServiceLink: async (service: keyof ProxyConnectivity): Promise<void> => {
+    const homepages = {
+      google: 'https://www.google.com/',
+      github: 'https://github.com/',
+      youtube: 'https://www.youtube.com/',
+      chatgpt: 'https://chatgpt.com/',
+      wikipedia: 'https://en.wikipedia.org/',
+      cloudflare: 'https://www.cloudflare.com/',
+      bing: 'https://www.bing.com/',
+    }
+    window.open(homepages[service], '_blank', 'noopener,noreferrer')
   },
 
   proxyTelemetry: async (): Promise<ProxyTelemetry | null> => sampleBrowserTelemetry(),

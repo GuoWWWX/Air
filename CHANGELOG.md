@@ -1,6 +1,13 @@
 # 更新日志 / Changelog
 
-本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.6.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+本文档遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，并采用[语义化版本](https://semver.org/lang/zh-CN/)控制版本号。详细发行说明请见 [`docs/版本发布/`](./docs/版本发布/1.1.7.md) 与 [GitHub Releases](https://github.com/GuoWWWX/Air-Proxy/releases)。
+
+## [1.1.7] - 2026-11-28
+
+- Windows 首页放大并居中 Google 和 GitHub 的连通性结果。详情显示七个站点，点击站点名称或图标即可通过默认浏览器打开。
+- 启动代理或切换节点后，当前线路稳定 3 秒才自动检测。快速连切时检测最终选中的线路，结果实时对应当前线路。
+- 增加带时间戳的 Windows Authenticode 构建流程。公开签名需要配置可信代码签名证书。
+- Android 同步内置语言包并更新应用版本。
 
 ## [1.1.6] - 2026-11-28
 

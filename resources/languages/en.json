@@ -1780,7 +1780,7 @@
     "前往 GitHub 手动下载": "Download manually on GitHub",
     "查找并应用 GitHub 上的最新 Android 更新。": "Check and apply the latest Android update from GitHub.",
     "服务连通性": "Service connectivity",
-    "通过当前分流规则测量 HTTPS 响应耗时": "Measures HTTPS response time using the current routing rules",
+    "用默认浏览器打开 {0}": "Open {0} in the default browser",
     "重新检测服务连通性": "Retest service connectivity",
     "未通过": "Failed",
     "正在测速 {0}/{1}": "Testing {0}/{1}",

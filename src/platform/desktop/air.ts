@@ -139,6 +139,9 @@ export interface ProxyConnectivity {
   google: number | null
   github: number | null
   chatgpt: number | null
+  wikipedia: number | null
+  cloudflare: number | null
+  bing: number | null
 }
 
 export type ChainProbeResult = ExitVerification | { error: string }
@@ -316,6 +319,7 @@ const tauriAir = {
   installTunService: () => invoke<ProxyStatus>('install_tun_service'),
   proxyExit: (sessionId: string) => invoke<ProxyExit>('proxy_exit', { sessionId }),
   proxyConnectivity: (sessionId: string) => invoke<ProxyConnectivity>('proxy_connectivity', { sessionId }),
+  openServiceLink: (service: keyof ProxyConnectivity) => invoke<void>('open_service_link', { service }),
   proxyTelemetry: (cursor?: TelemetryCursor) => invoke<ProxyTelemetry | null>('proxy_telemetry', { cursor }),
   resolveApplications: (queries: string[]) =>
     invoke<ResolvedAppIdentity[]>('resolve_applications', { queries }),

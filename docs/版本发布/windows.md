@@ -18,6 +18,18 @@ $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-gnu'
 pnpm tauri build --target x86_64-pc-windows-gnu --config src-tauri/tauri.windows-release.conf.json
 ```
 
+## Windows 代码签名
+
+使用可信发布者的代码签名证书制作公开安装包。证书与所需的私钥访问权限应已配置在构建机当前用户证书库。先设置上述 Rust 工具链，再传入该证书的指纹。
+
+```powershell
+./scripts/build-windows-release.ps1 -CertificateThumbprint $airWindowsPublisherThumbprint
+```
+
+脚本在嵌入前给 `air-tun-service.exe` 签名，并通过 Tauri 给应用和安装程序签名。签名使用 SHA-256 和 RFC 3161 时间戳。Mihomo、WebView2 Loader 和 Wintun 保留打包时核对的字节。在隔离环境安装后，通过 `Get-AuthenticodeSignature` 核对安装包和安装目录中的 `air-proxy.exe` 的签名状态为 `Valid`，再从该安装目录生成更新包。保持发布者身份一致，以积累 SmartScreen 信誉。[微软 SmartScreen 说明](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation)
+
+## 增量更新包
+
 发布官方更新清单时使用已有的发布私钥。独立渠道可用 `python scripts/prepare-update.py keygen --key $airSigningKey` 创建自己的密钥对。将私钥保存在工作区以外的受保护目录中，并保留备份。
 
 覆盖安装后核对应用和安装登记都显示目标版本，再从安装目录生成增量发布文件。Python 需要安装 `cryptography`。

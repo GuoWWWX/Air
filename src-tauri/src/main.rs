@@ -723,6 +723,8 @@ fn main() {
             commands::proxy_exit,
             commands::proxy_connectivity,
             #[cfg(windows)]
+            commands::open_service_link,
+            #[cfg(windows)]
             commands::install_tun_service,
             commands::proxy_telemetry,
             commands::resolve_applications,

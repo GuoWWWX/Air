@@ -71,32 +71,48 @@ export interface ConnectivityLookup {
   onRefresh?: () => void
 }
 
+const SERVICE_PROBE_SETTLE_MS = 3_000
+
 function useSessionProbe<T>(
   status: ProxyStatus,
   enabled: boolean,
   run: (sessionId: string) => Promise<T>,
   extras: unknown[] = [],
+  settleMs = 0,
 ) {
   const [attempt, setAttempt] = useState(0)
   const [result, setResult] = useState<{ key: string; value?: T }>()
-  const key = status.running && status.sessionId && enabled
-    ? JSON.stringify([status.target, status.outbound?.hops.map(hop => hop.id) ?? [], ...extras, attempt])
+  const observed = useRef<{ route: string; readyAt: number } | null>(null)
+  const route = status.running && status.sessionId && enabled
+    ? JSON.stringify([status.target, status.outbound?.hops.map(hop => hop.id) ?? [], ...extras])
     : null
+  const key = route === null ? null : `${route}:${attempt}`
   // TUN can replace the kernel session while keeping the same active outbound.
   const lookup = useEffectEvent(() => (status.sessionId ? run(status.sessionId) : undefined))
 
   useEffect(() => {
-    if (key === null) {
+    if (route === null || key === null) {
+      observed.current = null
       setResult(undefined)
       return
+    }
+    if (observed.current?.route !== route) {
+      observed.current = { route, readyAt: performance.now() + settleMs }
+      setResult(undefined)
     }
     let active = true
     const finish = (value?: T) => {
       if (active) setResult({ key, value })
     }
-    void lookup()?.then(finish, () => finish())
-    return () => { active = false }
-  }, [key])
+    const probe = () => { void lookup()?.then(finish, () => finish()) }
+    const delay = observed.current.readyAt - performance.now()
+    const timer = delay > 0 ? window.setTimeout(probe, delay) : undefined
+    if (timer === undefined) probe()
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [route, key, settleMs])
 
   const current = result?.key === key ? result : undefined
   return {
@@ -118,6 +134,7 @@ function useProxyConnectivity(status: ProxyStatus): ConnectivityLookup {
     status.mode !== 'direct',
     id => air.proxyConnectivity(id),
     [status.mode, status.sessionId],
+    SERVICE_PROBE_SETTLE_MS,
   )
   return { connectivity: value, checking, failed, onRefresh }
 }

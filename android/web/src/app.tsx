@@ -41,7 +41,7 @@ type Dialog =
 
 const emptyStatus: VpnStatus = { phase: 'idle', startedAt: 0, traffic: {} }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
-const defaultKernel: KernelInfo = { version: '1.19.34', appVersion: '1.1.6', sdk: 35, abi: 'Android' }
+const defaultKernel: KernelInfo = { version: '1.19.34', appVersion: '1.1.7', sdk: 35, abi: 'Android' }
 const PROBE_REQUEST_SIZE = 72
 const MANUAL_PROBE_COALESCE_MS = 80
 type MonitorResult = { at: number; available: number; checked: number; error?: string; samples?: Record<string, ProbeSample[]> }

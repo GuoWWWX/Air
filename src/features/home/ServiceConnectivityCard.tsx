@@ -1,13 +1,18 @@
 import { Popover } from '@base-ui/react/popover'
 import { ChevronDown, Globe, RefreshCw } from 'lucide-react'
+import { air } from '@/platform/desktop/air'
 import { tr } from '@/shared/i18n/messages'
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
 import { Card, CardHeader } from '@/shared/ui/card'
+import { showMessage } from '@/shared/ui/message'
 import type { ConnectivityLookup } from '../proxy/useProxy'
+import bingLogo from './service-logos/bing.png'
 import chatgptLogo from './service-logos/chatgpt.svg'
+import cloudflareLogo from './service-logos/cloudflare.png'
 import githubLogo from './service-logos/github.svg'
 import googleLogo from './service-logos/google.png'
+import wikipediaLogo from './service-logos/wikipedia.png'
 import youtubeLogo from './service-logos/youtube.png'
 
 const services = [
@@ -15,12 +20,14 @@ const services = [
   { id: 'github', name: 'GitHub', logo: githubLogo },
   { id: 'youtube', name: 'YouTube', logo: youtubeLogo },
   { id: 'chatgpt', name: 'ChatGPT', logo: chatgptLogo },
+  { id: 'wikipedia', name: 'Wikipedia', logo: wikipediaLogo },
+  { id: 'cloudflare', name: 'Cloudflare', logo: cloudflareLogo },
+  { id: 'bing', name: 'Bing', logo: bingLogo },
 ] as const
 type Service = (typeof services)[number]
 
 export function ServiceConnectivityCard({ connectivity, checking, failed, onRefresh }: ConnectivityLookup) {
   const title = tr('服务连通性')
-  const measurement = tr('通过当前分流规则测量 HTTPS 响应耗时')
   const refresh = tr('重新检测服务连通性')
 
   function renderService(service: Service, showName: boolean) {
@@ -28,27 +35,47 @@ export function ServiceConnectivityCard({ connectivity, checking, failed, onRefr
     const reachable = latency != null
     const unavailable = !reachable && (connectivity != null || failed)
     const status = reachable ? `${latency} ms` : unavailable ? tr('未通过') : checking ? '…' : '—'
+    const linkLabel = `${tr('用默认浏览器打开 {0}', service.name)} · ${checking ? tr('正在检测…') : status}`
 
     return (
-      <li
-        key={service.id}
-        title={`${service.name} · ${checking ? tr('正在检测…') : status}`}
-        className={cn('flex min-w-0 items-center rounded-[7px]', showName ? 'h-8.5 gap-1.5 px-1.5' : 'h-8 gap-1 px-1 bg-muted/65')}
-      >
-        <span className={cn('relative grid shrink-0 place-items-center', showName ? 'size-5' : 'size-4.5')}>
-          <img src={service.logo} alt="" width={16} height={16} className={cn('size-4 object-contain', service.id === 'github' && 'dark:invert')} />
-          <span
-            aria-hidden="true"
-            className={cn(
-              'absolute -right-0.5 bottom-0 size-1.5 rounded-full ring-1 ring-card',
-              reachable ? 'bg-success' : unavailable ? 'bg-destructive' : checking ? 'bg-primary motion-safe:animate-pulse' : 'bg-icon-muted',
-            )}
-          />
-        </span>
-        <span className={showName ? 'flex-1 text-xs text-foreground' : 'sr-only'}>{service.name}</span>
-        <span className={cn('whitespace-nowrap tabular-nums', showName ? 'ml-auto text-xs' : 'text-[11px]', reachable ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
-          {status}
-        </span>
+      <li key={service.id} className="min-w-0">
+        <Button
+          variant="ghost"
+          aria-label={linkLabel}
+          title={linkLabel}
+          className={cn(
+            'w-full cursor-pointer border-0',
+            showName ? 'justify-start px-1.5' : 'h-10 justify-center gap-1 bg-muted/65 px-1 @[12rem]:gap-1.5',
+          )}
+          onClick={() => void air.openServiceLink(service.id).catch(() => {
+            showMessage({ type: 'error', title: tr('无法打开浏览器') })
+          })}
+        >
+          <span className={cn('relative grid size-5 shrink-0 place-items-center', !showName && '@[12rem]:size-5.5')}>
+            <img
+              src={service.logo}
+              alt=""
+              width={16}
+              height={16}
+              className={cn('object-contain', showName ? 'size-4' : 'size-4.5 @[12rem]:size-5', service.id === 'github' && 'dark:invert')}
+            />
+            <span
+              aria-hidden="true"
+              className={cn(
+                'absolute -right-0.5 bottom-0 size-1.5 rounded-full ring-1 ring-card',
+                reachable ? 'bg-success' : unavailable ? 'bg-destructive' : checking ? 'bg-primary motion-safe:animate-pulse' : 'bg-icon-muted',
+              )}
+            />
+          </span>
+          {showName && <span className="flex-1 truncate text-left text-xs text-foreground">{service.name}</span>}
+          <span className={cn(
+            'whitespace-nowrap tabular-nums',
+            showName ? 'ml-auto text-xs' : 'text-xs @[12rem]:text-sm',
+            reachable ? 'font-semibold text-foreground' : 'text-muted-foreground',
+          )}>
+            {status}
+          </span>
+        </Button>
       </li>
     )
   }
@@ -79,15 +106,12 @@ export function ServiceConnectivityCard({ connectivity, checking, failed, onRefr
                 <ul className="mt-1" aria-live="polite" aria-busy={checking}>
                   {services.map(service => renderService(service, true))}
                 </ul>
-                <Popover.Description className="mx-1.5 mt-1.5 border-t border-border pt-2 text-xs text-muted-foreground">
-                  {measurement}
-                </Popover.Description>
               </Popover.Popup>
             </Popover.Positioner>
           </Popover.Portal>
         </Popover.Root>
       </CardHeader>
-      <ul className="grid grid-cols-[repeat(2,minmax(0,6rem))] gap-1.5" aria-label={title} aria-live="polite" aria-busy={checking}>
+      <ul className="@container grid w-[calc(100%+0.5rem)] max-w-60 flex-1 grid-cols-2 content-center gap-2 self-center" aria-label={title} aria-live="polite" aria-busy={checking}>
         {services.slice(0, 2).map(service => renderService(service, false))}
       </ul>
     </Card>

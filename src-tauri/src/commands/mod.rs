@@ -1739,6 +1739,24 @@ pub fn open_config_folder(state: State<'_, Arc<App>>) -> AirResult<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+pub(crate) fn open_in_browser(url: &str) -> AirResult<()> {
+    use std::ptr::{null, null_mut};
+    use windows_sys::{
+        w,
+        Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+    };
+
+    let url: Vec<u16> = url.encode_utf16().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(null_mut(), w!("open"), url.as_ptr(), null(), null(), SW_SHOWNORMAL)
+    };
+    if result as isize <= 32 {
+        return Err("无法打开浏览器".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn validate_config_file(state: State<'_, Arc<App>>, contents: String) -> AirResult<()> {
     RoutingFile::validate_text(&contents, &state.library.read().await.sources)
@@ -1933,6 +1951,12 @@ pub async fn proxy_connectivity(
 ) -> AirResult<proxy::exit::Connectivity> {
     let port = state.proxy.lock().await.exit_port(&session_id)?;
     proxy::exit::connectivity(port).await
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn open_service_link(service: proxy::exit::ConnectivityService) -> AirResult<()> {
+    open_in_browser(service.homepage())
 }
 
 #[tauri::command]
